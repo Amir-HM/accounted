@@ -2715,6 +2715,22 @@ export const UNCATEGORIZED_TRANSACTIONS_HINT =
   'gnubok_link_transaction_to_journal_entry (ingen ny bokföring skapas).'
 
 /**
+ * Hint for the bank_unreconciled blocker when every bank row in the period is
+ * matched and the whole difference is verifikat with no bank row (crm#185: an
+ * SIE import booked January to May, the bank connection returned rows from
+ * June). Stäm av counts those verifikat as explained, so a signed avstämning
+ * leaves this gate closed: only bank rows for those dates clear it. Linking
+ * books nothing, and categorizing would book the same affärshändelse twice,
+ * which gnubok_create_transactions' own next step points at. Exported so the
+ * test can pin the contract.
+ */
+export const BANK_ROWS_MISSING_HINT =
+  'Importera kontoutdraget för de datumen som bankfil (Importera, Bankfil) eller skapa raderna med ' +
+  'gnubok_create_transactions. Koppla dem sedan till de befintliga verifikaten i Stäm av eller med ' +
+  'gnubok_reconcile_match: ingenting bokförs på nytt, så kategorisera dem inte. En PDF i Underlag ' +
+  'eller en signerad avstämning ersätter inte bankraderna.'
+
+/**
  * Completeness codes that describe the omvänd-skattskyldighet pair. They keep
  * the pre-existing `reverse_charge_input_missing` blocker kind so clients
  * already switching on it do not lose the case they were watching for.
@@ -3283,6 +3299,17 @@ export async function computeVatCloseCheck(
   }
   const reconRes = recon.status
   if (!reconRes.is_reconciled) {
+    // Every bank row is matched and verifikat without a bank row explain the
+    // whole difference (the residual is under half an öre, the Stäm av
+    // sign-off threshold). The bridge calls that avstämt, so the user can sign
+    // the month off, yet the gate stays closed: the bank side is missing for
+    // those dates. Same gate and severity; the message names the situation and
+    // the hint the action that clears it (crm#185).
+    const bankRowsMissing =
+      reconRes.unmatched_transaction_count === 0 &&
+      reconRes.unmatched_gl_line_count > 0 &&
+      typeof reconRes.unexplained_difference === 'number' &&
+      Math.abs(reconRes.unexplained_difference) < 0.005
     blockers.push({
       kind: 'bank_unreconciled',
       severity: Math.abs(reconRes.difference) > 100 ? 'high' : 'medium',
@@ -3291,8 +3318,12 @@ export async function computeVatCloseCheck(
       // company with no 1930 row this check now reconciles its primary cash
       // account, and a message pointing at 1930 would send the user to an
       // account with no lines on it.
-      message: `Bankavstämning visar differens ${reconRes.difference.toFixed(2)} kr (${reconRes.unmatched_transaction_count} omatchade banktransaktioner, ${reconRes.unmatched_gl_line_count} omatchade huvudbokslinjer på ${recon.scope.accountNumber})`,
-      hint: 'Granska via gnubok_get_reconciliation_status och matcha: moms beräknas från huvudboken så differenser döljer fel.',
+      message: bankRowsMissing
+        ? `${reconRes.unmatched_gl_line_count} verifikat på ${recon.scope.accountNumber} saknar banktransaktion: banken har inga rader för de datumen`
+        : `Bankavstämning visar differens ${reconRes.difference.toFixed(2)} kr (${reconRes.unmatched_transaction_count} omatchade banktransaktioner, ${reconRes.unmatched_gl_line_count} omatchade huvudbokslinjer på ${recon.scope.accountNumber})`,
+      hint: bankRowsMissing
+        ? BANK_ROWS_MISSING_HINT
+        : 'Granska via gnubok_get_reconciliation_status och matcha: moms beräknas från huvudboken så differenser döljer fel.',
     })
   }
   if (missingUnderlag > 0) {
