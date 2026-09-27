@@ -6,6 +6,7 @@
  * real, enumerated filter: the report is still computed whole, and only the
  * requested metrics are returned next to the period fields.
  */
+import { codedError } from './company-routing'
 
 export const KPI_METRIC_KEYS = [
   'gross_margin',
@@ -35,19 +36,25 @@ const KPI_CONTEXT_KEYS = [
 
 /**
  * Validate the `metrics` argument. Undefined or empty means every metric;
- * an unknown name is an argument error that lists the valid names.
+ * an unknown name is an argument error that lists the valid names. Coded
+ * VALIDATION_ERROR: a plain Error surfaced as UNKNOWN_ERROR with "Något gick
+ * fel. Försök igen.", which tells an agent to retry a call that cannot pass.
  */
 export function parseKpiMetrics(raw: unknown): KpiMetricKey[] | null {
   if (raw === undefined || raw === null) return null
   if (!Array.isArray(raw)) {
-    throw new Error(`metrics must be an array of metric names. Valid: ${KPI_METRIC_KEYS.join(', ')}.`)
+    throw codedError(
+      'VALIDATION_ERROR',
+      `metrics must be an array of metric names. Valid: ${KPI_METRIC_KEYS.join(', ')}.`,
+    )
   }
   if (raw.length === 0) return null
   const unknown = raw.filter(
     (m) => typeof m !== 'string' || !(KPI_METRIC_KEYS as readonly string[]).includes(m),
   )
   if (unknown.length > 0) {
-    throw new Error(
+    throw codedError(
+      'VALIDATION_ERROR',
       `Unknown metric(s): ${unknown.map((m) => JSON.stringify(m)).join(', ')}. Valid: ${KPI_METRIC_KEYS.join(', ')}.`,
     )
   }

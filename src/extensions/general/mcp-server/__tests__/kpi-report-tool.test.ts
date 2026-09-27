@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 import { eventBus } from '@/lib/events/bus'
+import { getStructuredError } from '@/lib/errors/get-structured-error'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
 import { generateARLedger } from '@/lib/reports/ar-ledger'
@@ -154,11 +155,22 @@ describe('gnubok_get_kpi_report', () => {
     expect(result.net_result).toBe(6000)
   })
 
-  it('rejects an unknown metric name and lists the valid ones', async () => {
-    const { supabase } = createQueuedMockSupabase()
-    await expect(
-      kpiTool.execute({ metrics: ['revenue_growth'] }, 'company-1', 'user-1', supabase as never),
-    ).rejects.toThrow(/Unknown metric\(s\): "revenue_growth"\. Valid: gross_margin/)
+  it('rejects an unknown metric name or a non-array as a permanent VALIDATION_ERROR', async () => {
+    const cases: Array<[unknown, RegExp]> = [
+      [['revenue_growth'], /Unknown metric\(s\): "revenue_growth"\. Valid: gross_margin/],
+      ['cash_position', /metrics must be an array of metric names\. Valid: gross_margin/],
+    ]
+    for (const [metrics, message] of cases) {
+      const { supabase } = createQueuedMockSupabase()
+      const err = await kpiTool
+        .execute({ metrics }, 'company-1', 'user-1', supabase as never)
+        .then(() => null, (e: unknown) => e)
+      expect((err as Error).message).toMatch(message)
+      // Not UNKNOWN_ERROR ("Något gick fel. Försök igen."): retrying cannot pass.
+      const structured = getStructuredError(err)
+      expect(structured.code).toBe('VALIDATION_ERROR')
+      expect(structured.retryable).toBe(false)
+    }
     expect(generateIncomeStatement).not.toHaveBeenCalled()
   })
 

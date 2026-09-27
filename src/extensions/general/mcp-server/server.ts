@@ -303,7 +303,7 @@ import { fetchPortfolioOverview, type DeadlineKindFilter, type PortfolioCompanyR
 import { getByraMembership } from '@/lib/clients/fetch-client-overview'
 import { companyCurrentResource } from './resources/company-current'
 import { findUnknownArgKeys, listArgKeys, shortestExampleFor } from './arg-guard'
-import { normalizeReportArgAliases, suggestArgKey } from './report-arg-aliases'
+import { describeAliasConflicts, normalizeReportArgAliases, suggestArgKey } from './report-arg-aliases'
 import { decodeToolArgs } from './unicode-escape-guard'
 import { findSupplierCandidates, type SupplierRow } from './supplier-candidates'
 import { creditNoteHandoff } from './inbox-credit-note'
@@ -1194,6 +1194,24 @@ function normalizeAccountList(value: unknown): string[] | undefined {
     .filter((v) => v != null && !(typeof v === 'string' && v.trim() === ''))
     .map((v) => normalizeAccountNumber(v, 'accounts') as string)
   return list.length > 0 ? list : undefined
+}
+
+/**
+ * Coerce a voucher_number_from/to argument to a number. Hosts don't enforce
+ * inputSchema types, and query_journal only applied the filter to a number:
+ * "12" or "A12" skipped it while applied_filters still echoed the value, so
+ * the whole journal came back labelled as voucher 12. A digit string is read
+ * as its number; any other non-number is refused.
+ */
+function normalizeVoucherNumber(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim())
+  throw codedError(
+    'VALIDATION_ERROR',
+    `${field} must be a voucher number like 12 (got ${JSON.stringify(value)}). ` +
+      'Pass the series separately as voucher_series, e.g. "A".',
+  )
 }
 
 function autoExtractDateForPeriodCheck(params: Record<string, unknown>): string | undefined {
@@ -11877,8 +11895,8 @@ export const tools: McpTool[] = [
       const dateFrom = args.date_from as string | undefined
       const dateTo = args.date_to as string | undefined
       const voucherSeries = args.voucher_series as string | undefined
-      const vnFrom = args.voucher_number_from as number | undefined
-      const vnTo = args.voucher_number_to as number | undefined
+      const vnFrom = normalizeVoucherNumber(args.voucher_number_from, 'voucher_number_from')
+      const vnTo = normalizeVoucherNumber(args.voucher_number_to, 'voucher_number_to')
       const sourceType = args.source_type as string | undefined
       const project = args.project as string | undefined
       const costCenter = args.cost_center as string | undefined
@@ -11933,8 +11951,8 @@ export const tools: McpTool[] = [
         if (dateFrom) e = e.gte('entry_date', dateFrom)
         if (dateTo) e = e.lte('entry_date', dateTo)
         if (voucherSeries) e = e.eq('voucher_series', voucherSeries)
-        if (typeof vnFrom === 'number') e = e.gte('voucher_number', vnFrom)
-        if (typeof vnTo === 'number') e = e.lte('voucher_number', vnTo)
+        if (vnFrom !== undefined) e = e.gte('voucher_number', vnFrom)
+        if (vnTo !== undefined) e = e.lte('voucher_number', vnTo)
         if (sourceType) e = e.eq('source_type', sourceType)
         return e
       }
@@ -25630,9 +25648,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
         if (aliasResult.conflicts.length > 0) {
           throw codedError(
             'VALIDATION_ERROR',
-            `Conflicting parameters for ${requestedToolName}: ` +
-              aliasResult.conflicts.map((c) => `"${c.alias}" and "${c.canonical}"`).join(', ') +
-              ` mean the same thing. Pass only ${aliasResult.conflicts.map((c) => `"${c.canonical}"`).join(', ')}.`,
+            `Conflicting parameters for ${requestedToolName}: ${describeAliasConflicts(aliasResult.conflicts)}`,
           )
         }
         toolArgs = aliasResult.args
