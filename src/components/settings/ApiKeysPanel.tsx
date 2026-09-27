@@ -243,7 +243,7 @@ export function ApiKeysPanel({
             </div>
             <div className="space-y-2">
               <Label>{t('mode_label')}</Label>
-              <div className="inline-flex rounded-full border p-0.5" role="radiogroup" aria-label={t('mode_label')}>
+              <div className="flex w-fit rounded-full border p-0.5" role="radiogroup" aria-label={t('mode_label')}>
                 {(['live', 'test'] as const).map((m) => (
                   <button
                     key={m}
@@ -286,7 +286,7 @@ export function ApiKeysPanel({
                         ? t('group_rest_only', { name: t(groupLabelKey(group)) })
                         : t(groupLabelKey(group))}
                     </h4>
-                    <div className="space-y-2 px-2">
+                    <div className="space-y-2">
                       {group.scopes.map((scope) => (
                         <ScopeCard
                           key={scope}
