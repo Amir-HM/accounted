@@ -158,6 +158,7 @@ describe('Accounted://attention', () => {
     const result = (await attentionResource.read(ctx(supabase))) as AttentionResponse
 
     const cat = result.categories.find((c) => c.key === 'unbooked_transactions')
+    expect(fetchAnchored).toHaveBeenCalledWith(supabase, 'company-1', ['t-split', 't-open'])
     expect(cat?.count).toBe(1)
     expect(cat?.samples.map((s) => s.id)).toEqual(['t-open'])
     expect(cat?.next?.args).toEqual({ transaction_id: 't-open' })

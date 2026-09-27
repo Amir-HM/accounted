@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createLogger } from '@/lib/logger'
 import { countUnbookedBankTransactions } from '@/lib/transactions/unbooked'
-import { countMissingUnderlagInPeriod, MISSING_UNDERLAG_MIN_GROSS_SEK } from '@/lib/documents/missing-underlag'
 import { getLatestSignoffs } from '@/lib/reconciliation/signoff-store'
 import { bankAccountKey } from '@/lib/reconciliation/schemas'
 
@@ -16,6 +15,15 @@ const log = createLogger('report-data-status')
  * the figure from raw journal lines or presented a preliminary number as
  * final. Every signal below already existed in a separate tool or resource;
  * this puts them on the report itself, over the report's own date range.
+ *
+ * Company-wide by design: on a report filtered by dimensions (kostnadsställe,
+ * projekt) or an account range, every count still covers the whole company
+ * over the date range, not only the filtered slice. An unbooked bank row
+ * carries no dimension or account yet, so it cannot be attributed to a slice.
+ *
+ * Only signals that can change a figure belong here. A missing underlag does
+ * not (the verifikat is already in the numbers); it stays in
+ * gnubok_vat_close_check and the attention resource.
  */
 export interface ReportDataStatus {
   computed_at: string
@@ -26,7 +34,7 @@ export interface ReportDataStatus {
     name: string
     /** State of the range end: closed period, locked (period or company lock date), or open. */
     status: 'open' | 'locked' | 'closed'
-    /** Period locked_at, or the company lock date when that is what locks the range. */
+    /** YYYY-MM-DD: the date the period was locked, or the company lock date when that is what locks the range. */
     lock_date: string | null
   }
   accounting_method: 'accrual' | 'cash' | null
@@ -34,17 +42,15 @@ export interface ReportDataStatus {
   unbooked_transactions: number
   /** Draft journal entries dated in the range: not posted, not in the figures. */
   draft_entries: number
-  /** Posted verifikat in the range of MISSING_UNDERLAG_MIN_GROSS_SEK or more with no underlag. */
-  missing_underlag: number
   bank: {
-    /** Latest successful bank feed sync over all connections, or null (no feed). */
+    /** Oldest last sync among the company's ACTIVE bank connections: the stalest feed, or null (no active feed). */
     last_sync_at: string | null
     /** Earliest sign-off date across the company's bank accounts; null when any is unsigned or there are none. */
     reconciled_through: string | null
   }
   /** True when the figures can still change: open range, unbooked rows or drafts. */
   preliminary: boolean
-  /** Short sentences to repeat when answering from these figures. */
+  /** Short sentences for the agent to draw on; mention the ones relevant to the question. */
   caveats: string[]
 }
 
@@ -121,7 +127,7 @@ async function build(
   const from = options.fromDate ?? period.period_start
   const to = options.toDate ?? period.period_end
 
-  const [unbooked, draftsRes, missingUnderlag, syncRes, reconciledThrough] = await Promise.all([
+  const [unbooked, draftsRes, syncRes, recon] = await Promise.all([
     countUnbookedBankTransactions(supabase, companyId, { fromDate: from, toDate: to }),
     supabase
       .from('journal_entries')
@@ -130,16 +136,18 @@ async function build(
       .eq('status', 'draft')
       .gte('entry_date', from)
       .lte('entry_date', to),
-    countMissingUnderlagInPeriod(supabase, companyId, from, to),
+    // The stalest ACTIVE feed is what leaves rows out of the figures; a
+    // revoked or expired connection no longer feeds anything.
     supabase
       .from('bank_connections')
       .select('last_synced_at')
       .eq('company_id', companyId)
+      .eq('status', 'active')
       .not('last_synced_at', 'is', null)
-      .order('last_synced_at', { ascending: false })
+      .order('last_synced_at', { ascending: true })
       .limit(1)
       .maybeSingle(),
-    bankReconciledThrough(supabase, companyId),
+    bankReconciliation(supabase, companyId),
   ])
   if (draftsRes.error) throw new Error(`draft entry count failed: ${draftsRes.error.message}`)
   if (syncRes.error && syncRes.error.code !== 'PGRST116') {
@@ -151,13 +159,13 @@ async function build(
   let lockDate: string | null = null
   if (period.is_closed) {
     status = 'closed'
-    lockDate = period.locked_at
+    lockDate = isoDate(period.locked_at)
   } else if (period.locked_at) {
     status = 'locked'
-    lockDate = period.locked_at
+    lockDate = isoDate(period.locked_at)
   } else if (lockThrough && lockThrough >= to) {
     status = 'locked'
-    lockDate = lockThrough
+    lockDate = isoDate(lockThrough)
   }
 
   const method = settings?.accounting_method === 'cash' || settings?.accounting_method === 'accrual'
@@ -177,23 +185,29 @@ async function build(
     caveats.push(`${drafts} draft entr${drafts === 1 ? 'y' : 'ies'} in the range are not posted and not included.`)
   }
   if (method === 'cash') {
-    caveats.push('Cash method (kontantmetoden): invoices are booked when paid, so unpaid customer and supplier invoices are not in these figures until year-end closing.')
+    // True for every report: the income statement leaves year-end entries out
+    // while other reports include them, so "unpaid invoices are (not) in these
+    // figures" would be wrong for one of them.
+    caveats.push('Cash method (kontantmetoden): invoices are booked when paid; unpaid customer and supplier invoices enter the books only through the year-end (bokslut) entries.')
   }
   if (lastSyncAt) {
     const ageHours = (now.getTime() - new Date(lastSyncAt).getTime()) / 3_600_000
     if (ageHours > STALE_SYNC_HOURS && to >= lastSyncAt.slice(0, 10)) {
-      caveats.push(`The bank feed last synced ${lastSyncAt.slice(0, 10)}: bank transactions after that are not imported yet.`)
+      caveats.push(`A bank feed last synced ${lastSyncAt.slice(0, 10)}: its transactions after that date are not imported yet.`)
     }
   }
-  if (reconciledThrough !== undefined && (reconciledThrough === null || reconciledThrough < to)) {
-    caveats.push(
-      reconciledThrough
-        ? `Bank reconciliation is signed off only through ${reconciledThrough}.`
-        : 'The bank accounts have no reconciliation sign-off covering this range.',
-    )
-  }
-  if (missingUnderlag > 0) {
-    caveats.push(`${missingUnderlag} verifikat of ${MISSING_UNDERLAG_MIN_GROSS_SEK} kr or more in the range have no underlag attached.`)
+  // Only for companies that sign off reconciliations at all (the adoption
+  // gate countReconciliationDue uses): about 97% of companies with a bank
+  // account never have, and a caveat on every answer would be noise. The
+  // expected sign-off date is capped at the last month end before today, so a
+  // current-year report is not measured against a period end in the future.
+  if (recon.adopted && recon.hasBankAccounts) {
+    const expectedThrough = to < lastMonthEnd(now) ? to : lastMonthEnd(now)
+    if (recon.reconciledThrough === null) {
+      caveats.push('At least one bank account has no reconciliation sign-off.')
+    } else if (recon.reconciledThrough < expectedThrough) {
+      caveats.push(`Bank reconciliation is signed off only through ${recon.reconciledThrough}.`)
+    }
   }
 
   return {
@@ -203,32 +217,45 @@ async function build(
     accounting_method: method,
     unbooked_transactions: unbooked.total,
     draft_entries: drafts,
-    missing_underlag: missingUnderlag,
-    bank: { last_sync_at: lastSyncAt, reconciled_through: reconciledThrough ?? null },
+    bank: { last_sync_at: lastSyncAt, reconciled_through: recon.reconciledThrough },
     preliminary: status === 'open' || unbooked.total > 0 || drafts > 0,
     caveats,
   }
 }
 
+/** YYYY-MM-DD from a date or a timestamp (the UTC date of a timestamptz string). */
+function isoDate(value: string | null): string | null {
+  return value ? value.slice(0, 10) : null
+}
+
+/** The last day of the month before `now`, YYYY-MM-DD (UTC). */
+function lastMonthEnd(now: Date): string {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).toISOString().slice(0, 10)
+}
+
 /**
- * Earliest active sign-off date across the company's enabled bank accounts
- * (reconnect duplicates on the same IBAN + currency count once, the newest
- * row, as on the Avstämning rail). null when any account has no sign-off;
- * undefined when the company has no bank account at all, so no caveat is
- * raised for a company that has nothing to reconcile.
+ * Reconciliation state of the company's enabled bank accounts:
+ *   reconciledThrough: earliest active sign-off date across the live accounts
+ *     (reconnect duplicates on the same IBAN + currency count once, the newest
+ *     row, as on the Avstämning rail); null when any is unsigned or there are none.
+ *   adopted: the company has at least one active sign-off on any account.
  */
-async function bankReconciledThrough(
+async function bankReconciliation(
   supabase: SupabaseClient,
   companyId: string,
-): Promise<string | null | undefined> {
-  const { data, error } = await supabase
-    .from('cash_accounts')
-    .select('id, iban, currency, updated_at')
-    .eq('company_id', companyId)
-    .eq('enabled', true)
-  if (error) throw new Error(`cash account read failed: ${error.message}`)
-  const accounts = (data ?? []) as Array<{ id: string; iban: string | null; currency: string | null; updated_at: string | null }>
-  if (accounts.length === 0) return undefined
+): Promise<{ reconciledThrough: string | null; hasBankAccounts: boolean; adopted: boolean }> {
+  const [accountsRes, signoffs] = await Promise.all([
+    supabase
+      .from('cash_accounts')
+      .select('id, iban, currency, updated_at')
+      .eq('company_id', companyId)
+      .eq('enabled', true),
+    getLatestSignoffs(supabase, companyId),
+  ])
+  if (accountsRes.error) throw new Error(`cash account read failed: ${accountsRes.error.message}`)
+  const accounts = (accountsRes.data ?? []) as Array<{ id: string; iban: string | null; currency: string | null; updated_at: string | null }>
+  const adopted = signoffs.size > 0
+  if (accounts.length === 0) return { reconciledThrough: null, hasBankAccounts: false, adopted }
 
   const live: string[] = []
   const byIban = new Map<string, (typeof accounts)[number]>()
@@ -243,12 +270,11 @@ async function bankReconciledThrough(
   }
   for (const a of byIban.values()) live.push(a.id)
 
-  const signoffs = await getLatestSignoffs(supabase, companyId)
   let earliest: string | null = null
   for (const id of live) {
     const through = signoffs.get(bankAccountKey(id))?.through_date ?? null
-    if (!through) return null
+    if (!through) return { reconciledThrough: null, hasBankAccounts: true, adopted }
     if (earliest === null || through < earliest) earliest = through
   }
-  return earliest
+  return { reconciledThrough: earliest, hasBankAccounts: true, adopted }
 }

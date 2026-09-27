@@ -71,6 +71,11 @@ describe('countUnbookedBankTransactions', () => {
     })
     const result = await countUnbookedBankTransactions(setup.supabase, 'co-1')
     expect(result).toEqual({ total: 1, untriaged: 0, business_unbooked: 1 })
+    // Defense in depth: every anchor lookup is scoped to the company.
+    for (const table of ['transaction_voucher_links', 'invoice_payments', 'supplier_invoice_payments']) {
+      expect(setup.find(table, 'eq'), table).toEqual([['company_id', 'co-1']])
+      expect(setup.find(table, 'in'), table).toEqual([['transaction_id', ['bulk', 'paid', 'supplier', 'open']]])
+    }
   })
 
   it('excludes ignored rows and private rows on both legs', async () => {
@@ -102,11 +107,18 @@ describe('countUnbookedBankTransactions', () => {
 })
 
 describe('fetchAnchoredTransactionIds', () => {
-  it('returns the ids anchored in any of the three tables', async () => {
-    const { supabase } = makeSupabase({
+  it('returns the ids anchored in any of the three tables, scoped to the company', async () => {
+    const { supabase, find } = makeSupabase({
       anchors: { transaction_voucher_links: ['x'], supplier_invoice_payments: ['y'] },
     })
-    const anchored = await fetchAnchoredTransactionIds(supabase, ['x', 'y', 'z'])
+    const anchored = await fetchAnchoredTransactionIds(supabase, 'co-1', ['x', 'y', 'z'])
     expect([...anchored].sort()).toEqual(['x', 'y'])
+    expect(find('invoice_payments', 'eq')).toEqual([['company_id', 'co-1']])
+  })
+
+  it('reads nothing for an empty id list', async () => {
+    const { supabase, find } = makeSupabase({})
+    expect((await fetchAnchoredTransactionIds(supabase, 'co-1', [])).size).toBe(0)
+    expect(find('transaction_voucher_links', 'in')).toEqual([])
   })
 })

@@ -71,7 +71,8 @@ function logAndZero(
  * This answers "which rows still need a triage decision" (the inbox badge).
  * "Is the ledger complete for a range" is a different question with its own
  * helper, lib/transactions/unbooked.ts: it also counts rows triaged as
- * business that never got a verifikat (3 817 such rows in prod, 2026-09-26).
+ * business that never got a verifikat (574 such rows in 52 real companies in
+ * prod on 2026-09-27; the thousands more in sandbox demo companies aside).
  */
 export async function countUnbookedTransactions(
   supabase: SupabaseClient,

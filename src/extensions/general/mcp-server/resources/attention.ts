@@ -165,6 +165,7 @@ export const attentionResource: McpResource = {
       unbookedCount > 0 && sampleCandidates.length > 0
         ? await fetchAnchoredTransactionIds(
             supabase,
+            companyId,
             sampleCandidates.map((row) => row.id as string),
           ).catch(() => new Set<string>())
         : new Set<string>()

@@ -106,7 +106,7 @@ export async function countUnbookedBankTransactions(
     return { total: untriaged, untriaged, business_unbooked: 0 }
   }
 
-  const anchored = await fetchAnchoredTransactionIds(supabase, candidateIds)
+  const anchored = await fetchAnchoredTransactionIds(supabase, companyId, candidateIds)
 
   const businessUnbooked = candidateIds.filter((id) => !anchored.has(id)).length
   return { total: untriaged + businessUnbooked, untriaged, business_unbooked: businessUnbooked }
@@ -115,10 +115,14 @@ export async function countUnbookedBankTransactions(
 /**
  * The subset of `transactionIds` anchored to a verifikat through a payment
  * allocation or a voucher link (the anchors journal_entry_id does not show).
+ * Scoped to the company as defense in depth: all three tables carry a NOT
+ * NULL company_id, and in prod (2026-09-27) no anchor row names a company
+ * other than its transaction's, so the filter cannot change a count.
  * Throws on a failed lookup.
  */
 export async function fetchAnchoredTransactionIds(
   supabase: SupabaseClient,
+  companyId: string,
   transactionIds: string[],
 ): Promise<Set<string>> {
   const anchored = new Set<string>()
@@ -133,6 +137,7 @@ export async function fetchAnchoredTransactionIds(
         const { data, error } = await supabase
           .from(table)
           .select('transaction_id')
+          .eq('company_id', companyId)
           .in('transaction_id', chunk)
         if (error) throw new Error(`${table} anchor lookup failed: ${error.message}`)
         for (const row of data ?? []) {
