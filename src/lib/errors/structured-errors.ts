@@ -1673,6 +1673,44 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Ett annat bankkonto i företaget har redan detta IBAN. Samma bankkonto ska bara finnas en gång: använd det befintliga kontot.',
     message_en: 'Another bank account of the company already carries this IBAN. One physical account must exist once: use the existing cash account.',
   },
+  // Removing a bank account (remove_cash_account, #3130): one code per
+  // refusal, each saying what keeps the account and the way out if there is
+  // one. Nothing is removed when any of them is answered.
+  CASH_ACCOUNT_REMOVE_BANK_CONNECTED: {
+    httpStatus: 409,
+    message_sv: 'Kontot hämtas fortfarande via en bankkoppling och kan inte tas bort. Koppla från banken först (kontona och deras transaktioner finns kvar), ta bort kontot och koppla sedan banken igen med bara rätt konton.',
+    message_en: 'The account is still fetched through a bank connection and cannot be removed. Disconnect the bank first (the accounts and their transactions stay), remove the account, then connect the bank again with only the right accounts.',
+  },
+  CASH_ACCOUNT_REMOVE_PRIMARY: {
+    httpStatus: 409,
+    message_sv: 'Det här är företagets primära bankkonto och kan inte tas bort. Välj "Gör primärt" på rätt bankkonto först. Finns inget annat bankkonto: koppla eller lägg till rätt konto först.',
+    message_en: 'This is the company’s primary bank account and cannot be removed. Choose "Make primary" on the right bank account first. If there is no other bank account, connect or add the right one first.',
+  },
+  CASH_ACCOUNT_REMOVE_BOOKED: {
+    httpStatus: 409,
+    message_sv: 'Transaktioner på kontot är bokförda eller kopplade till verifikat, fakturor eller betalningar, så kontot kan inte tas bort. Det som är bokfört rättas med ändring eller storno.',
+    message_en: 'Transactions on the account are booked or linked to vouchers, invoices or payments, so the account cannot be removed. Booked items are corrected with a correction or a reversal.',
+  },
+  CASH_ACCOUNT_REMOVE_IGNORED: {
+    httpStatus: 409,
+    message_sv: 'Kontot har ignorerade transaktioner. Att ignorera är ett sparat beslut, så kontot kan inte tas bort medan de finns. Ångra ignoreringen först om kontot ska bort.',
+    message_en: 'The account has ignored transactions. Ignoring is a recorded decision, so the account cannot be removed while they exist. Undo the ignore first if the account should go.',
+  },
+  CASH_ACCOUNT_REMOVE_MATCH_HISTORY: {
+    httpStatus: 409,
+    message_sv: 'Transaktioner på kontot har matchningshistorik som ska sparas, så kontot kan inte tas bort. Ignorera transaktionerna och stäng av kontot i stället, eller kontakta supporten.',
+    message_en: 'Transactions on the account have payment matching history that must be kept, so the account cannot be removed. Ignore the transactions and turn the account off instead, or contact support.',
+  },
+  CASH_ACCOUNT_REMOVE_IN_USE: {
+    httpStatus: 409,
+    message_sv: 'Kontot används på fakturor (betaluppgifter, standardkonto för fakturor eller en skickad faktura) eller i en avstämning och kan inte tas bort.',
+    message_en: 'The account is used on invoices (payment details, the default invoice account or a sent invoice) or in a reconciliation and cannot be removed.',
+  },
+  CASH_ACCOUNT_REMOVE_LEDGER_HISTORY: {
+    httpStatus: 409,
+    message_sv: 'Bokföringskontot som bankkontot bokför på har redan bokförda verifikat, så bankkontot kan inte tas bort.',
+    message_en: 'The ledger account this bank account books on already has posted vouchers, so the bank account cannot be removed.',
+  },
   INVOICE_SEND_PAYMENT_ACCOUNT_MISSING: {
     httpStatus: 400,
     // Currency-neutral by necessity (the registry has no details). Surfaces
