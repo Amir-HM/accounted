@@ -933,9 +933,9 @@ export default function ExpenseClaimsPage() {
         description={t('description')}
         action={
           canWrite ? (
-            <Button onClick={() => setCreating(true)}>{t('new_claim')}</Button>
+            <Button size="sm" onClick={() => setCreating(true)}>{t('new_claim')}</Button>
           ) : (
-            <Button disabled title={t('viewer_disabled_tooltip')}>
+            <Button size="sm" disabled title={t('viewer_disabled_tooltip')}>
               <Lock className="mr-2 h-4 w-4" />
               {t('new_claim')}
             </Button>
@@ -986,7 +986,7 @@ export default function ExpenseClaimsPage() {
           ]}
         />
         {canWrite && selected.size > 0 && (
-          <Button
+          <Button size="sm"
             variant="outline"
             disabled={!selectionValid}
             title={selectionValid ? undefined : t('payout_selection_invalid')}
@@ -1307,8 +1307,7 @@ export default function ExpenseClaimsPage() {
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon"
-                          className="h-5 w-5"
+                          size="icon-sm"
                           aria-label={t('form_receipt_none')}
                           onClick={() => setInboxChoice(NO_RECEIPT_VALUE)}
                         >
@@ -1686,8 +1685,7 @@ export default function ExpenseClaimsPage() {
                           <Button
                             type="button"
                             variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
+                            size="icon-sm"
                             aria-label={t('remove_row')}
                             onClick={() => removeRow(row.key)}
                           >
@@ -1799,8 +1797,8 @@ export default function ExpenseClaimsPage() {
               <Button
                 type="button"
                 onClick={handleCreate}
+                loading={submitting}
                 disabled={
-                  submitting ||
                   upload.phase === 'uploading' ||
                   bookingMode !== 'book' ||
                   regionUnanswered ||
@@ -1808,7 +1806,6 @@ export default function ExpenseClaimsPage() {
                   !bookingRowsValid
                 }
               >
-                {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {t('form_register')}
               </Button>
             )}
@@ -1884,8 +1881,7 @@ export default function ExpenseClaimsPage() {
             >
               {t('form_cancel')}
             </Button>
-            <Button type="button" variant="destructive" onClick={handleDelete} disabled={submitting}>
-              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="button" variant="destructive" onClick={handleDelete} loading={submitting}>
               {t('delete_confirm')}
             </Button>
           </DialogFooter>
@@ -1940,8 +1936,7 @@ export default function ExpenseClaimsPage() {
             >
               {t('form_cancel')}
             </Button>
-            <Button type="button" onClick={handlePayout} disabled={submitting || !cashAccount}>
-              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button type="button" onClick={handlePayout} disabled={!cashAccount} loading={submitting}>
               {t('payout_confirm')}
             </Button>
           </DialogFooter>

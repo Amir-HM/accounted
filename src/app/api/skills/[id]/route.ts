@@ -4,9 +4,12 @@ import { withRouteContext } from '@/lib/api/with-route-context'
 import { validateBody } from '@/lib/api/validate'
 import { loadCompanySkillRows } from '@/lib/agent-skills/company-skills'
 import { UpdateCompanySkillSchema } from '@/lib/agent-skills/validation'
+import { COMMUNITY_OPEN } from '@/lib/agent-skills/agents'
 import { ensureInitialized } from '@/lib/init'
+import { createLogger } from '@/lib/logger'
 
 ensureInitialized()
+const log = createLogger('api/skills')
 type Params = { params: Promise<{ id: string }> }
 const failure = (status: number, code: string, message: string, message_en: string) => NextResponse.json({ error: { code, message, message_en } }, { status })
 
@@ -18,13 +21,19 @@ export const PATCH = withRouteContext<Params>('skills.update', async (request, {
   const row = (await loadCompanySkillRows(supabase, companyId)).find((item) => item.id === id)
   if (!row || row.atom_id) return failure(404, 'NOT_FOUND', 'Egen skill hittades inte.', 'Own skill not found.')
   const input = validation.data
+  // Sharing waits for the community launch (COMMUNITY_OPEN); withdrawing an earlier submission still works.
+  if (input.action === 'submit' && !COMMUNITY_OPEN) return failure(403, 'FORBIDDEN', 'Delning till community är inte öppen än.', 'Sharing with the community is not open yet.')
   if (input.action === 'add' && !row.draft) return failure(409, 'CONFLICT', 'Skillen är redan tillagd.', 'The skill is already added.')
   if (input.action !== 'withdraw' && input.action !== 'add' && row.share_status !== 'private') return failure(409, 'CONFLICT', 'Inskickad text är låst för granskning.', 'Submitted content is frozen for review.')
   if (input.action === 'withdraw' && !['submitted', 'published'].includes(row.share_status)) return failure(409, 'CONFLICT', 'Skillen är inte inskickad.', 'The skill is not submitted.')
   const update = input.action === 'edit'
     ? supabase.from('company_skills').update({ name: input.name, description: input.description, body: input.body })
     : input.action === 'submit'
-      ? supabase.from('company_skills').update({ share_status: 'submitted', author_handle: input.author_handle, share_confirmed_at: new Date().toISOString() })
+      ? supabase.from('company_skills').update({
+        share_status: 'submitted', author_handle: input.author_handle, share_confirmed_at: new Date().toISOString(),
+        // The author may still say what kind of item it is; frozen with the submission.
+        ...(input.kind ? { kind: input.kind } : {}),
+      })
       : input.action === 'add'
         ? supabase.from('company_skills').update({ draft: false })
         : supabase.from('company_skills').update({ share_status: 'withdrawn' })
@@ -46,5 +55,10 @@ export const DELETE = withRouteContext<Params>('skills.delete', async (_request,
   const { data, error } = await scoped.select('id').maybeSingle()
   if (error) throw error
   if (!data) return failure(403, 'FORBIDDEN', 'Behörighet saknas.', 'Permission denied.')
+  // The knowledge chosen for this flow goes with it. The instruction is gone
+  // whatever happens here, so a failed clean-up is logged, not surfaced.
+  const choices = supabase.from('company_agent_knowledge').delete().eq('agent_id', `own/${id}`)
+  const { error: choicesError } = await (row.team_id ? choices : choices.eq('company_id', companyId))
+  if (choicesError) log.warn('Knowledge choices of a deleted own flow were left behind', { skillId: id, error: choicesError.message })
   return NextResponse.json({ data })
 }, { requireWrite: true })

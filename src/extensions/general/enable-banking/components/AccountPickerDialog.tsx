@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useToast } from '@/components/ui/use-toast'
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany } from '@/contexts/CompanyContext'
@@ -456,11 +456,10 @@ export function AccountPickerDialog({
         // validation): nothing was persisted and no sync started. Surface the
         // server's message inside the still-open picker; the progress modal's
         // failed state would wrongly claim "we retry in the background".
-        setSaveError(
-          typeof data?.error === 'string' && data.error
-            ? data.error
-            : 'Kunde inte spara kontoval'
-        )
+        // Route validation answers { error: string }; database refusals
+        // answer the structured envelope { error: { code, message } }.
+        const message = typeof data?.error === 'string' ? data.error : data?.error?.message
+        setSaveError(typeof message === 'string' && message ? message : 'Kunde inte spara kontoval')
         if (isInitialSelection) setProgressOpen(false)
         return
       }
@@ -574,7 +573,7 @@ export function AccountPickerDialog({
     return (
       <div
         key={account.uid}
-        className="flex items-center gap-3 p-3 hover:bg-muted/50"
+        className="flex items-center gap-3 p-3 hover:bg-secondary/35"
       >
         {/* Toggle area: label + Checkbox (a Radix Checkbox renders as
             its own <button role="checkbox">, so wrapping it in another
@@ -1061,12 +1060,9 @@ export function AccountPickerDialog({
           >
             Avbryt
           </Button>
-          <Button type="button" onClick={handleSave} disabled={isSaving || noneSelected}>
+          <Button type="button" onClick={handleSave} disabled={noneSelected} loading={isSaving}>
             {isSaving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {isInitialSelection ? 'Sparar och hämtar transaktioner…' : 'Sparar…'}
-              </>
+              isInitialSelection ? 'Sparar och hämtar transaktioner…' : 'Sparar…'
             ) : (
               'Spara val'
             )}

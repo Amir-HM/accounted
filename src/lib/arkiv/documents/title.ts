@@ -100,14 +100,22 @@ export function documentTitle(input: { docType: string | null; fileName: string;
   }
 }
 
+/** Document types whose amount the Underlag reader reads as the document's amount. */
+const MONEY_TYPES = new Set(['receipt', 'supplier_invoice', 'credit_note', 'customer_invoice'])
+
 /**
  * The Underlag reader's fields (extracted_data on the row: the inbox reads
  * every company's receipts and supplier invoices) in the payload shape the
  * title and the date read, so a shelf company's receipt is "Kvitto
- * Systembolaget, 2 388,80 kr" and not "IMG_7483".
+ * Systembolaget, 2 388,80 kr" and not "IMG_7483". The counterparty and the
+ * date carry over to any type; the amount only to a receipt or an invoice
+ * (or a document not typed yet): on minutes or a subscription list the
+ * reader's "total" is a prominent figure, not what the document is worth
+ * (Arcim, prod 2026-09-23: "Bolagsstämma 20,83 kr").
  */
-export function underlagPayload(extracted: Record<string, unknown> | null | undefined): Payload {
+export function underlagPayload(extracted: Record<string, unknown> | null | undefined, docType: string | null): Payload {
   if (!extracted || typeof extracted !== 'object') return {}
+  const money = docType == null || MONEY_TYPES.has(docType)
   const field = (v: string | number): Payload[string] => ({ value: v, normalized: v, page: null, quote: null, confidence: 1 }) as Payload[string]
   const supplier = (extracted.supplier as { name?: string | null } | undefined)?.name ?? null
   const invoice = (extracted.invoice as { invoiceNumber?: string | null; invoiceDate?: string | null; currency?: string | null } | undefined) ?? {}
@@ -117,13 +125,13 @@ export function underlagPayload(extracted: Record<string, unknown> | null | unde
     p.merchant_name = field(supplier.trim())
     p.supplier_name = field(supplier.trim())
   }
-  if (invoice.invoiceNumber) p.invoice_number = field(invoice.invoiceNumber)
+  if (money && invoice.invoiceNumber) p.invoice_number = field(invoice.invoiceNumber)
   if (invoice.invoiceDate) {
     p.receipt_date = field(invoice.invoiceDate)
     p.invoice_date = field(invoice.invoiceDate)
   }
-  if (typeof total === 'number') p.total_amount = field(total)
-  if (invoice.currency) p.currency = field(invoice.currency)
+  if (money && typeof total === 'number') p.total_amount = field(total)
+  if (money && invoice.currency) p.currency = field(invoice.currency)
   return p
 }
 

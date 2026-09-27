@@ -172,7 +172,7 @@ export function UploadDrop({ onLanded, className }: { onLanded?: (view: Pipeline
               <li
                 key={r.key}
                 className={cn(
-                  'flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-4 py-3 text-[13px] motion-safe:transition-all motion-safe:duration-500',
+                  'flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-4 py-3 text-[13px] motion-safe:transition-[transform,opacity] motion-safe:duration-300',
                   r.leaving && 'motion-safe:translate-x-6 motion-safe:opacity-0',
                 )}
               >

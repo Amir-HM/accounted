@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { AccountNumber } from '@/components/ui/account-number'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  Loader2,
   ArrowLeft,
   Lock,
   Pencil,
@@ -565,33 +564,16 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
 
   return (
     <div className="space-y-8 stagger-enter">
-      {/* Back link + prev/next record pager */}
-      <div className="flex items-center justify-between gap-4">
-        <Link
-          href="/bookkeeping"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          {t('back')}
-        </Link>
-        <DetailPager
-          contextKey={listContextKey('bookkeeping', company?.id)}
-          basePath="/bookkeeping"
-          currentId={id}
-          // Arrow paging unmounts the page and would destroy an unsaved notes
-          // draft; the textarea only guards arrows while it has focus, so gate
-          // the keyboard bindings on the editing state itself.
-          keyboard={!editingNotes}
-        />
-      </div>
-
-      {/* Header: serif title, status chips only for deviations (a plain posted
-          verifikat carries none), a quiet meta line, the next step right. */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+      {/* Header: title, status chips only for deviations (a plain posted
+          verifikat carries none), a quiet meta line, the next step right.
+          The page-header hooks turn it into the top bar, like the invoice
+          detail page: the sidebar says where we are, so there is no back
+          link, and the prev/next pager sits in the bar. */}
+      <div className="page-header flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="page-header-lead min-w-0">
           <div className="flex flex-wrap items-center gap-3">
             {/* data-ph-mask: the title carries the voucher number */}
-            <h1 data-ph-mask="" className="font-display text-2xl leading-8 tracking-tight">{title}</h1>
+            <h1 data-ph-mask="" className="page-header-title font-display text-2xl leading-8 tracking-tight">{title}</h1>
             {/* Convention 7: which correction track applies when, behind the "?" */}
             <HelpPopover>
               <p>{t('help_rattelse_tracks_open')}</p>
@@ -605,117 +587,130 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
             )}
           </div>
           {/* data-ph-mask: the meta line carries the entry description */}
-          <p data-ph-mask="" className="mt-1 text-sm text-muted-foreground">{metaParts.join(' · ')}</p>
+          <p data-ph-mask="" className="page-header-meta mt-1 text-sm text-muted-foreground">{metaParts.join(' · ')}</p>
         </div>
 
-        {showActions && (
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            {entry.status === 'draft' && (
-              <Button
-                variant="outline"
-                onClick={() => setShowEdit(true)}
-                disabled={!canWrite}
-                title={!canWrite ? t('read_only_tooltip') : undefined}
-              >
-                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
-                {t('edit_draft')}
-              </Button>
-            )}
-            {entry.status === 'draft' && (
-              <Button
-                onClick={openCommitConfirm}
-                disabled={!canWrite || isCommitting}
-                title={!canWrite ? t('read_only_tooltip') : undefined}
-              >
-                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isCommitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {t('post')}
-              </Button>
-            )}
-            {canCorrect && isOpeningBalance && (
-              <Button
-                variant="outline"
-                onClick={() => setShowCorrectIB(true)}
-                disabled={!canWrite}
-                title={!canWrite ? t('read_only_tooltip') : undefined}
-              >
-                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
-                {t('correct_opening_balances')}
-              </Button>
-            )}
-            {showStrikeButton && (
-              <Button
-                variant="outline"
-                onClick={() => setShowStrikeLines(true)}
-                disabled={!canWrite}
-                title={!canWrite ? t('read_only_tooltip') : undefined}
-              >
-                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Scissors className="mr-2 h-4 w-4" />}
-                {t('strike_lines')}
-              </Button>
-            )}
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label={tCommon('more_options')}>
-                  <MoreHorizontal className="h-4 w-4" />
+        <div className="page-header-action flex shrink-0 flex-wrap items-center gap-2">
+          <DetailPager
+            contextKey={listContextKey('bookkeeping', company?.id)}
+            basePath="/bookkeeping"
+            currentId={id}
+            className="shrink-0"
+            // Arrow paging unmounts the page and would destroy an unsaved notes
+            // draft; the textarea only guards arrows while it has focus, so gate
+            // the keyboard bindings on the editing state itself.
+            keyboard={!editingNotes}
+          />
+          {showActions && (
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {entry.status === 'draft' && (
+                <Button size="sm"
+                  variant="outline"
+                  onClick={() => setShowEdit(true)}
+                  disabled={!canWrite}
+                  title={!canWrite ? t('read_only_tooltip') : undefined}
+                >
+                  {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
+                  {t('edit_draft')}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[240px]">
-                {/* Copy is not status-gated: it only prefills a fresh manual
-                    draft (no voucher number, date or attachments carried over),
-                    so it is offered on drafts too, matching the list surfaces. */}
-                <DropdownMenuItem asChild disabled={!canWrite}>
-                  <Link href={`/bookkeeping?copy_from=${entry.id}`}>
-                    <Copy className="h-4 w-4" />
-                    {t('copy_entry')}
-                  </Link>
-                </DropdownMenuItem>
-                {showRattelseGroup && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>{t('correct_menu')}</DropdownMenuLabel>
-                    {canInlineRattelse && (
-                      <DropdownMenuItem onSelect={() => setShowStrikeLines(true)} disabled={!canWrite}>
-                        <Scissors className="h-4 w-4" />
-                        {t('strike_lines')}
+              )}
+              {entry.status === 'draft' && (
+                <Button size="sm"
+                  onClick={openCommitConfirm}
+                  disabled={!canWrite}
+                  loading={isCommitting}
+                  title={!canWrite ? t('read_only_tooltip') : undefined}
+                >
+                  {!canWrite && !isCommitting && <Lock className="mr-2 h-4 w-4" />}
+                  {t('post')}
+                </Button>
+              )}
+              {canCorrect && isOpeningBalance && (
+                <Button size="sm"
+                  variant="outline"
+                  onClick={() => setShowCorrectIB(true)}
+                  disabled={!canWrite}
+                  title={!canWrite ? t('read_only_tooltip') : undefined}
+                >
+                  {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
+                  {t('correct_opening_balances')}
+                </Button>
+              )}
+              {showStrikeButton && (
+                <Button size="sm"
+                  variant="outline"
+                  onClick={() => setShowStrikeLines(true)}
+                  disabled={!canWrite}
+                  title={!canWrite ? t('read_only_tooltip') : undefined}
+                >
+                  {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Scissors className="mr-2 h-4 w-4" />}
+                  {t('strike_lines')}
+                </Button>
+              )}
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label={tCommon('more_options')}>
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[240px]">
+                  {/* Copy is not status-gated: it only prefills a fresh manual
+                      draft (no voucher number, date or attachments carried over),
+                      so it is offered on drafts too, matching the list surfaces. */}
+                  <DropdownMenuItem asChild disabled={!canWrite}>
+                    <Link href={`/bookkeeping?copy_from=${entry.id}`}>
+                      <Copy className="h-4 w-4" />
+                      {t('copy_entry')}
+                    </Link>
+                  </DropdownMenuItem>
+                  {showRattelseGroup && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>{t('correct_menu')}</DropdownMenuLabel>
+                      {canInlineRattelse && (
+                        <DropdownMenuItem onSelect={() => setShowStrikeLines(true)} disabled={!canWrite}>
+                          <Scissors className="h-4 w-4" />
+                          {t('strike_lines')}
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onSelect={() => setShowCorrectMetadata(true)} disabled={!canWrite}>
+                        <PenLine className="h-4 w-4" />
+                        {t('correct_metadata')}
                       </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem onSelect={() => setShowCorrectMetadata(true)} disabled={!canWrite}>
-                      <PenLine className="h-4 w-4" />
-                      {t('correct_metadata')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => setShowCorrection(true)} disabled={!canWrite}>
-                      <Pencil className="h-4 w-4" />
-                      {t('correct_lines')}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => setShowRecordate(true)} disabled={!canWrite}>
-                      <CalendarClock className="h-4 w-4" />
-                      {t('correct_date')}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => setShowReverseConfirm(true)} disabled={!canWrite}>
-                      <RotateCcw className="h-4 w-4" />
-                      {t('reverse_action')}
-                    </DropdownMenuItem>
-                  </>
-                )}
-                {showDelete && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={() => setShowDeleteConfirm(true)}
-                      disabled={!canWrite}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {entry.status === 'draft' ? t('delete_draft') : t('delete_entry')}
-                    </DropdownMenuItem>
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
+                      <DropdownMenuItem onSelect={() => setShowCorrection(true)} disabled={!canWrite}>
+                        <Pencil className="h-4 w-4" />
+                        {t('correct_lines')}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setShowRecordate(true)} disabled={!canWrite}>
+                        <CalendarClock className="h-4 w-4" />
+                        {t('correct_date')}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => setShowReverseConfirm(true)} disabled={!canWrite}>
+                        <RotateCcw className="h-4 w-4" />
+                        {t('reverse_action')}
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  {showDelete && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onSelect={() => setShowDeleteConfirm(true)}
+                        disabled={!canWrite}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        {entry.status === 'draft' ? t('delete_draft') : t('delete_entry')}
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Facts on the left, the internal note on the right. */}
@@ -808,9 +803,8 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                 <Button
                   size="sm"
                   onClick={() => saveNotes(notesValue)}
-                  disabled={savingNotes}
+                  loading={savingNotes}
                 >
-                  {savingNotes && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {tCommon('save')}
                 </Button>
               </div>

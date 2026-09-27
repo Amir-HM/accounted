@@ -44,7 +44,8 @@ import {
   formatFailedDocumentNames,
   type DocumentLinkFailure,
 } from '@/lib/documents/link-documents'
-import { formatCurrency } from '@/lib/utils'
+import { cn, formatCurrency } from '@/lib/utils'
+import { POPOVER_ENTER_CLASS, POPOVER_SURFACE_CLASS } from '@/components/ui/popover-surface'
 import { roundOre } from '@/lib/money'
 import { buildVoucherSeriesOptions, formatVoucher, resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
 import { resolveFxLineSlot } from '@/lib/bookkeeping/fx-line-slot'
@@ -1384,8 +1385,7 @@ export default function JournalEntryForm({
         <Button variant="outline" onClick={() => setShowReview(false)} disabled={isSubmitting}>
           {t('review_back')}
         </Button>
-        <Button ref={bareConfirmRef} onClick={handleConfirm} disabled={isSubmitting}>
-          {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        <Button ref={bareConfirmRef} onClick={handleConfirm} loading={isSubmitting}>
           {/* No underlag attached → explicit acknowledgement, equivalent to the
               blocking "Bokför utan underlag" dialog in the non-bare flow (BFL
               5 kap 6-7 §§). With a document it's the normal create label. */}
@@ -1645,10 +1645,10 @@ export default function JournalEntryForm({
               </div>
               <Button
                 variant="ghost"
-                size="sm"
+                size="icon-sm"
                 onClick={() => removeLine(index)}
                 disabled={lines.length <= 2}
-                className="h-8 w-8 p-0 min-h-[44px] min-w-[44px] shrink-0 -mr-1 -mt-1"
+                className="shrink-0 -mr-1 -mt-1"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -1878,13 +1878,13 @@ export default function JournalEntryForm({
                       >
                         <Button
                           variant="ghost"
-                          size="sm"
+                          size="icon-sm"
                           onClick={() => setDimPopoverRow(dimPopoverRow === index ? null : index)}
-                          className={`h-8 w-8 p-0 min-h-[44px] min-w-[44px] ${
+                          className={
                             line.dimensions && Object.keys(line.dimensions).length > 0
                               ? 'text-foreground'
                               : 'text-muted-foreground'
-                          }`}
+                          }
                           aria-label={t('row_dimensions_aria')}
                           aria-expanded={dimPopoverRow === index}
                           title={t('row_dimensions_aria')}
@@ -1893,7 +1893,11 @@ export default function JournalEntryForm({
                         </Button>
                         {dimPopoverRow === index && (
                           <div
-                            className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border bg-card p-3 shadow-md"
+                            className={cn(
+                              'absolute right-0 top-full z-50 mt-1 w-64 p-3',
+                              POPOVER_SURFACE_CLASS,
+                              POPOVER_ENTER_CLASS,
+                            )}
                             onKeyDown={(e) => {
                               // The comboboxes preventDefault their own Escape
                               // (closing their dropdown): only an unhandled
@@ -1917,10 +1921,9 @@ export default function JournalEntryForm({
                     )}
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="icon-sm"
                       onClick={() => removeLine(index)}
                       disabled={lines.length <= 2}
-                      className="h-8 w-8 p-0 min-h-[44px] min-w-[44px]"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -2003,10 +2006,11 @@ export default function JournalEntryForm({
           {editEntryId ? (
             <Button
               onClick={handleSaveEdit}
-              disabled={isSubmitting || isSavingDraft || isUploading || !canWrite}
+              disabled={isSubmitting || isUploading || !canWrite}
+              loading={canWrite && isSavingDraft}
               title={!canWrite ? t('read_only_tooltip') : undefined}
             >
-              {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {!canWrite && <Lock className="mr-2 h-4 w-4" />}
               {t('save_edit')}
             </Button>
           ) : (
@@ -2030,10 +2034,11 @@ export default function JournalEntryForm({
                 <Button
                   variant="outline"
                   onClick={handleSaveDraft}
-                  disabled={isSubmitting || isSavingDraft || isUploading || !canWrite}
+                  disabled={isSubmitting || isUploading || !canWrite}
+                  loading={canWrite && isSavingDraft}
                   title={!canWrite ? t('read_only_tooltip') : t('save_draft_tooltip')}
                 >
-                  {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {!canWrite && <Lock className="mr-2 h-4 w-4" />}
                   {t('save_draft')}
                 </Button>
               )}

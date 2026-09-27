@@ -18,6 +18,7 @@ import { NextResponse } from 'next/server'
 import { ZodError } from 'zod'
 import { getErrorMessage } from './get-error-message'
 import {
+  conflictCode,
   getErrorEntry,
   type StructuredErrorEntry,
   type StructuredErrorRemediation,
@@ -26,6 +27,7 @@ import {
   AccountsNotInChartError,
   BookkeepingDatabaseError,
   CannotCancelNonDraftError,
+  CannotEditNonDraftError,
   CannotCorrectNonPostedError,
   CannotReverseNonPostedError,
   CannotReverseStornoError,
@@ -132,7 +134,7 @@ function extractCode(error: unknown): string | null {
 
   // Application conflicts use PT409 so PostgREST does not retry them as
   // serialization failures. Callers must refresh stale inputs first.
-  if (obj.code === 'PT409') return 'CONFLICT'
+  if (obj.code === 'PT409') return conflictCode(obj.message)
 
   // Typed bookkeeping error: { code: 'JOURNAL_ENTRY_NOT_BALANCED', ... }
   if (typeof obj.code === 'string' && /^[A-Z_]+$/.test(obj.code)) {
@@ -142,7 +144,7 @@ function extractCode(error: unknown): string | null {
   // Wrapped error: { error: { code: '...' } }
   if (typeof obj.error === 'object' && obj.error !== null) {
     const inner = obj.error as Record<string, unknown>
-    if (inner.code === 'PT409') return 'CONFLICT'
+    if (inner.code === 'PT409') return conflictCode(inner.message)
     if (typeof inner.code === 'string' && /^[A-Z_]+$/.test(inner.code)) {
       return inner.code
     }
@@ -438,7 +440,7 @@ export function errorResponse(
   if (isPostgresError(err)) {
     const mapped = isIgnoredTransactionJournalConstraint(err)
       ? 'TX_CATEGORIZE_IGNORED_CONFLICT'
-      : postgresCodeToStructured(err.code)
+      : err.code === 'PT409' ? conflictCode(err.message) : postgresCodeToStructured(err.code)
     if (mapped) {
       const entry = entryFor(mapped)
       logAtLevel(log, entry.httpStatus, 'database error', err as unknown as Error, {
@@ -530,6 +532,11 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
     return { code: err.code, details: { currentStatus: err.currentStatus } }
   }
   if (err instanceof CannotCancelNonDraftError) {
+    return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  // Without this arm a draft edit of a posted entry fell through to the
+  // INTERNAL_ERROR default (500) instead of the registry's 409.
+  if (err instanceof CannotEditNonDraftError) {
     return { code: err.code, details: { currentStatus: err.currentStatus } }
   }
   if (err instanceof EntryAlreadyReversedError) return { code: err.code }

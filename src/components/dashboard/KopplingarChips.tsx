@@ -132,7 +132,7 @@ export function KopplingarChips({
 }
 
 const pillClass =
-  'inline-flex h-6 items-center rounded-full bg-secondary px-3 text-[11.5px] text-foreground transition-colors duration-150 hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+  'inline-flex h-6 items-center rounded-full bg-secondary px-3 text-[11px] text-foreground transition-colors duration-150 hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 function Chip({
   icon,

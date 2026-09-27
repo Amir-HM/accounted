@@ -1,5 +1,4 @@
 'use client'
-import { HandoffButton } from '@/components/ai-handoff/HandoffButton'
 
 import { UUID_RE } from '@/lib/invariants/uuid'
 import { useState, useEffect, useMemo, useRef, useCallback, type ComponentProps } from 'react'
@@ -9,7 +8,6 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogVeil, useDashShellInert } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
 import { ToastAction } from '@/components/ui/toast'
@@ -26,7 +24,7 @@ import { persistUiState } from '@/lib/ui-state/client'
 import { TX_COLUMNS, resolveTxColumns, type TxColumnId } from '@/lib/transactions/columns-v2'
 import { SKATTEKONTO_ACCOUNT } from '@/lib/skatteverket/manual-verifikat-prefill'
 import { CategoryPopover } from '@/components/transactions/CategoryPopover'
-import { bankLogoUrl } from '@/lib/reconciliation/bank-logos'
+import { cashAccountKontoLabel, cashAccountLogoUrl } from '@/lib/cash-accounts/labels'
 import type { RowProposal } from '@/components/transactions/TransactionInboxCard'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import TransactionStatusBar from '@/components/transactions/TransactionStatusBar'
@@ -763,20 +761,18 @@ export default function TransactionsPage() {
   // and seeded by the dashboard layout (lib/reference-data), so the chooser
   // renders populated on the first paint. Bank sync invalidates the entry.
   const { cashAccounts } = useCashAccounts({ enabledOnly: true })
-  // v2 column texts. Konto = bank plus the account's last digits (or its
-  // ledger account); Kategori = the match hint the row already carries, or
-  // null so the cell prompts "Välj kategori".
+  // v2 column texts. Konto = the account's bank plus its last digits (or its
+  // ledger account), from lib/cash-accounts/labels.ts: the connection's bank,
+  // never the payee columns an invoice prints. Kategori = the match hint the
+  // row already carries, or null so the cell prompts "Välj kategori".
   const accountLabelFor = (tx: TransactionWithInvoice): string | null => {
     const acct = tx.cash_account_id ? cashAccounts.find((a) => a.id === tx.cash_account_id) : undefined
-    if (!acct) return null
-    const bank = acct.bank_name || acct.name || ''
-    const tail = acct.account_number ? `••${acct.account_number.slice(-4)}` : acct.ledger_account
-    return `${bank} ${tail}`.trim()
+    return acct ? cashAccountKontoLabel(acct) : null
   }
   // The brand mark next to the Konto text (bank, Stripe, Skatteverket).
   const accountLogoFor = (tx: TransactionWithInvoice): string | null => {
     const acct = tx.cash_account_id ? cashAccounts.find((a) => a.id === tx.cash_account_id) : undefined
-    return acct ? bankLogoUrl(acct.bank_name, acct.name) : null
+    return acct ? cashAccountLogoUrl(acct) : null
   }
   // The top suggestion (counterparty template, then keyword/MCC)
   // stands in the Kategori cell so the person sees what Bokför will do
@@ -4261,13 +4257,7 @@ export default function TransactionsPage() {
   return (
     <div className="space-y-8">
       {/* Page header (concept scene 10): title + Importera split button */}
-      <TransactionStatusBar onOpenCreateDialog={() => setIsDialogOpen(true)}>
-        {mode === 'inbox' && <HandoffButton task={{ kind: 'bookkeep', scope: {
-          ...(periodBounds ? { date_from: periodBounds.start, date_to: periodBounds.end } : {}),
-          transaction_ids: inboxItems.filter((item) => item.source === 'bank' && (!(selectedIds.size || skvSelectedIds.size) || selectedIds.has(item.data.id))).map((item) => item.data.id),
-          tax_transaction_ids: inboxItems.filter((item) => item.source === 'skatteverket' && (!(selectedIds.size || skvSelectedIds.size) || skvSelectedIds.has(item.data.id))).map((item) => item.data.id),
-        } }} />}
-      </TransactionStatusBar>
+      <TransactionStatusBar onOpenCreateDialog={() => setIsDialogOpen(true)} />
 
 
       {skvNeedsReconnect && sourceFilter === 'skatteverket' ? (
@@ -4276,7 +4266,7 @@ export default function TransactionsPage() {
         // Konton row (lib/notices predicate), so a line on every visit to the
         // bank list was noise (founder feedback 2026-09-09). The line still
         // renders only while the connection is actually broken.
-        <AttnLine action={{ label: t('skv_reconnect_cta'), href: '/settings/tax' }}>
+        <AttnLine action={{ label: t('skv_reconnect_cta'), href: '/settings/skatteverket' }}>
           {t('skv_reconnect_body')}
         </AttnLine>
       ) : suggestionItems.length > 0 && mode !== 'review' ? (
@@ -4325,8 +4315,8 @@ export default function TransactionsPage() {
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-foreground"
                 aria-label={t('columns_button')}
                 title={t('columns_button')}
               >
@@ -4432,7 +4422,7 @@ export default function TransactionsPage() {
                   // so it stays in view however far down the selection
                   // reaches and the list does not shift under it. Offset by
                   // --bottom-nav-h so it clears the mobile bottom nav (#2738).
-                  'fixed bottom-[calc(var(--bottom-nav-h)+1rem)] left-1/2 z-30 max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto whitespace-nowrap rounded-full border border-border bg-background px-4 py-2 shadow-lg md:left-[calc(50%+var(--nav-w)/2)]',
+                  'fixed bottom-[calc(var(--bottom-nav-h)+1rem)] left-1/2 z-30 max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto whitespace-nowrap rounded-full border border-border bg-background px-4 py-2 shadow-[var(--shadow-md)] md:left-[calc(50%+var(--nav-w)/2)]',
                 )}
               >
                 {batchProgress ? (
@@ -4791,7 +4781,7 @@ export default function TransactionsPage() {
           (opened without an anchor). */}
       {templatePickerOpen && templatePickerAnchor && (
         <CategoryPopover anchor={templatePickerAnchor} onClose={() => setTemplatePickerOpen(false)}>
-          <div className="flex items-center justify-between gap-3 border-b border-border/70 px-3 py-2 text-[12.5px]">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-[12.5px]">
             {templatePickerTransaction && (
               <>
                 <span className="truncate" data-ph-mask>{templatePickerTransaction.description}</span>
@@ -4804,7 +4794,7 @@ export default function TransactionsPage() {
           <div className="flex min-h-0 flex-col overflow-hidden">
             <TemplatePicker {...templatePickerProps} dense />
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 bg-background px-3 py-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border bg-background px-3 py-2">
             {templatePickerLinks}
           </div>
         </CategoryPopover>
@@ -5097,7 +5087,7 @@ export default function TransactionsPage() {
                         {c.customer_name || 'Kund'} · {c.invoice_number ?? '-'}
                       </span>
                       {c.match_reason === 'ocr_exact' && (
-                        <Badge variant="success">{t('badge_exact_ocr')}</Badge>
+                        <span className="text-xs text-muted-foreground">{t('badge_exact_ocr')}</span>
                       )}
                     </div>
                     <div className="text-xs text-muted-foreground tabular-nums">

@@ -26,8 +26,8 @@ Answer each question with a tool, not an assumption:
 1. **Which company?** \`gnubok_list_companies\`. One company: use it. Several: use the \`company_id\` the handoff gave you, or ask which one. Pass that \`company_id\` on every call, including approval. The connection may default to another company.
 2. **Company facts.** \`gnubok_get_agent_briefing({ company_id })\`: identity, \`accounting_method\` (\`accrual\` = faktureringsmetoden, \`cash\` = kontantmetoden), memories, dimensions, recommended_tools. \`gnubok_get_company_settings\`: legal form (enskild firma or aktiebolag), whether the company is momsregistrerad, and the moms period. Legal form changes private bookings (EF 2013/2018, AB 2893). A company that is not momsregistrerad books no moms at all: the tools resolve every rate to exempt, so do not add moms legs by hand.
 3. **Periods.** \`gnubok_list_fiscal_periods\`: is there a fiscal year covering the transaction dates, and is it open, locked or closed? No period for a date: stop for those rows and tell the user the räkenskapsår must be created first. Locked or closed: see "When a tool call fails".
-4. **Bank.** \`gnubok_list_cash_accounts\`: which bank accounts exist and whether they are connected. If the transactions look stale or a month is missing, say so; a sync (\`gnubok_sync_bank\`) or bank connection is the user's call.
-5. **Domain rules.** Load \`horizontal/swedish-accounting-compliance\` and \`horizontal/swedish-vat\` with \`gnubok_load_skill\` before deciding anything about moms, representation, reverse charge or private items. Swedish rules come from those atoms, never from memory. If they do not answer a question, ask the user or stop; do not invent a rule.
+4. **Bank.** \`gnubok_list_cash_accounts\` (not in tools/list: invoke it through \`gnubok_call_tool\`): which bank accounts exist and whether they are connected. If the transactions look stale or a month is missing, say so; a sync (\`gnubok_sync_bank\`) or bank connection is the user's call.
+5. **Domain rules.** \`horizontal/swedish-accounting-compliance\` and \`horizontal/swedish-vat\` settle moms, representation, reverse charge and private items. When this run started with \`gnubok_get_task\` they are already in its \`knowledge\`: do not load them again. Otherwise load them with \`gnubok_load_skill\` before deciding anything about those. Swedish rules come from those atoms, never from memory. If they do not answer a question, ask the user or stop; do not invent a rule.
 
 ### Agree the scope
 
@@ -94,7 +94,7 @@ Use what is already in Accounted before asking the user for anything:
 
 - \`gnubok_list_unmatched_documents\`: documents not linked to anything yet, with vendor, amount, currency and date hints. The amount is in the document's currency: compare foreign amounts against the transaction's currency, not a converted guess.
 - \`gnubok_list_inbox_items({ unprocessed_only: true })\` and \`gnubok_get_inbox_item({ inbox_item_id })\` for the extracted data; \`gnubok_get_document_content\` when you need to read the document itself.
-- A document belongs to a transaction only when vendor, amount and date agree. Then stage \`gnubok_attach_document_to_transaction({ transaction_id, document_id })\` alongside the booking, and use the document's moms (\`vat_amount\`, \`vat_treatment\`) in the categorize call. One document backs one purchase: never attach the same \`document_id\` to two rows. Two documents fit equally well: attach neither and ask.
+- A document belongs to a transaction only when vendor, amount and date agree. Then stage \`gnubok_attach_document_to_transaction({ transaction_id, document_id })\` alongside the booking, and use the document's moms (\`vat_amount\`, \`vat_treatment\`) in the categorize call. One document backs one purchase: never attach the same \`document_id\` to two rows, nor a document that carries \`pending_link\` (already proposed for another purchase). Two documents fit equally well: attach neither and ask.
 - A supplier invoice (faktura with due date, to be paid later) in the inbox: \`gnubok_create_supplier_invoice_from_inbox({ inbox_item_id })\` stages it as a leverantörsfaktura (use \`dry_run: true\` first to see supplier and lines). If it returns \`staged: false\` with supplier candidates, ask the user which supplier it is. When the payment later shows up in the bank, match it with \`gnubok_match_batch_allocate\`, do not categorize it. Attesting a registered supplier invoice is \`gnubok_approve_supplier_invoice({ supplier_invoice_id })\`, always staged.
 - Several matched receipts that share one category and moms (e.g. a month of the same SaaS): \`gnubok_bulk_book_inbox_items({ item_ids, category, vat_treatment })\`, up to 200 items; unmatched or booked items are skipped, so check the preview for what was actually included.
 
@@ -190,7 +190,7 @@ If more rows remain than you worked through, say how many and offer another roun
 
 ## Tools
 
-- \`gnubok_list_companies\`, \`gnubok_get_agent_briefing\`, \`gnubok_get_company_settings\`, \`gnubok_list_fiscal_periods\`, \`gnubok_list_cash_accounts\` (orientation)
+- \`gnubok_list_companies\`, \`gnubok_get_agent_briefing\`, \`gnubok_get_company_settings\`, \`gnubok_list_fiscal_periods\`, \`gnubok_list_cash_accounts\` (via \`gnubok_call_tool\`) (orientation)
 - \`gnubok_list_skills\`, \`gnubok_load_skill\` (domain atoms and sibling skills)
 - \`gnubok_list_uncategorized_transactions\`, \`gnubok_suggest_categories\`, \`gnubok_query_journal\`, \`gnubok_list_accounts\`, \`gnubok_list_dimensions\` (read)
 - \`gnubok_list_invoices\`, \`gnubok_list_supplier_invoices\` (open invoices before categorizing)

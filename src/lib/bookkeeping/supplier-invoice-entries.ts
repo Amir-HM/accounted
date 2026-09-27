@@ -21,7 +21,7 @@ import { createLogger } from '@/lib/logger'
 import { roundOre } from '@/lib/money'
 import { creditNatural, debitNatural } from './line-side'
 import { isSupplierInvoiceRoundingItem } from '@/lib/supplier-invoices/rounding-item'
-import { resolveSupplierCashSettlement, supplierOreRoundingLine } from './supplier-payment-lines'
+import { addSupplierBankFeeLine, resolveSupplierCashSettlement, supplierOreRoundingLine } from './supplier-payment-lines'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExpenseClaimLineInput } from '@/lib/expenses/expense-claims-service'
 import type {
@@ -163,6 +163,29 @@ export async function createSupplierInvoiceRegistrationEntry(
   supplierType: string,
   supplierName?: string
 ): Promise<JournalEntry | null> {
+  const input = await buildSupplierInvoiceRegistrationEntryInput(
+    supabase, companyId, invoice, items, supplierType, supplierName
+  )
+  if (!input) return null
+  return createJournalEntry(supabase, companyId, userId, input)
+}
+
+/**
+ * The registration verifikat createSupplierInvoiceRegistrationEntry would
+ * post, without posting it: the fiscal period lookup is the only database
+ * read, and nothing is written. The deferred "Bokför" dry run previews these
+ * lines. Returns null when no open fiscal period covers invoice_date. Throws
+ * the same generator errors (SupplierInvoiceFxRateMissingError) the
+ * committing path throws.
+ */
+export async function buildSupplierInvoiceRegistrationEntryInput(
+  supabase: SupabaseClient,
+  companyId: string,
+  invoice: SupplierInvoice,
+  items: SupplierInvoiceItem[],
+  supplierType: string,
+  supplierName?: string
+): Promise<CreateJournalEntryInput | null> {
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, invoice.invoice_date)
   if (!fiscalPeriodId) {
     log.warn('No open fiscal period found for invoice date:', invoice.invoice_date)
@@ -291,7 +314,7 @@ export async function createSupplierInvoiceRegistrationEntry(
     lines,
   }
 
-  return createJournalEntry(supabase, companyId, userId, input)
+  return input
 }
 
 /**
@@ -315,7 +338,9 @@ export async function createSupplierInvoicePaymentEntry(
   exchangeRateDifference?: number,
   supplierName?: string,
   paymentAccount?: string,
-  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>
+  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>,
+  // Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570.
+  bankFeeSek?: number,
 ): Promise<JournalEntry | null> {
   const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
@@ -385,6 +410,7 @@ export async function createSupplierInvoicePaymentEntry(
       line_description: desc,
     })
   }
+  addSupplierBankFeeLine(lines, creditAccount, bankFeeSek)
 
   if (defaultDimensions) {
     // Copy per line: a shared bag object would let one line's mutation
@@ -419,6 +445,8 @@ export interface SupplierInvoiceCashLinesOptions {
    * user was told to pay.
    */
   settledBankSek?: number
+  /** Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570. */
+  bankFeeSek?: number
 }
 
 export interface SupplierInvoiceCashLinesResult {
@@ -449,7 +477,7 @@ export function buildSupplierInvoiceCashLines(
   supplierType: string,
   options: SupplierInvoiceCashLinesOptions = {},
 ): SupplierInvoiceCashLinesResult {
-  const { supplierName, paymentAccount, settledBankSek } = options
+  const { supplierName, paymentAccount, settledBankSek, bankFeeSek } = options
   const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
 
   // Under kontantmetoden the booked affärshändelse IS the payment (BFL 5 kap:
@@ -604,6 +632,7 @@ export function buildSupplierInvoiceCashLines(
       dimensions: defaultDimensions,
     })
   }
+  addSupplierBankFeeLine(lines, creditAccount, bankFeeSek)
 
   return {
     description: desc,
@@ -637,7 +666,8 @@ export async function createSupplierInvoiceCashEntry(
   // SEK that actually settled the invoice (the amount that left the bank),
   // see SupplierInvoiceCashLinesOptions.settledBankSek.
   settledBankSek?: number,
-  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>
+  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>,
+  bankFeeSek?: number,
 ): Promise<JournalEntry | null> {
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
@@ -649,6 +679,7 @@ export async function createSupplierInvoiceCashEntry(
     supplierName,
     paymentAccount,
     settledBankSek,
+    bankFeeSek,
   })
 
   const input: CreateJournalEntryInput = {

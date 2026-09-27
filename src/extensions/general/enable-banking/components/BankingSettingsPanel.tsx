@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { CheckCircle, Loader2, Upload } from 'lucide-react'
+import { Skeleton } from '@/components/ui/skeleton'
 import { createClient } from '@/lib/supabase/client'
 import { notifyBankSyncUpdated } from '@/lib/transactions/bank-sync-signal'
 import { useCompany, useCapability } from '@/contexts/CompanyContext'
@@ -551,7 +552,10 @@ export default function BankingSettingsPanel() {
           error: data.error,
           connectionId,
         })
-        throw new Error(data.error)
+        // Routes answer with either a plain string or the canonical envelope
+        // ({ error: { code, message } }); the envelope's message is Swedish.
+        const message = typeof data.error === 'string' ? data.error : data.error?.message
+        throw new Error(message || 'Synkronisering misslyckades')
       }
 
       console.log('[enable-banking] Sync completed', {
@@ -700,8 +704,10 @@ export default function BankingSettingsPanel() {
       )
     }
     return (
-      <div className="flex items-center justify-center h-32">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="space-y-3 py-2" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-10 w-full" />
+        ))}
       </div>
     )
   }
@@ -779,7 +785,6 @@ export default function BankingSettingsPanel() {
           <DialogFooter className="gap-2 sm:gap-0">
             <Button
               variant="outline"
-              className="min-h-11 w-full sm:w-auto"
               onClick={() => {
                 const intercept = sameBankIntercept
                 setSameBankIntercept(null)
@@ -790,7 +795,6 @@ export default function BankingSettingsPanel() {
               Anslut som ny
             </Button>
             <Button
-              className="min-h-11 w-full sm:w-auto"
               onClick={() => {
                 const intercept = sameBankIntercept
                 setSameBankIntercept(null)
@@ -815,7 +819,16 @@ export default function BankingSettingsPanel() {
           bankName={pickerConnection.bank_name}
           accounts={pickerAccounts}
           isInitialSelection={pickerConnection.status === 'pending_selection'}
-          onSaved={() => fetchConnections()}
+          onSaved={() => {
+            // Sync stopped on a stale account selection: the save is the fix,
+            // so sync right away instead of leaving the row saying it stopped
+            // until the next cron run. Success clears the stored message.
+            if (pickerConnection.status === 'active' && pickerConnection.error_message) {
+              void handleSyncTransactions(pickerConnection.id)
+            } else {
+              fetchConnections()
+            }
+          }}
         />
       )}
 
@@ -920,15 +933,9 @@ export default function BankingSettingsPanel() {
                   size="sm"
                   onClick={() => handleReuseConnection(offer)}
                   disabled={!!attachingConnectionId}
+                  loading={attachingConnectionId === offer.connection_id}
                 >
-                  {attachingConnectionId === offer.connection_id ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Kopplar
-                    </>
-                  ) : (
-                    'Återanvänd'
-                  )}
+                  {attachingConnectionId === offer.connection_id ? 'Kopplar' : 'Återanvänd'}
                 </Button>
               </SettingsRowEnd>
             </SettingsRow>
