@@ -43,7 +43,8 @@ describe('notifyPublishedAuthors', () => {
     expect(mail).toMatchObject({ to: 'user-1@example.se', subject: 'Bokför SaaS är publicerad' })
     expect(mail.html).toContain('https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fwww.accounted.se%2Finstruktioner%2Fbokfor-saas')
     expect(mail.html).toContain('https://x.com/intent/post?text=')
-    expect(mail.text).toContain('https://www.accounted.se/instruktioner/bokfor-saas')
+    expect(mail.text).toContain('https://www.accounted.se/instruktioner/bokfor-saas#dela')
+    expect(mail.html).toContain('href="https://www.accounted.se/instruktioner/bokfor-saas#dela"')
   })
 
   it('sends nothing when another run claimed the row first', async () => {
