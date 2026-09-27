@@ -8,6 +8,7 @@ import { DOC_TYPES, DOC_TYPE_DESCRIPTIONS, type DocType } from './taxonomy'
 import { captureArkivEvent } from '@/lib/arkiv/events'
 import { markCompanyGraphStale } from '@/lib/arkiv/graph/snapshot'
 import { isPeriodLockRefusal } from '@/lib/documents/locked-period'
+import { CLASSIFY_RULES } from './rules'
 
 const log = createLogger('documents/classify')
 
@@ -338,6 +339,7 @@ async function persistClassification(
     decided_by_user_id: meta.userId ?? null,
     signals: meta.signals ?? [],
     content_sha256: meta.contentSha256 ?? null,
+    rules_version: CLASSIFY_RULES.version,
     is_current: true,
   })
   if (insertError) return { status: 'error', reason: `insert failed: ${insertError.message}` }
