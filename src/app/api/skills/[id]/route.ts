@@ -7,6 +7,7 @@ import { UpdateCompanySkillSchema } from '@/lib/agent-skills/validation'
 import { COMMUNITY_OPEN } from '@/lib/agent-skills/agents'
 import { notifyReviewersOfSubmission } from '@/lib/agent-skills/community-notify'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
+import { getCanonicalAppOrigin } from '@/lib/domains/trusted-app-origin'
 import { ensureInitialized } from '@/lib/init'
 import { createLogger } from '@/lib/logger'
 
@@ -45,8 +46,9 @@ export const PATCH = withRouteContext<Params>('skills.update', async (request, {
   if (error) throw error
   if (!data) return failure(409, 'CONFLICT', 'Skillen ändrades eller behörighet saknas. Ladda om.', 'Skill changed or permission is missing. Reload.')
   if (input.action === 'submit') {
-    // Accounted's reviewers hear about it; the share is saved either way.
-    const reviewUrl = `${new URL(request.url).origin}/skills/granskning`
+    // Accounted's reviewers hear about it; the share is saved either way. The
+    // link is always the canonical app: the request's host is not trusted in an email.
+    const reviewUrl = `${getCanonicalAppOrigin()}/skills/granskning`
     const submission = { title: row.name ?? '', handle: input.author_handle, kind: input.kind ?? row.kind ?? 'workflow' }
     after(() => notifyReviewersOfSubmission(createServiceClientNoCookies(), submission, reviewUrl))
   }
