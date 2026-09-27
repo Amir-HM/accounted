@@ -22,9 +22,9 @@ import { useBranding } from '@/lib/branding/brand-context'
 
 // What the paid tier unlocks: the external connections. One item per PAID
 // capability in lib/entitlements/keys.ts (ai, bank_sync, skatteverket,
-// email_send, and stripe_payments + woocommerce_sync + shopify_sync as one
-// "payments and webshop" item). Keep in step with PAID_CAPABILITIES when a
-// key is added.
+// email_send, and stripe_payments + woocommerce_sync + shopify_sync +
+// zettle_sync as one "payments and webshop" item). Keep in step with
+// PAID_CAPABILITIES when a key is added.
 const UNLOCK_KEYS = ['unlock_ai', 'unlock_bank', 'unlock_skv', 'unlock_email', 'unlock_payments_webshop'] as const
 
 // What stays without a subscription (the free plan card). Retention is the
