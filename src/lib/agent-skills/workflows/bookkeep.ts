@@ -67,7 +67,7 @@ A suggestion is evidence, not permission. History shows what was booked before, 
 \`gnubok_categorize_transaction\` arguments (real schema):
 
 - \`transaction_id\` (required), \`category\` (required): one of income_services, income_products, income_other, expense_equipment, expense_software, expense_travel, expense_office, expense_marketing, expense_professional_services, expense_education, expense_representation, expense_consumables, expense_vehicle, expense_telecom, expense_bank_fees, expense_card_fees, expense_currency_exchange, expense_other, private.
-- \`vat_treatment\`: standard_25, reduced_12, reduced_6, reverse_charge, export, exempt. Default is standard_25 for business expenses; representation defaults to reduced_12. Set it from the underlag, not from habit.
+- \`vat_treatment\`: standard_25, reduced_12, reduced_6, reverse_charge, export, exempt, or reverse charge with its basis box named: reverse_charge_eu_services (ruta 21), reverse_charge_non_eu_services (ruta 22), reverse_charge_eu_goods (ruta 20). Default is standard_25 for business expenses; representation defaults to reduced_12. Set it from the underlag, not from habit.
 - \`vat_amount\`: the underlag's exact moms (> 0) when it is not rate times amount (dricks, a mixed-rate receipt, the representation cap). Only with a rate-based vat_treatment. Swedish moms only.
 - \`account_override\`: a 4-digit account string (e.g. "6072") that replaces the category's default account; the account must exist and be active (\`gnubok_list_accounts\`). Always pass an explicit \`vat_treatment\` with it: without one the override books gross with no moms line. Not valid with category private.
 - \`notes\`: short audit context (under 200 chars): for representation, deltagare and syfte.
@@ -114,7 +114,7 @@ Meals, gifts or events with customers or staff. Before staging, you need who too
 
 ### Foreign suppliers and reverse charge
 
-- The receipt shows no Swedish moms and the seller is a business abroad (typical SaaS in USD or EUR): \`vat_treatment: "reverse_charge"\`, but only when the underlag confirms no VAT was charged. Accounted books both sides (utgående and ingående moms), as the VAT atom requires.
+- The receipt shows no Swedish moms and the seller is a business abroad (typical SaaS in USD or EUR): reverse charge, but only when the underlag confirms no VAT was charged. Accounted books both sides (utgående and ingående moms) and the beskattningsunderlag (45xx / 4598) for ruta 20-22, as the VAT atom requires. Name the box from the seller on the underlag: \`reverse_charge_eu_services\` for an EU seller, \`reverse_charge_non_eu_services\` outside the EU; plain \`reverse_charge\` books EU services, and the staged preview's \`reverse_charge\` says which box it used.
 - The receipt shows foreign VAT (a hotel abroad, a foreign restaurant): not reverse charge, and foreign VAT is never deductible here. Book it gross with \`vat_treatment: "exempt"\`.
 - The company is not momsregistrerad, or it is goods from another EU country, or an import from outside the EU (tull, importmoms): check \`horizontal/swedish-vat\`. If it does not settle the case for this company, do not guess a treatment: ask the user or hand it over.
 - No underlag at all for a foreign charge: you cannot tell reverse charge from foreign VAT. Ask for the receipt first.
