@@ -10,7 +10,9 @@ import { communityBodySha } from './community-approval'
  * text: the submission's approved_body_sha (set when the reviewer opened it
  * as a pull request) or the atom's own approved_sha (set by "Godkänn och
  * publicera" in the review list). A new or changed text without one waits,
- * unexposed, in the review list. Runs hourly (api/community/sync/cron) with a
+ * unexposed, in the review list. A text its author withdrew (withdrawn_at,
+ * set by the database when the item left review) stays hidden until its
+ * folder is removed. Runs hourly (api/community/sync/cron) with a
  * service-role client; no token needed (GITHUB_TOKEN is used when set).
  */
 
@@ -24,6 +26,8 @@ export interface CommunitySyncResult {
   linked: string[]
   /** Merged texts no reviewer approved yet: stored, not exposed, listed for review. */
   pending: string[]
+  /** Withdrawn by their author but still in the repository: kept hidden, listed for removal. */
+  withdrawn: string[]
   /** Folders that could not be read, with why: they are skipped, not half-published. */
   skipped: Array<{ slug: string; error: string }>
 }
@@ -51,12 +55,15 @@ async function readSkill(fetchImpl: Fetch, slug: string): Promise<string | null>
   return response.text()
 }
 
-function signals(item: ParsedCommunitySkill, approvedSha: string | null): Record<string, unknown> {
-  return { kind: item.kind, author: item.author, industries: item.industries, source: communityRepoUrl(item.slug), submission: item.submissionId, approved_sha: approvedSha }
+function signals(item: ParsedCommunitySkill, approvedSha: string | null, withdrawnAt: string | null): Record<string, unknown> {
+  return {
+    kind: item.kind, author: item.author, industries: item.industries, source: communityRepoUrl(item.slug), submission: item.submissionId, approved_sha: approvedSha,
+    ...(withdrawnAt ? { withdrawn_at: withdrawnAt } : {}),
+  }
 }
 
 export async function syncCommunityFromRepo(supabase: SupabaseClient, fetchImpl: Fetch = fetch): Promise<CommunitySyncResult> {
-  const result: CommunitySyncResult = { published: [], updated: [], deactivated: [], linked: [], pending: [], skipped: [] }
+  const result: CommunitySyncResult = { published: [], updated: [], deactivated: [], linked: [], pending: [], withdrawn: [], skipped: [] }
   const folders = await listFolders(fetchImpl)
 
   const items: ParsedCommunitySkill[] = []
@@ -74,14 +81,15 @@ export async function syncCommunityFromRepo(supabase: SupabaseClient, fetchImpl:
   const existing = new Map(((existingRows ?? []) as AtomRow[]).map((row) => [row.id, row]))
   const now = new Date().toISOString()
 
-  // What the reviewer approved when opening each submission as a pull request.
+  // What the reviewer approved when opening each submission as a pull request,
+  // while it is still shared: an item back in private is no longer approved.
   const submissionIds = items.map((i) => i.submissionId).filter((id): id is string => !!id)
   const approvedBySubmission = new Map<string, string>()
   if (submissionIds.length > 0) {
-    const { data: rows, error } = await supabase.from('company_skills').select('id, approved_body_sha').in('id', submissionIds)
+    const { data: rows, error } = await supabase.from('company_skills').select('id, approved_body_sha, share_status').in('id', submissionIds)
     if (error) throw new Error(`Failed to read approvals: ${error.message}`)
-    for (const row of (rows ?? []) as Array<{ id: string; approved_body_sha: string | null }>) {
-      if (row.approved_body_sha) approvedBySubmission.set(row.id, row.approved_body_sha)
+    for (const row of (rows ?? []) as Array<{ id: string; approved_body_sha: string | null; share_status: string }>) {
+      if (row.approved_body_sha && (row.share_status === 'submitted' || row.share_status === 'published')) approvedBySubmission.set(row.id, row.approved_body_sha)
     }
   }
 
@@ -89,16 +97,18 @@ export async function syncCommunityFromRepo(supabase: SupabaseClient, fetchImpl:
     const id = `community/${item.slug}`
     const before = existing.get(id)
     const sha = communityBodySha(item.body)
+    const withdrawnAt = typeof before?.trigger_signals?.withdrawn_at === 'string' ? before.trigger_signals.withdrawn_at : null
     const previouslyApproved = typeof before?.trigger_signals?.approved_sha === 'string' ? before.trigger_signals.approved_sha : null
-    const approved = previouslyApproved === sha || (item.submissionId !== null && approvedBySubmission.get(item.submissionId) === sha)
-    const approvedSha = approved ? sha : previouslyApproved
+    const approved = !withdrawnAt && (previouslyApproved === sha || (item.submissionId !== null && approvedBySubmission.get(item.submissionId) === sha))
+    const approvedSha = withdrawnAt ? null : approved ? sha : previouslyApproved
     const unchanged = before?.is_active && before.mcp_exposed === approved && before.body === item.body && before.title === item.title && before.description === item.description
-      && JSON.stringify(before.trigger_signals ?? {}) === JSON.stringify(signals(item, approvedSha))
-    if (!approved) result.pending.push(id)
+      && JSON.stringify(before.trigger_signals ?? {}) === JSON.stringify(signals(item, approvedSha, withdrawnAt))
+    if (withdrawnAt) result.withdrawn.push(id)
+    else if (!approved) result.pending.push(id)
     if (!unchanged) {
       const { error } = await supabase.from('agent_atom_registry').upsert({
         id, tier: 'community', title: item.title, description: item.description, body: item.body,
-        body_path: `${COMMUNITY_REPO}/${COMMUNITY_DIR}/${item.slug}/SKILL.md`, trigger_signals: signals(item, approvedSha),
+        body_path: `${COMMUNITY_REPO}/${COMMUNITY_DIR}/${item.slug}/SKILL.md`, trigger_signals: signals(item, approvedSha, withdrawnAt),
         estimated_tokens: Math.ceil(item.body.length / 4), sni_prefixes: [], parent_atom_id: null, schema_version: 1,
         version: before ? before.version + (before.body === item.body ? 0 : 1) : 1,
         // Stored either way, exposed to AIs only once approved.

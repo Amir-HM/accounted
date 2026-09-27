@@ -221,7 +221,7 @@ function Detail({ companyId, companyName, segment, backHref }: { companyId: stri
     openAiConnector(aiConnectAction('claude', { origin: window.location.origin, appName }).open)
   }
   // Every flow the company can give knowledge to: Accounted's, then its own.
-  const ownFlows = (catalog.data ?? []).filter((s) => s.tier === 'own' && (s.itemKind ?? 'workflow') === 'workflow' && !s.draft && s.shareStatus !== 'withdrawn' && s.installations[0])
+  const ownFlows = (catalog.data ?? []).filter((s) => s.tier === 'own' && (s.itemKind ?? 'workflow') === 'workflow' && !s.draft && s.installations[0])
   const givable = [
     ...SHOWN_FLOWS.map((id) => ({ id: id as string, name: t(`skills.${id}.name`), task: t(`skills.${id}.short`), hue: itemHue('workflow', id, id), defaults: AGENTS[id].knowledge as readonly string[] })),
     ...ownFlows.map((s) => ({ id: s.slug, name: s.name, task: s.summary, hue: itemHue('workflow', s.name), defaults: OWN_AGENT_KNOWLEDGE as readonly string[] })),

@@ -7,11 +7,11 @@ import { useTranslations } from 'next-intl'
 import { ArrowLeft, ArrowUpRight, ShieldAlert } from 'lucide-react'
 import { PageHeader } from '@/components/ui/page-header'
 import { Button } from '@/components/ui/button'
-import type { PendingItem, ReviewSubmission } from '@/lib/agent-skills/community-review'
+import type { PendingItem, ReviewSubmission, WithdrawnItem } from '@/lib/agent-skills/community-review'
 import { COMMUNITY_REPO } from '@/lib/agent-skills/community-repo'
 import styles from './skills.module.css'
 
-type ReviewData = { submissions: ReviewSubmission[]; pending: PendingItem[] }
+type ReviewData = { submissions: ReviewSubmission[]; pending: PendingItem[]; withdrawn: WithdrawnItem[] }
 
 async function readReview(url: string): Promise<ReviewData> {
   const response = await fetch(url)
@@ -25,6 +25,8 @@ async function readReview(url: string): Promise<ReviewData> {
  * the reviewer) also approves that exact text, or send it back with a reason
  * the author sees. And merged texts no reviewer approved yet (edited on
  * GitHub, or contributed there): nothing reaches an AI until approved here.
+ * And texts their authors withdrew: already hidden from every AI, their
+ * folders still to be removed from the repository.
  */
 export function ReviewQueue() {
   const t = useTranslations('skills_registry')
@@ -35,7 +37,7 @@ export function ReviewQueue() {
       <Link href="/skills" className={styles.back}><ArrowLeft className="h-4 w-4" aria-hidden />{t('back_to_agents')}</Link>
       <p className={styles.muted}>{t('review_lede', { repo: COMMUNITY_REPO })}</p>
       {list.error && <p role="alert" className={styles.muted}>{t('load_failed')}</p>}
-      {list.data && list.data.submissions.length === 0 && list.data.pending.length === 0 && <div className={styles.placeEmpty}>{t('review_empty')}</div>}
+      {list.data && list.data.submissions.length === 0 && list.data.pending.length === 0 && list.data.withdrawn.length === 0 && <div className={styles.placeEmpty}>{t('review_empty')}</div>}
       {(list.data?.submissions.length ?? 0) > 0 && (
         <section className={styles.catSection}>
           <div className={styles.catHead}><h2>{t('review_submissions')}</h2></div>
@@ -50,6 +52,25 @@ export function ReviewQueue() {
           <p className={styles.muted}>{t('review_pending_lede')}</p>
           <ul className={styles.reviewList}>
             {list.data!.pending.map((p) => <Pending key={p.slug} item={p} onDone={() => void list.mutate()} />)}
+          </ul>
+        </section>
+      )}
+      {(list.data?.withdrawn.length ?? 0) > 0 && (
+        <section className={styles.catSection}>
+          <div className={styles.catHead}><h2>{t('review_withdrawn')}</h2></div>
+          <p className={styles.muted}>{t('review_withdrawn_lede')}</p>
+          <ul className={styles.reviewList}>
+            {list.data!.withdrawn.map((w) => (
+              <li key={w.slug} className={styles.reviewItem}>
+                <div className={styles.reviewHead}>
+                  <div>
+                    <b>{w.title}</b>
+                    <small className={styles.muted}>community/{w.slug}</small>
+                  </div>
+                  <Button asChild size="sm" variant="outline" className="gap-2"><a href={w.source} target="_blank" rel="noreferrer">{t('review_remove_folder')}<ArrowUpRight className="h-4 w-4" aria-hidden /></a></Button>
+                </div>
+              </li>
+            ))}
           </ul>
         </section>
       )}

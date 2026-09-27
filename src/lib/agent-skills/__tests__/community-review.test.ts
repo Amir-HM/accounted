@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createQueuedMockSupabase } from '@/tests/helpers'
-import { approvePendingItem, approveSubmission, loadPendingItems, loadSubmissionsForReview, sendBackSubmission } from '../community-review'
+import { approvePendingItem, approveSubmission, loadPendingItems, loadSubmissionsForReview, loadWithdrawnItems, sendBackSubmission } from '../community-review'
 import { communityBodySha } from '../community-approval'
 
 const { supabase, enqueue, reset, findCall } = createQueuedMockSupabase()
@@ -66,5 +66,18 @@ describe('community review', () => {
     expect(await approvePendingItem(supabase as never, 'x', communityBodySha('# X'))).toBe(true)
     expect(findCall('agent_atom_registry', 'update')?.[0]).toMatchObject({ mcp_exposed: true, trigger_signals: { approved_sha: communityBodySha('# X'), submission: 'sub-1' } })
     expect(findCall('company_skills', 'update')?.[0]).toMatchObject({ share_status: 'published', published_atom_id: 'community/x' })
+  })
+
+  it('does not offer a withdrawn text for approval, and lists it for removal instead', async () => {
+    const withdrawn = { id: 'community/tillbaka', title: 'Tillbaka', description: 'd', body: '# Tillbaka', trigger_signals: { kind: 'workflow', withdrawn_at: '2026-09-27T09:00:00Z' } }
+    enqueue({ data: [withdrawn] })
+    expect(await loadPendingItems(supabase as never)).toEqual([])
+    enqueue({ data: [withdrawn] })
+    expect(await loadWithdrawnItems(supabase as never)).toEqual([
+      { slug: 'tillbaka', title: 'Tillbaka', withdrawn_at: '2026-09-27T09:00:00Z', source: 'https://github.com/erp-mafia/accounted-skills/tree/main/community/tillbaka' },
+    ])
+    enqueue({ data: withdrawn })
+    expect(await approvePendingItem(supabase as never, 'tillbaka', communityBodySha('# Tillbaka'))).toBe(false)
+    expect(findCall('agent_atom_registry', 'update')).toBeUndefined()
   })
 })

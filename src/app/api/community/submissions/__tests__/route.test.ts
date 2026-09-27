@@ -7,9 +7,9 @@ vi.mock('@/lib/supabase/server', () => ({ createClient: vi.fn() }))
 vi.mock('@/lib/auth/require-auth', () => ({ requireAuth: vi.fn() }))
 vi.mock('@/lib/company/context', () => ({ getActiveCompanyId: vi.fn().mockResolvedValue('company-a') }))
 vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: vi.fn(() => ({})) }))
-vi.mock('@/lib/agent-skills/community-review', () => ({ loadSubmissionsForReview: vi.fn(), sendBackSubmission: vi.fn(), loadPendingItems: vi.fn(), approveSubmission: vi.fn(), approvePendingItem: vi.fn() }))
+vi.mock('@/lib/agent-skills/community-review', () => ({ loadSubmissionsForReview: vi.fn(), sendBackSubmission: vi.fn(), loadPendingItems: vi.fn(), loadWithdrawnItems: vi.fn(), approveSubmission: vi.fn(), approvePendingItem: vi.fn() }))
 import { requireAuth } from '@/lib/auth/require-auth'
-import { approvePendingItem, approveSubmission, loadPendingItems, loadSubmissionsForReview, sendBackSubmission } from '@/lib/agent-skills/community-review'
+import { approvePendingItem, approveSubmission, loadPendingItems, loadSubmissionsForReview, loadWithdrawnItems, sendBackSubmission } from '@/lib/agent-skills/community-review'
 import { GET } from '../route'
 import { POST } from '../[id]/send-back/route'
 import { POST as APPROVE } from '../[id]/approve/route'
@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.mocked(loadSubmissionsForReview).mockResolvedValue([])
   vi.mocked(sendBackSubmission).mockResolvedValue(true)
   vi.mocked(loadPendingItems).mockResolvedValue([])
+  vi.mocked(loadWithdrawnItems).mockResolvedValue([])
   vi.mocked(approveSubmission).mockResolvedValue(true)
   vi.mocked(approvePendingItem).mockResolvedValue(true)
 })
@@ -56,7 +57,7 @@ describe('community review routes', () => {
   it('list the submissions for a reviewer', async () => {
     const response = await GET(new Request('http://localhost/api/community/submissions'), staticParams)
     expect(response.status).toBe(200)
-    expect((await response.json()).data).toEqual({ submissions: [], pending: [] })
+    expect((await response.json()).data).toEqual({ submissions: [], pending: [], withdrawn: [] })
   })
 
   it('send back with a reason, and validate it', async () => {
