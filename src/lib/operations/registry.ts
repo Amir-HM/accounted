@@ -145,6 +145,11 @@ import {
   vatBookSettlement,
 } from './vat-settlement'
 import {
+  vatFilingsList,
+  vatFilingsMark,
+  vatFilingsUnmark,
+} from './vat-filings'
+import {
   arsredovisningAddSignatory,
   arsredovisningCreateVersion,
   arsredovisningListSignatories,
@@ -279,6 +284,10 @@ export const OPERATIONS: readonly AnyOperation[] = [
   // vat-settlement
   reportsVatSettlementProposal,
   vatBookSettlement,
+  // vat-filings (MCP only: the v1 doors are the hand-written filings route)
+  vatFilingsList,
+  vatFilingsMark,
+  vatFilingsUnmark,
   // arsredovisning
   arsredovisningUpdateNarrative,
   arsredovisningUpdateCompliance,

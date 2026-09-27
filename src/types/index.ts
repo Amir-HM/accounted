@@ -2700,6 +2700,12 @@ export type PendingOperationType =
   | 'create_asset'
   | 'update_asset'
   | 'dispose_asset'
+  // Momsdeklaration filing record (gnubok_mark_vat_period_filed /
+  // gnubok_unmark_vat_period_filed, lib/operations/vat-filings.ts): record a
+  // declaration filed outside the Skatteverket connection, or undo that mark.
+  // Completes / reopens the period's moms deadline; no ledger impact.
+  | 'mark_vat_period_filed'
+  | 'unmark_vat_period_filed'
 // 'failed_partial' (issue #842, DB CHECK widened in 20260722134114): terminal
 // state for ops whose executor posted an irreversible side-effect (voucher,
 // credit note) and then failed a later step. Not re-committable, not pending

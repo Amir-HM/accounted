@@ -832,6 +832,8 @@
     "type_redate_entry": "Flytta verifikat till annat datum",
     "type_mark_no_document_required": "Inget underlag krävs",
     "type_book_vat_settlement": "Bokför momsredovisning",
+    "type_mark_vat_period_filed": "Markera momsperiod som inlämnad",
+    "type_unmark_vat_period_filed": "Ångra inlämnad momsperiod",
     "type_send_payslips": "Skicka lönebesked",
     "type_revert_salary_run": "Återställ lönekörning till utkast",
     "type_unapprove_salary_run": "Återkalla godkänd lönekörning",

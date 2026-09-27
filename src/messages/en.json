@@ -832,6 +832,8 @@
     "type_redate_entry": "Move voucher to another date",
     "type_mark_no_document_required": "No underlag required",
     "type_book_vat_settlement": "Book VAT settlement",
+    "type_mark_vat_period_filed": "Mark VAT period as filed",
+    "type_unmark_vat_period_filed": "Unmark filed VAT period",
     "type_send_payslips": "Send payslips",
     "type_revert_salary_run": "Revert payroll run to draft",
     "type_unapprove_salary_run": "Recall payroll run approval",
