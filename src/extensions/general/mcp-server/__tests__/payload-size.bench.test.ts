@@ -564,6 +564,13 @@ describe('tools/list payload size guard', () => {
     //     restated their property names, and get_task no longer saying "the
     //     skills to load" (agent runs and analyses arrive whole). Measured
     //     63 486. Ceiling unchanged.
+    //   * Clearable employee fields (#3008): gnubok_update_employee's eleven
+    //     nullable columns declare type [.., 'null'] and its description says
+    //     null clears a field. Paid for inside the same tool: employee_id's
+    //     note restated its name, jamkning_percentage's "null clears" is now
+    //     that one sentence, and default_dimensions' "omit to keep" is true of
+    //     every field of a sparse update. Measured 63 499: no headroom, the
+    //     next default-catalog addition trims first. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(63_500)
   })
 
