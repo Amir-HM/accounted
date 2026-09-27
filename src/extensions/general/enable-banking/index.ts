@@ -20,6 +20,7 @@ import { syncAccountTransactions } from './lib/sync'
 import { emitBankSyncFailed } from './lib/sync-failure-event'
 import {
   applyRateLimitCooldown,
+  claimSyncLease,
   holdSyncLease,
   rateLimitCooldownMs,
   rateLimitHoldUntil,
@@ -1596,7 +1597,40 @@ export const enableBankingExtension: Extension = {
         } | null = null
         let initialSyncError: string | null = null
 
+        // One writer per first import. The cron and the agent-triggered sync
+        // claim the shared lease (lib/sync-lease.ts) before they reach the
+        // bank, and so must this backfill: when the 60 s race below gives up,
+        // the backfill keeps running, and the next hourly cron (seeing
+        // initial_sync_completed_at IS NULL) used to start the same import
+        // beside it. Both derive the same external_ids, so the loser's insert
+        // hit the unique index and its sync failed before the balance refresh.
+        // Like theirs, the claim is never released: its 15-minute window
+        // outlasts this route's maxDuration, so it covers a backfill that
+        // outlives the response. When another sync holds the lease, that sync
+        // owns the connection now and the backfill is left to the cron,
+        // answered like a timeout. A claim that errors is treated the same
+        // way: running without the lease is exactly the race.
+        let initialSyncLeased = false
         if (connection.status === 'pending_selection') {
+          try {
+            initialSyncLeased = await claimSyncLease(supabase, connection.id, Date.now())
+          } catch (leaseError) {
+            log.warn('[enable-banking] Could not claim the sync lease for the initial backfill', {
+              connectionId: connection.id,
+              message: leaseError instanceof Error ? leaseError.message : String(leaseError),
+            })
+          }
+          if (!initialSyncLeased) {
+            initialSyncError = 'initial_sync_deferred'
+            log.info('[enable-banking] Inline initial backfill skipped: sync lease not taken, cron will run it', {
+              connectionId: connection.id,
+              userId: user.id,
+              companyId,
+            })
+          }
+        }
+
+        if (initialSyncLeased) {
           const accountsToSync = updatedAccounts.filter(a => a.enabled !== false)
           const toDate = new Date().toISOString().split('T')[0]
           const fromDate = new Date(Date.now() - initialLookbackDays * 24 * 60 * 60 * 1000)
@@ -1662,8 +1696,8 @@ export const enableBankingExtension: Extension = {
             // bank API would surface as an unhandledRejection: Node 22 (the
             // self-hosted Docker runtime) terminates the process by default on
             // those, taking the whole server down. The cron retries the
-            // backfill via initial_sync_completed_at IS NULL, so a no-op
-            // catch is the right policy here.
+            // backfill via initial_sync_completed_at IS NULL once the lease
+            // claimed above expires, so a no-op catch is the right policy here.
             syncPromise.catch(() => {})
 
             const TIMEOUT_MS = 60_000
