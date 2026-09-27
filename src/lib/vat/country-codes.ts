@@ -270,6 +270,17 @@ export function isEuVatAreaCountry(code: string): boolean {
 }
 
 /**
+ * True when goods delivered to this country stay inside the EU goods VAT
+ * area: the EU VAT area above, plus Northern Ireland (XI), which stays in it
+ * for goods under the Protocol. Goods transported anywhere else leave the EU
+ * (an export). Sweden is included: callers that need "another member state"
+ * test SE first.
+ */
+export function isEuGoodsDestination(code: string): boolean {
+  return isEuVatAreaCountry(code) || code === 'XI'
+}
+
+/**
  * The two-letter prefix a VAT number starts with, when it starts with one.
  * Whitespace and dots are ignored; "811234567" (no prefix) gives null.
  */

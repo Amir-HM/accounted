@@ -2392,7 +2392,7 @@ async function commitUpdateInvoice(
   const { data: existing, error: fetchError } = await supabase
     .from('invoices')
     .select(
-      'id, status, invoice_number, journal_entry_id, is_self_billed, credited_invoice_id, quote_status, customer_id, document_type, invoice_date, due_date, delivery_date, currency, your_reference, our_reference, invoice_marking, notes, payment_link_url, payment_link_auto, ore_rounding, default_dimensions, deduction_personnummer_encrypted, deduction_personnummer_last4',
+      'id, status, invoice_number, journal_entry_id, is_self_billed, credited_invoice_id, quote_status, customer_id, document_type, invoice_date, due_date, delivery_date, currency, your_reference, our_reference, invoice_marking, notes, payment_link_url, payment_link_auto, ore_rounding, default_dimensions, deduction_personnummer_encrypted, deduction_personnummer_last4, vat_treatment_override, delivery_country',
     )
     .eq('id', invoiceId)
     .eq('company_id', companyId)
@@ -2508,6 +2508,12 @@ async function commitUpdateInvoice(
           last4: existing.deduction_personnummer_last4 ?? null,
         }
       : null,
+    // A draft that stated its own VAT treatment (#2906) keeps it: this
+    // operation does not carry the fields.
+    existingVatOverride: {
+      vat_treatment: existing.vat_treatment_override ?? null,
+      delivery_country: existing.delivery_country ?? null,
+    },
   })
   if (!build.ok) {
     if ('dbError' in build) {
@@ -5229,6 +5235,9 @@ async function commitCreditInvoice(
       vat_rate: original.vat_rate,
       moms_ruta: original.moms_ruta,
       reverse_charge_text: original.reverse_charge_text,
+      // The same supply (#2906): goods delivered abroad reverse on 3105 / 3108.
+      vat_treatment_override: original.vat_treatment_override ?? null,
+      delivery_country: original.delivery_country ?? null,
       your_reference: original.your_reference,
       our_reference: original.our_reference,
       invoice_marking: original.invoice_marking ?? null,

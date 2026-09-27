@@ -1049,8 +1049,55 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   INVOICE_CREATE_VAT_RULE_VIOLATION: {
     httpStatus: 400,
-    message_sv: 'Momssatsen är inte tillåten för denna kundtyp.',
-    message_en: 'The VAT rate is not allowed for this customer type.',
+    message_sv: 'Momssatsen är inte tillåten för denna kundtyp eller för fakturans momsbehandling.',
+    message_en: "The VAT rate is not allowed for this customer type or for the invoice's VAT treatment.",
+  },
+  // Per-invoice VAT treatment (#2906): resolveInvoiceVatRules refuses a
+  // treatment the stated facts do not support, instead of issuing 0 %
+  // without them. details carry vat_treatment, delivery_country and why.
+  INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_REQUIRED: {
+    httpStatus: 400,
+    message_sv:
+      'Ange leveransland (delivery_country) för varor som lämnar Sverige. Utan leveransland gäller export och omvänd skattskyldighet bara tjänster, och bara när kunden redan har den behandlingen.',
+    message_en:
+      'Set delivery_country for goods leaving Sweden. Without a delivery country, export and reverse_charge only mean the services treatment, and only where the customer already has it.',
+    remediation: {
+      description:
+        'For goods, send delivery_country (the ISO code of the country the goods are transported to). For services, omit vat_treatment: the customer record decides. See details.customer_vat_treatment.',
+    },
+  },
+  INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Leveranslandet stämmer inte med momsbehandlingen. Export kräver att varorna transporteras ut ur EU; unionsintern leverans kräver transport till ett annat EU-land.',
+    message_en:
+      'The delivery country does not match the VAT treatment. Export requires the goods to leave the EU; an intra-EU supply requires transport to another EU member state.',
+    remediation: {
+      description:
+        'Check delivery_country. Goods to another EU member state: vat_treatment reverse_charge (needs the buyer VAT number). Goods leaving the EU: export. Goods staying in Sweden: standard. details.required names what the treatment needs.',
+    },
+  },
+  INVOICE_VAT_TREATMENT_BUYER_VAT_NUMBER_REQUIRED: {
+    httpStatus: 400,
+    message_sv:
+      'Unionsintern leverans (0 %) kräver köparens momsregistreringsnummer i ett annat EU-land än Sverige, kontrollerat mot VIES (ML 10 kap. 42-43 §§). Utan det ska fakturan ha svensk moms.',
+    message_en:
+      "An intra-EU supply (0 %) requires the buyer's VAT number from an EU member state other than Sweden, validated against VIES (ML 10 kap. 42-43 §§). Without it the invoice carries Swedish VAT.",
+    remediation: {
+      description:
+        'Add the buyer EU VAT number to the customer (it is validated against VIES when saved), or send vat_treatment standard for Swedish VAT (for example a consumer under the distance-sales threshold). details.reason: private_person, missing, not_another_member_state or not_validated.',
+      tool: 'gnubok_update_customer',
+    },
+  },
+  INVOICE_VAT_TREATMENT_NOT_VAT_REGISTERED: {
+    httpStatus: 400,
+    message_sv:
+      'Företaget är inte momsregistrerat, så fakturan kan inte ange egen momsbehandling. Alla rader blir momsfria.',
+    message_en:
+      'The company is not VAT-registered, so the invoice cannot state its own VAT treatment. Every line is VAT-free.',
+    remediation: {
+      description: 'Omit vat_treatment and delivery_country.',
+    },
   },
   INVOICE_CREATE_REVENUE_ACCOUNT_INVALID: {
     httpStatus: 400,
