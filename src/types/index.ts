@@ -3631,6 +3631,7 @@ export type YearEndBlockerCode =
   | 'KONTANTMETOD_CUTOFF_CHECK_FAILED'
   | 'UNBOOKED_TRANSACTIONS'
   | 'UNBOOKED_CHECK_FAILED'
+  | 'PRIOR_RESULT_NOT_DISPOSED'
 
 export interface YearEndBlocker {
   code: YearEndBlockerCode

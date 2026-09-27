@@ -31,9 +31,15 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
   createJournalEntry: vi.fn(),
 }))
 
+// Hand-booked dispositions in the period (none unless a test says so).
+vi.mock('@/lib/bookkeeping/entry-lines', () => ({
+  fetchEntryLines: vi.fn(),
+}))
+
 import { generateResultAppropriation } from '../result-appropriation-service'
 import { getOpeningBalances } from '@/lib/reports/opening-balances'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import { fetchEntryLines } from '@/lib/bookkeeping/entry-lines'
 
 const FAKE_ENTRY = { id: 'ra-1', voucher_series: 'A', voucher_number: 2 }
 
@@ -63,7 +69,22 @@ beforeEach(() => {
   resultIdx = 0
   results = []
   vi.mocked(createJournalEntry).mockResolvedValue(FAKE_ENTRY as never)
+  vi.mocked(fetchEntryLines).mockResolvedValue([] as never)
 })
+
+/** Lines of one live entry in the period, as fetchEntryLines returns them. */
+function entryLines(
+  id: string,
+  sourceType: string,
+  voucher: number,
+  lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+) {
+  return lines.map((l) => ({
+    journal_entry_id: id,
+    ...l,
+    journal_entries: { id, source_type: sourceType, voucher_series: 'A', voucher_number: voucher },
+  }))
+}
 
 describe('generateResultAppropriation', () => {
   it('posts Dr 2069 / Cr 2068 for an ideell förening profit', async () => {
@@ -211,6 +232,106 @@ describe('generateResultAppropriation', () => {
     )
     expect(input.lines).toContainEqual(
       expect.objectContaining({ account_number: '2098', debit_amount: 0, credit_amount: 80000 })
+    )
+  })
+})
+
+describe('generateResultAppropriation with a disposition booked by hand (PostHog PH 108)', () => {
+  it('posts no omföring when the owner already moved the whole prior result', async () => {
+    results = [AB, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2099', debit: 0, credit: 30000 }])
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('m1', 'manual', 12, [
+        { account_number: '2099', debit_amount: 30000, credit_amount: 0 },
+        { account_number: '2091', debit_amount: 0, credit_amount: 30000 },
+      ]) as never
+    )
+
+    const entry = await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p1')
+
+    expect(entry).toBeNull()
+    expect(createJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('counts only the lines that move the carry, not this year\'s result re-homed in the same verifikat', async () => {
+    // PostHog PH 108 shape: Dr 2069 30 000 moves last year's result to 2067;
+    // Cr 2069 12 000 re-homes this year's result from 2099 in the same verifikat.
+    // The query returns only the lines on 2069, 2068 and 2067.
+    results = [{ data: { entity_type: 'ideell_forening' }, error: null }, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2069', debit: 0, credit: 30000 }])
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('m1', 'manual', 12, [
+        { account_number: '2067', debit_amount: 0, credit_amount: 30000 },
+        { account_number: '2069', debit_amount: 30000, credit_amount: 0 },
+        { account_number: '2069', debit_amount: 0, credit_amount: 12000 },
+      ]) as never
+    )
+
+    const entry = await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p1')
+
+    expect(entry).toBeNull()
+    expect(createJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('carries only what a partial hand-booked disposition left on 2099', async () => {
+    results = [AB, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2099', debit: 0, credit: 30000 }])
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('m1', 'manual', 12, [
+        { account_number: '2099', debit_amount: 10000, credit_amount: 0 },
+        { account_number: '2091', debit_amount: 0, credit_amount: 10000 },
+      ]) as never
+    )
+
+    await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p1')
+
+    const input = vi.mocked(createJournalEntry).mock.calls[0][3] as {
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.lines).toContainEqual(
+      expect.objectContaining({ account_number: '2099', debit_amount: 20000, credit_amount: 0 })
+    )
+    expect(input.lines).toContainEqual(
+      expect.objectContaining({ account_number: '2098', debit_amount: 0, credit_amount: 20000 })
+    )
+  })
+
+  it('treats a voided disposition (its storno is a system entry) as none', async () => {
+    results = [AB, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2099', debit: 0, credit: 30000 }])
+    // The reversed original is not fetched (status 'posted' only); only the storno is.
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('s1', 'storno', 13, [
+        { account_number: '2099', debit_amount: 0, credit_amount: 30000 },
+        { account_number: '2091', debit_amount: 30000, credit_amount: 0 },
+      ]) as never
+    )
+
+    await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p1')
+
+    const input = vi.mocked(createJournalEntry).mock.calls[0][3] as {
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.lines).toContainEqual(
+      expect.objectContaining({ account_number: '2099', debit_amount: 30000, credit_amount: 0 })
+    )
+  })
+
+  it('does not count a manual 2099 booking without a disposition account as a disposition', async () => {
+    results = [AB, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2099', debit: 0, credit: 30000 }])
+    // A hand-booked closing (8999 / 2099) touches 2099 but moves nothing to 2098/2091.
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('m2', 'manual', 14, [{ account_number: '2099', debit_amount: 0, credit_amount: 5000 }]) as never
+    )
+
+    await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p1')
+
+    const input = vi.mocked(createJournalEntry).mock.calls[0][3] as {
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.lines).toContainEqual(
+      expect.objectContaining({ account_number: '2099', debit_amount: 30000, credit_amount: 0 })
     )
   })
 })
