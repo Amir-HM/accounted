@@ -26,19 +26,24 @@ export interface StaleRequeueSummary {
 export async function requeueStaleVerdicts(supabase: SupabaseClient, limit: number): Promise<StaleRequeueSummary> {
   const summary: StaleRequeueSummary = { candidates: 0, queued: 0, skipped: 0 }
   if (limit <= 0) return summary
-  const types = [...new Set(CLASSIFY_RULES.changed.flatMap((c) => [...c.types]))]
-  // Oldest verdicts first: the ones furthest behind the rules go first, and the batch drains in a fixed order.
-  const { data, error } = await supabase
-    .from('document_classifications')
-    .select('document_id, company_id, doc_type, rules_version, created_at')
-    .eq('is_current', true)
-    .eq('decided_by', 'model')
-    .in('doc_type', types)
-    .or(`rules_version.is.null,rules_version.neq.${CLASSIFY_RULES.version}`)
-    .order('created_at', { ascending: true })
-    .limit(limit * 4)
-  if (error) throw new Error(`stale verdicts fetch failed: ${error.message}`)
-  const rows = ((data ?? []) as Array<{ document_id: string; company_id: string; doc_type: string; rules_version: string | null; created_at: string }>).filter((r) => isStaleVerdict(r))
+  // One query per rule change, each with its own cut-off, oldest verdicts first: the ones furthest behind the
+  // rules go first, and a change whose verdicts are all current never hides another change's stale ones.
+  type Verdict = { document_id: string; company_id: string; doc_type: string; rules_version: string | null; created_at: string }
+  const rows: Verdict[] = []
+  for (const change of CLASSIFY_RULES.changed) {
+    if (rows.length >= limit * 2) break
+    const { data, error } = await supabase
+      .from('document_classifications')
+      .select('document_id, company_id, doc_type, rules_version, created_at')
+      .eq('is_current', true)
+      .eq('decided_by', 'model')
+      .in('doc_type', [...change.types])
+      .or(`and(rules_version.is.null,created_at.lt.${change.since}),rules_version.neq.${CLASSIFY_RULES.version}`)
+      .order('created_at', { ascending: true })
+      .limit(limit * 2)
+    if (error) throw new Error(`stale verdicts fetch failed: ${error.message}`)
+    for (const r of (data ?? []) as Verdict[]) if (isStaleVerdict(r)) rows.push(r)
+  }
   summary.candidates = rows.length
   if (rows.length === 0) return summary
 

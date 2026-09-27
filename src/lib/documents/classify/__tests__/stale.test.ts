@@ -50,6 +50,9 @@ describe('requeueStaleVerdicts', () => {
         verdict('doc-over-limit'),
       ],
     })
+    // The other two rule changes have nothing stale.
+    enqueue({ data: [] })
+    enqueue({ data: [] })
     enqueue({ data: [{ document_id: 'doc-failed', status: 'failed' }, { document_id: 'doc-old', status: 'done' }] })
     enqueue({
       data: [
@@ -64,12 +67,15 @@ describe('requeueStaleVerdicts', () => {
     expect(out).toEqual({ candidates: 5, queued: 2, skipped: 2 })
     expect(enqueueDocumentJob.mock.calls.map((c) => c[2])).toEqual(['doc-old', 'doc-also-old'])
     expect(enqueueDocumentJob.mock.calls.every((c) => c[3] === 'classify')).toBe(true)
-    // Only the types a rule change touched are asked for.
-    expect(findCalls('document_classifications', 'in')[0]).toEqual(['doc_type', expect.arrayContaining(['customer_invoice', 'decision.skatteverket', 'other'])])
+    // One query per rule change, each for its own types with its own cut-off.
+    expect(findCalls('document_classifications', 'in').map((c) => c[1])).toEqual([['customer_invoice'], ['decision.skatteverket'], ['other']])
+    expect(String(findCalls('document_classifications', 'or')[0][0])).toContain('created_at.lt.2026-09-27T09:03:00Z')
   })
 
   it('does nothing when no verdict is stale', async () => {
     enqueue({ data: [verdict('doc-fresh', { rules_version: CLASSIFY_RULES.version })] })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
     const out = await requeueStaleVerdicts(supabase as never, 10)
     expect(out).toEqual({ candidates: 0, queued: 0, skipped: 0 })
     expect(enqueueDocumentJob).not.toHaveBeenCalled()
