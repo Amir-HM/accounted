@@ -8,6 +8,7 @@ import {
 } from '@/tests/helpers'
 import {
   normalizeCounterpartyName,
+  namesCounterparty,
   calculateConfidence,
   findCounterpartyTemplate,
   buildMappingResultFromCounterpartyTemplate,
@@ -396,6 +397,91 @@ describe('counterparty-templates', () => {
       expect(result!.matchMethod).toBe('exact_normalized')
       expect(result!.template.id).toBe('tmpl-exact')
     })
+
+    describe('lines that name no counterparty (PostHog PH 118)', () => {
+      // Handelsbanken writes "INTERNET BET <n>" on every internet-bank
+      // payment. A template learned from one of them was proposed for the
+      // next one through the fuzzy tier ("internet bet 4" is one edit from
+      // "internet bet 1"), whoever was actually paid.
+      const internetBet1 = (overrides: Parameters<typeof makeCategorizationTemplate>[0] = {}) =>
+        makeCategorizationTemplate({
+          id: 'tmpl-internet-bet',
+          counterparty_name: normalizeCounterpartyName('INTERNET BET 1'),
+          counterparty_aliases: ['internet bet 1'],
+          debit_account: '6530',
+          occurrence_count: 1,
+          confidence: calculateConfidence(1),
+          ...overrides,
+        })
+      const bankLine = (text: string) => makeTransaction({ merchant_name: null, description: text, original_description: text })
+
+      it('"INTERNET BET 4" does not match a template learned from "Internet Bet 1"', async () => {
+        const { supabase, enqueue } = createQueuedMockSupabase()
+        enqueue({ data: [internetBet1()] })
+
+        const result = await findCounterpartyTemplate(supabase as never, 'company-1', bankLine('INTERNET BET 4'))
+
+        expect(result).toBeNull()
+      })
+
+      it.each([
+        ['the same number (exact tier)', 'INTERNET BET 1', 1],
+        ['booking history behind the template (token tier)', 'INTERNET BET 7', 5],
+      ])('does not match on %s either', async (_label, text, occurrences) => {
+        const { supabase, enqueue } = createQueuedMockSupabase()
+        enqueue({ data: [internetBet1({ occurrence_count: occurrences, confidence: calculateConfidence(occurrences) })] })
+
+        const result = await findCounterpartyTemplate(supabase as never, 'company-1', bankLine(text))
+
+        expect(result).toBeNull()
+      })
+
+      it('a real merchant behind the same bank wording still matches, and the wording-only template cannot win it', async () => {
+        const insurer = makeCategorizationTemplate({
+          id: 'tmpl-if',
+          counterparty_name: 'if skadeförsäkring',
+          counterparty_aliases: [],
+          debit_account: '6310',
+          occurrence_count: 3,
+          confidence: calculateConfidence(3),
+        })
+        const { supabase, enqueue } = createQueuedMockSupabase()
+        // Listed after the insurer with more history: without the guard it
+        // would win the token tie on "internet".
+        enqueue({ data: [insurer, internetBet1({ occurrence_count: 5 })] })
+
+        const result = await findCounterpartyTemplate(
+          supabase as never,
+          'company-1',
+          bankLine('INTERNET BET 1 IF SKADEFÖRSÄKRING'),
+        )
+
+        expect(result?.template.id).toBe('tmpl-if')
+        expect(result?.matchMethod).toBe('token_subset')
+      })
+
+      it('a card purchase with the bank wording in front still matches its merchant', async () => {
+        const ica = makeCategorizationTemplate({ id: 'tmpl-ica', counterparty_name: 'ica maxi', counterparty_aliases: [] })
+        const { supabase, enqueue } = createQueuedMockSupabase()
+        enqueue({ data: [ica] })
+
+        const result = await findCounterpartyTemplate(supabase as never, 'company-1', bankLine('Kortköp 260612 ICA MAXI'))
+
+        expect(result?.template.id).toBe('tmpl-ica')
+        expect(result?.matchMethod).toBe('exact_normalized')
+      })
+
+      it.each([
+        ['INTERNET BET 4', false],
+        ['Överföring via internet 5541', false],
+        ['Autogiro', false],
+        ['INTERNET BET 1 IF SKADEFÖRSÄKRING', true],
+        ['Kortköp 260612 ICA MAXI', true],
+        ['Telia Sverige AB', true],
+      ])('namesCounterparty(%j) is %s', (text, expected) => {
+        expect(namesCounterparty(text)).toBe(expected)
+      })
+    })
   })
 
   // ── Build MappingResult ────────────────────────────────────
@@ -661,6 +747,17 @@ describe('counterparty-templates', () => {
     it('skips upsert for transactions without merchant name', async () => {
       const { supabase } = createQueuedMockSupabase()
       const tx = makeTransaction({ merchant_name: null, description: '', original_description: null })
+
+      await upsertCounterpartyTemplate(
+        supabase as never, 'user-1', tx, mappingResult, 'user_approved'
+      )
+
+      expect(supabase.from).not.toHaveBeenCalled()
+    })
+
+    it('learns nothing from a line that names no counterparty ("INTERNET BET 4")', async () => {
+      const { supabase } = createQueuedMockSupabase()
+      const tx = makeTransaction({ merchant_name: null, description: 'INTERNET BET 4', original_description: 'INTERNET BET 4' })
 
       await upsertCounterpartyTemplate(
         supabase as never, 'user-1', tx, mappingResult, 'user_approved'
