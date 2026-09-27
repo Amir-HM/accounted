@@ -1905,7 +1905,10 @@ export const BOOKING_TEMPLATES: readonly BookingTemplate[] = [
     deductibility: 'full',
     special_rules_sv: 'Skattefri friskvård för anställda upp till 5 000 kr per person och år. Gym och motion har 6 % moms, massage och naprapat 25 %. Ägaren av en enskild firma är inte anställd och får ingen friskvård.',
     mcc_codes: [7997],
-    keywords: ['friskvård', 'friskvårdsbidrag', 'gym', 'gymkort', 'träningskort', 'sats sverige', 'nordic wellness', 'fitness24seven', 'actic', 'friskis', 'epassi', 'wellnet', 'massage'],
+    // No "massage": the template books gym's 6 % and its own rule above puts
+    // massage at 25 %, so the keyword proposed a rate the rule contradicts
+    // (PostHog PH 118).
+    keywords: ['friskvård', 'friskvårdsbidrag', 'gym', 'gymkort', 'träningskort', 'sats sverige', 'nordic wellness', 'fitness24seven', 'actic', 'friskis', 'epassi', 'wellnet'],
     risk_level: 'LOW',
     requires_review: true,
     impact_score: 6,
