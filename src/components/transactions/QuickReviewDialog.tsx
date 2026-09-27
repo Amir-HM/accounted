@@ -13,7 +13,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { ToastAction } from '@/components/ui/toast'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { AttnLine } from '@/components/ui/attn-line'
-import { needsUnderlagPrompt, vatDisagrees, vatTreatmentAfterAccountChange, type TransactionUnderlag } from '@/lib/transactions/underlag-read'
+import { needsUnderlagPrompt, templateVatMismatch, vatDisagrees, vatTreatmentAfterAccountChange, type TransactionUnderlag } from '@/lib/transactions/underlag-read'
 
 async function fetchUnderlag(url: string): Promise<TransactionUnderlag> {
   const res = await fetch(url)
@@ -419,6 +419,11 @@ export default function QuickReviewDialog({
     sekAmount && Math.abs(sekAmount) > 0 ? proposedVatSek * (Math.abs(tx.amount) / Math.abs(sekAmount)) : proposedVatSek
   const docVatDiffers = docVatUsable && vatDisagrees(docVat, proposedVatInTxCurrency)
   const bookDocVat = docVatUsable && docVatDiffers && useDocVat && docVat != null
+  // A template whose rate is not the one the underlag states (a massage
+  // invoice at 25 % through Friskvård's 6 %, PostHog PH 118): said beside the
+  // moms, never acted on. The person keeps the template, books the
+  // underlag's moms below, or picks another one.
+  const vatRateMismatch = templateVatMismatch({ template: catalogTemplate, underlagRate: underlagVatRate, vatRegistered })
   // What the preview shows and "Ändra rader" hands over is what gets booked:
   // the document's moms folded in, scaled to SEK the way the server does it.
   const proposalInput: ProposalLinesInput = bookDocVat
@@ -736,6 +741,12 @@ export default function QuickReviewDialog({
               </div>
             )}
           </div>
+        )}
+
+        {vatRateMismatch && (
+          <AttnLine>
+            {t('vat_template_rate_differs', { doc: vatRateMismatch.underlag, template: vatRateMismatch.template })}
+          </AttnLine>
         )}
 
         {/* Moms per the underlag: stated whenever the document has one, with

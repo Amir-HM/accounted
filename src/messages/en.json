@@ -3474,6 +3474,7 @@
   "tx_quick_review": {
     "vat_doc_wins": "Booked with the underlag's VAT {amount}.",
     "vat_rate_wins": "Booked with the rate's VAT {amount}.",
+    "vat_template_rate_differs": "The underlag states {doc} % VAT, the template books {template} %.",
     "changed_from": "Changed from {label}. Check the account and VAT below.",
     "changed_undo": "Undo",
     "vat_use_proposal": "Use the proposal's {amount}",

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { getTemplateById } from '@/lib/bookkeeping/booking-templates'
 import {
   needsUnderlagPrompt,
   readUnderlagFacts,
+  templateVatMismatch,
   vatDisagrees,
   vatTreatmentAfterAccountChange,
   UNDERLAG_PROMPT_THRESHOLD_SEK,
@@ -115,6 +117,47 @@ describe('vatTreatmentAfterAccountChange', () => {
   it('changes nothing for a company that is not VAT-registered', () => {
     expect(change({ current: 'exempt', underlagRate: 25, vatRegistered: false })).toBe('exempt')
     expect(change({ current: 'exempt', underlagRate: 25, vatRegistered: true })).toBe('standard_25')
+  })
+})
+
+describe('templateVatMismatch', () => {
+  const friskvard = getTemplateById('personnel_wellness')!
+  const template = (vat_treatment: string | null, extra: Record<string, unknown> = {}) =>
+    ({ vat_treatment, deductibility: 'full', default_private: false, ...extra }) as Parameters<
+      typeof templateVatMismatch
+    >[0]['template']
+
+  it('names both rates when Friskvård books 6 % against an underlag stating 25 % (PostHog PH 118)', () => {
+    expect(templateVatMismatch({ template: friskvard, underlagRate: 25 })).toEqual({ underlag: 25, template: 6 })
+    expect(templateVatMismatch({ template: template('standard_25'), underlagRate: 12 })).toEqual({ underlag: 12, template: 25 })
+  })
+
+  it('says nothing when the template books the rate the underlag states', () => {
+    expect(templateVatMismatch({ template: friskvard, underlagRate: 6 })).toBeNull()
+    expect(templateVatMismatch({ template: template('standard_25'), underlagRate: 25 })).toBeNull()
+  })
+
+  it('says nothing without one Swedish rate on the underlag', () => {
+    expect(templateVatMismatch({ template: friskvard, underlagRate: null })).toBeNull()
+    expect(templateVatMismatch({ template: friskvard, underlagRate: undefined })).toBeNull()
+    expect(templateVatMismatch({ template: friskvard, underlagRate: 19 })).toBeNull()
+  })
+
+  it('says nothing for a template whose treatment is not a plain Swedish rate', () => {
+    for (const treatment of ['reverse_charge', 'export', 'exempt', null]) {
+      expect(templateVatMismatch({ template: template(treatment), underlagRate: 25 }), String(treatment)).toBeNull()
+    }
+  })
+
+  it('says nothing when the template books no moms line at all', () => {
+    // No template behind the review: an account or counterpart booking.
+    expect(templateVatMismatch({ template: null, underlagRate: 25 })).toBeNull()
+    expect(templateVatMismatch({ template: undefined, underlagRate: 25 })).toBeNull()
+    // A company that is not VAT-registered books a rate-bearing template as exempt.
+    expect(templateVatMismatch({ template: friskvard, underlagRate: 25, vatRegistered: false })).toBeNull()
+    expect(templateVatMismatch({ template: friskvard, underlagRate: 25, vatRegistered: true })).toEqual({ underlag: 25, template: 6 })
+    expect(templateVatMismatch({ template: template('reduced_6', { deductibility: 'non_deductible' }), underlagRate: 25 })).toBeNull()
+    expect(templateVatMismatch({ template: template('reduced_6', { default_private: true }), underlagRate: 25 })).toBeNull()
   })
 })
 

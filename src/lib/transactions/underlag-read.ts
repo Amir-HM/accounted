@@ -1,3 +1,5 @@
+import type { BookingTemplate } from '@/lib/bookkeeping/booking-templates'
+import { vatTreatmentForRegistration } from '@/lib/bookkeeping/vat-registration'
 import { getVatTreatmentForRate } from '@/lib/invoices/vat-rules'
 import { roundOre } from '@/lib/money'
 import type { InvoiceExtractionResult, VatTreatment } from '@/types'
@@ -107,6 +109,34 @@ export function vatTreatmentAfterAccountChange(input: {
   if (current === 'reverse_charge' || current === 'export') return current
   if (underlagRate == null || !SWEDISH_VAT_RATES.has(underlagRate)) return current
   return getVatTreatmentForRate(underlagRate)
+}
+
+/**
+ * The two rates to name when the review's catalog template books moms at
+ * another rate than the one its underlag states: a massage invoice at 25 %
+ * through Friskvård, which books gym's 6 % (PostHog PH 118). The review
+ * only says so; the booked moms stays as it is and the person decides.
+ *
+ * Null, and no warning, unless both sides are one plain Swedish rate and
+ * they differ: no template (an account or counterpart booking), a template
+ * that books no moms line at a rate as buildMappingResultFromTemplate books
+ * it (reverse charge, export, exempt, none, a private or non-deductible
+ * template, a company that is not VAT-registered), and an underlag without
+ * one Swedish rate say nothing.
+ */
+export function templateVatMismatch(input: {
+  template: Pick<BookingTemplate, 'vat_treatment' | 'deductibility' | 'default_private'> | null | undefined
+  /** UnderlagFacts.vat_rate of the underlag behind the review, if any. */
+  underlagRate: number | null | undefined
+  vatRegistered?: boolean | null
+}): { underlag: number; template: number } | null {
+  const { template, underlagRate } = input
+  if (!template || underlagRate == null || !SWEDISH_VAT_RATES.has(underlagRate)) return null
+  if (template.default_private || template.deductibility === 'non_deductible') return null
+  const treatment = vatTreatmentForRegistration(template.vat_treatment, input.vatRegistered)
+  const templateRate = [...SWEDISH_VAT_RATES].find((rate) => getVatTreatmentForRate(rate) === treatment)
+  if (templateRate == null || templateRate === underlagRate) return null
+  return { underlag: underlagRate, template: templateRate }
 }
 
 /** What GET /api/transactions/[id]/underlag returns: the document from either door, and its facts. */
