@@ -4358,7 +4358,10 @@ export default function TransactionsPage() {
               triggerLabel={(() => {
                 const active =
                   sourceItems.find((item) => item.id === effectiveSourceFilter) ?? sourceItems[0]
-                return active.annotation ? `${active.label} · ${active.annotation}` : active.label
+                // The annotation is a balance: a colon, not a middle dot,
+                // which reads as a minus sign in front of an amount on a
+                // small screen (PostHog PH 119).
+                return active.annotation ? `${active.label}: ${active.annotation}` : active.label
               })()}
               items={sourceItems}
             />
