@@ -26,19 +26,20 @@ interface Tables {
   periodError?: { message: string }
   settings?: Record<string, unknown> | null
   drafts?: number
-  lastSync?: string | null
+  connections?: Array<{ status: string; last_synced_at: string | null }>
   cashAccounts?: Array<{ id: string; iban: string | null; currency: string | null; updated_at: string | null }>
 }
 
 /**
  * Table-routed double that records every builder call, so the filters the
  * builder applies (company, range, status) are asserted, not only what the
- * tables return. It has no rpc(): any RPC call would throw and surface as
+ * tables return. bank_connections honours an in('status', [...]) filter like
+ * PostgREST would. It has no rpc(): any RPC call would throw and surface as
  * { unavailable }.
  */
 function makeSupabase(t: Tables) {
   const calls: Array<{ table: string; method: string; args: unknown[] }> = []
-  const settle = (table: string) => {
+  const settle = (table: string, local: Array<{ method: string; args: unknown[] }>) => {
     switch (table) {
       case 'fiscal_periods':
         return { data: t.periodError ? null : (t.period ?? OPEN_PERIOD), error: t.periodError ?? null }
@@ -46,8 +47,11 @@ function makeSupabase(t: Tables) {
         return { data: t.settings ?? { accounting_method: 'accrual', bookkeeping_locked_through: null }, error: null }
       case 'journal_entries':
         return { data: null, error: null, count: t.drafts ?? 0 }
-      case 'bank_connections':
-        return { data: t.lastSync ? { last_synced_at: t.lastSync } : null, error: null }
+      case 'bank_connections': {
+        const statusIn = local.find((c) => c.method === 'in' && c.args[0] === 'status')?.args[1] as string[] | undefined
+        const rows = (t.connections ?? []).filter((r) => !statusIn || statusIn.includes(r.status))
+        return { data: rows, error: null }
+      }
       case 'cash_accounts':
         return { data: t.cashAccounts ?? [], error: null }
       default:
@@ -55,16 +59,18 @@ function makeSupabase(t: Tables) {
     }
   }
   const from = (table: string) => {
+    const local: Array<{ method: string; args: unknown[] }> = []
     const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'gte', 'lte', 'not', 'order', 'limit', 'is']) {
+    for (const m of ['select', 'eq', 'gte', 'lte', 'not', 'order', 'limit', 'is', 'in']) {
       chain[m] = (...args: unknown[]) => {
         calls.push({ table, method: m, args })
+        local.push({ method: m, args })
         return chain
       }
     }
-    chain.single = async () => settle(table)
-    chain.maybeSingle = async () => settle(table)
-    chain.then = (resolve: (v: unknown) => void) => resolve(settle(table))
+    chain.single = async () => settle(table, local)
+    chain.maybeSingle = async () => settle(table, local)
+    chain.then = (resolve: (v: unknown) => void) => resolve(settle(table, local))
     return chain
   }
   const find = (table: string, method: string) =>
@@ -168,23 +174,81 @@ describe('buildReportDataStatus', () => {
   })
 
   describe('bank feed freshness', () => {
-    it('reads the oldest sync among ACTIVE connections', async () => {
-      const { status, find } = await build({ lastSync: '2026-09-25T08:00:00Z' })
-      expect(find('bank_connections', 'eq')).toContainEqual(['status', 'active'])
-      expect(find('bank_connections', 'not')).toContainEqual(['last_synced_at', 'is', null])
-      expect(find('bank_connections', 'order')).toEqual([['last_synced_at', { ascending: true }]])
-      expect(status.bank.last_sync_at).toBe('2026-09-25T08:00:00Z')
+    const feedCaveat = (st: ReportDataStatus) => st.caveats.find((c) => /bank feed/i.test(c))
+
+    it('reads only the company\'s active, error and expired connections', async () => {
+      const { find } = await build({})
+      expect(find('bank_connections', 'eq')).toEqual([['company_id', 'co-1']])
+      expect(find('bank_connections', 'in')).toEqual([['status', ['active', 'error', 'expired']]])
     })
 
-    it('flags a stale feed only when the range reaches past its last sync', async () => {
-      const stale = await build({ lastSync: '2026-09-20T08:00:00Z' })
-      expect(stale.status.caveats).toContain('A bank feed last synced 2026-09-20: its transactions after that date are not imported yet.')
+    it('only active connections: the oldest sync decides, stale flags and fresh does not', async () => {
+      const stale = await build({
+        connections: [
+          { status: 'active', last_synced_at: '2026-09-26T06:00:00Z' },
+          { status: 'active', last_synced_at: '2026-09-20T08:00:00Z' },
+        ],
+      })
+      expect(stale.status.bank).toMatchObject({ feed_status: 'active', last_sync_at: '2026-09-20T08:00:00Z' })
+      expect(feedCaveat(stale.status)).toBe('A bank feed last synced 2026-09-20: its transactions after that date are not imported yet.')
 
-      const earlier = await build({ lastSync: '2026-09-20T08:00:00Z' }, { toDate: '2026-06-30' })
-      expect(earlier.status.caveats.some((c) => c.includes('last synced'))).toBe(false)
+      const fresh = await build({ connections: [{ status: 'active', last_synced_at: '2026-09-26T06:00:00Z' }] })
+      expect(fresh.status.bank.feed_status).toBe('active')
+      expect(feedCaveat(fresh.status)).toBeUndefined()
 
-      const fresh = await build({ lastSync: '2026-09-26T06:00:00Z' })
-      expect(fresh.status.caveats.some((c) => c.includes('last synced'))).toBe(false)
+      const earlierRange = await build(
+        { connections: [{ status: 'active', last_synced_at: '2026-09-20T08:00:00Z' }] },
+        { toDate: '2026-06-30' },
+      )
+      expect(feedCaveat(earlierRange.status)).toBeUndefined()
+    })
+
+    it('an active connection wins over an expired one', async () => {
+      const { status } = await build({
+        connections: [
+          { status: 'expired', last_synced_at: '2026-08-01T05:00:00Z' },
+          { status: 'active', last_synced_at: '2026-09-26T06:00:00Z' },
+        ],
+      })
+      expect(status.bank).toMatchObject({ feed_status: 'active', last_sync_at: '2026-09-26T06:00:00Z' })
+      expect(feedCaveat(status)).toBeUndefined()
+    })
+
+    it('only error or expired connections: names the stopped feed from its newest sync, whatever its age', async () => {
+      const { status } = await build({
+        connections: [
+          { status: 'expired', last_synced_at: '2026-07-10T05:00:00Z' },
+          { status: 'error', last_synced_at: '2026-08-12T05:00:00Z' },
+          { status: 'error', last_synced_at: null },
+        ],
+      })
+      expect(status.bank).toMatchObject({ feed_status: 'stopped', last_sync_at: '2026-08-12T05:00:00Z' })
+      expect(feedCaveat(status)).toBe(
+        'The bank feed has stopped syncing (last synced 2026-08-12): transactions after that date are not imported unless added another way.',
+      )
+
+      // A feed that stopped hours ago is still stopped: no 36 h grace.
+      const recent = await build({ connections: [{ status: 'error', last_synced_at: '2026-09-26T06:00:00Z' }] })
+      expect(recent.status.bank.feed_status).toBe('stopped')
+      expect(feedCaveat(recent.status)).toMatch(/^The bank feed has stopped syncing \(last synced 2026-09-26\)/)
+
+      // A range that ends before the last sync lost nothing.
+      const earlier = await build(
+        { connections: [{ status: 'expired', last_synced_at: '2026-08-12T05:00:00Z' }] },
+        { toDate: '2026-06-30' },
+      )
+      expect(feedCaveat(earlier.status)).toBeUndefined()
+    })
+
+    it('ignores revoked and pending_selection connections', async () => {
+      const { status } = await build({
+        connections: [
+          { status: 'revoked', last_synced_at: '2026-05-01T05:00:00Z' },
+          { status: 'pending_selection', last_synced_at: null },
+        ],
+      })
+      expect(status.bank).toMatchObject({ feed_status: null, last_sync_at: null })
+      expect(feedCaveat(status)).toBeUndefined()
     })
   })
 

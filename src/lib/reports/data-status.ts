@@ -43,7 +43,13 @@ export interface ReportDataStatus {
   /** Draft journal entries dated in the range: not posted, not in the figures. */
   draft_entries: number
   bank: {
-    /** Oldest last sync among the company's ACTIVE bank connections: the stalest feed, or null (no active feed). */
+    /** 'active': at least one live connection; 'stopped': only error or expired ones; null: no feed. */
+    feed_status: 'active' | 'stopped' | null
+    /**
+     * active: the OLDEST last sync among the active connections (the stalest
+     * live feed). stopped: the NEWEST among the error/expired ones (where the
+     * data ends). null when no such connection ever synced.
+     */
     last_sync_at: string | null
     /** Earliest sign-off date across the company's bank accounts; null when any is unsigned or there are none. */
     reconciled_through: string | null
@@ -56,8 +62,11 @@ export interface ReportDataStatus {
 
 export type ReportDataStatusResult = ReportDataStatus | { unavailable: true; reason: string }
 
-/** A bank feed older than this is called out when the range reaches past it. */
+/** An active bank feed older than this is called out when the range reaches past it. */
 const STALE_SYNC_HOURS = 36
+
+/** Connection states that feed or used to feed the ledger; revoked and pending_selection never count. */
+const FEED_STATUSES = ['active', 'error', 'expired']
 
 interface Options {
   periodId: string
@@ -127,7 +136,7 @@ async function build(
   const from = options.fromDate ?? period.period_start
   const to = options.toDate ?? period.period_end
 
-  const [unbooked, draftsRes, syncRes, recon] = await Promise.all([
+  const [unbooked, draftsRes, feedRes, recon] = await Promise.all([
     countUnbookedBankTransactions(supabase, companyId, { fromDate: from, toDate: to }),
     supabase
       .from('journal_entries')
@@ -136,23 +145,15 @@ async function build(
       .eq('status', 'draft')
       .gte('entry_date', from)
       .lte('entry_date', to),
-    // The stalest ACTIVE feed is what leaves rows out of the figures; a
-    // revoked or expired connection no longer feeds anything.
     supabase
       .from('bank_connections')
-      .select('last_synced_at')
+      .select('status, last_synced_at')
       .eq('company_id', companyId)
-      .eq('status', 'active')
-      .not('last_synced_at', 'is', null)
-      .order('last_synced_at', { ascending: true })
-      .limit(1)
-      .maybeSingle(),
+      .in('status', FEED_STATUSES),
     bankReconciliation(supabase, companyId),
   ])
   if (draftsRes.error) throw new Error(`draft entry count failed: ${draftsRes.error.message}`)
-  if (syncRes.error && syncRes.error.code !== 'PGRST116') {
-    throw new Error(`bank sync read failed: ${syncRes.error.message}`)
-  }
+  if (feedRes.error) throw new Error(`bank connection read failed: ${feedRes.error.message}`)
 
   const lockThrough = settings?.bookkeeping_locked_through ?? null
   let status: ReportDataStatus['period']['status'] = 'open'
@@ -172,7 +173,7 @@ async function build(
     ? settings.accounting_method
     : null
   const drafts = draftsRes.count ?? 0
-  const lastSyncAt = (syncRes.data as { last_synced_at?: string | null } | null)?.last_synced_at ?? null
+  const feed = bankFeed((feedRes.data ?? []) as Array<{ status: string; last_synced_at: string | null }>)
 
   const caveats: string[] = []
   if (status === 'open') {
@@ -190,10 +191,13 @@ async function build(
     // figures" would be wrong for one of them.
     caveats.push('Cash method (kontantmetoden): invoices are booked when paid; unpaid customer and supplier invoices enter the books only through the year-end (bokslut) entries.')
   }
-  if (lastSyncAt) {
-    const ageHours = (now.getTime() - new Date(lastSyncAt).getTime()) / 3_600_000
-    if (ageHours > STALE_SYNC_HOURS && to >= lastSyncAt.slice(0, 10)) {
-      caveats.push(`A bank feed last synced ${lastSyncAt.slice(0, 10)}: its transactions after that date are not imported yet.`)
+  if (feed.lastSyncAt && to >= feed.lastSyncAt.slice(0, 10)) {
+    const syncDate = feed.lastSyncAt.slice(0, 10)
+    if (feed.status === 'stopped') {
+      // A stopped feed is stale by definition once the range passes its last sync.
+      caveats.push(`The bank feed has stopped syncing (last synced ${syncDate}): transactions after that date are not imported unless added another way.`)
+    } else if ((now.getTime() - Date.parse(feed.lastSyncAt)) / 3_600_000 > STALE_SYNC_HOURS) {
+      caveats.push(`A bank feed last synced ${syncDate}: its transactions after that date are not imported yet.`)
     }
   }
   // Only for companies that sign off reconciliations at all (the adoption
@@ -217,10 +221,36 @@ async function build(
     accounting_method: method,
     unbooked_transactions: unbooked.total,
     draft_entries: drafts,
-    bank: { last_sync_at: lastSyncAt, reconciled_through: recon.reconciledThrough },
+    bank: { feed_status: feed.status, last_sync_at: feed.lastSyncAt, reconciled_through: recon.reconciledThrough },
     preliminary: status === 'open' || unbooked.total > 0 || drafts > 0,
     caveats,
   }
+}
+
+/**
+ * The bank feed the figures depend on. With any active connection, the
+ * stalest active one decides (it is what leaves rows out). With none, an
+ * error or expired connection is a feed that stopped: its newest sync is
+ * where the imported data ends. Revoked and pending_selection connections
+ * are not read at all (FEED_STATUSES).
+ */
+function bankFeed(rows: Array<{ status: string; last_synced_at: string | null }>): {
+  status: 'active' | 'stopped' | null
+  lastSyncAt: string | null
+} {
+  const syncTimes = (group: typeof rows) =>
+    group
+      .map((r) => r.last_synced_at)
+      .filter((t): t is string => typeof t === 'string')
+      .sort((a, b) => Date.parse(a) - Date.parse(b))
+  const active = rows.filter((r) => r.status === 'active')
+  if (active.length > 0) return { status: 'active', lastSyncAt: syncTimes(active)[0] ?? null }
+  const stopped = rows.filter((r) => r.status === 'error' || r.status === 'expired')
+  if (stopped.length > 0) {
+    const times = syncTimes(stopped)
+    return { status: 'stopped', lastSyncAt: times[times.length - 1] ?? null }
+  }
+  return { status: null, lastSyncAt: null }
 }
 
 /** YYYY-MM-DD from a date or a timestamp (the UTC date of a timestamptz string). */
