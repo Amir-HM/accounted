@@ -569,8 +569,10 @@ describe('tools/list payload size guard', () => {
     //     null clears a field. Paid for inside the same tool: employee_id's
     //     note restated its name, jamkning_percentage's "null clears" is now
     //     that one sentence, and default_dimensions' "omit to keep" is true of
-    //     every field of a sparse update. Measured 63 499: no headroom, the
-    //     next default-catalog addition trims first. Ceiling unchanged.
+    //     every field of a sparse update, and the tool description drops
+    //     "payroll" and "a field" (the parenthesis names the payroll parts),
+    //     so #2919's rutor 20-24 fit beside it without a bump. Measured
+    //     63 494. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(63_500)
   })
 

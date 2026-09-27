@@ -17088,7 +17088,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_update_employee',
     keywords: ['anställd', 'ändra anställd', 'personal'],
     title: 'Update Employee',
-    description: 'Stage an employee payroll update (salary, tax, bank, vacation, jamkning, vaxa-stod); null clears a field, personnummer is immutable. gnubok_get_employee first; commit via gnubok_approve_pending_operation.',
+    description: 'Stage an employee update (salary, tax, bank, vacation, jamkning, vaxa-stod); null clears; personnummer immutable. gnubok_get_employee first; commit via gnubok_approve_pending_operation.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
