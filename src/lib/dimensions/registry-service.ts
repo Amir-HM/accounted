@@ -1,8 +1,9 @@
 /**
  * The dimension registry (SIE #DIM: kostnadsställe, projekt and custom
- * dimensions): list, create, rename/archive/reorder, delete. One
- * implementation behind the dashboard routes (/api/dimensions), the v1
- * operations and the MCP tools, so every door applies the same rules:
+ * dimensions): list, create, rename/archive/reorder, delete, and creating a
+ * value (#OBJEKT) under a dimension. One implementation behind the dashboard
+ * routes (/api/dimensions), the v1 routes and operations and the MCP tools,
+ * so every door applies the same rules:
  *
  *   - numbers 1-19 carry SIE's standardized meanings (1 kostnadsställe,
  *     6 projekt, 7 anställd, ...) and 20+ are free; an omitted number takes
@@ -13,7 +14,11 @@
  *     reordering it is allowed;
  *   - a dimension tagged on any posted or reversed line cannot be deleted:
  *     the DB guard (enforce_dimension_registry_guards) is the single source
- *     of truth and its message, which names the dimension, is passed on.
+ *     of truth and its message, which names the dimension, is passed on;
+ *   - a value is created under a dimension of the same company, may be
+ *     created archived (is_active=false), carries start/end dates only on an
+ *     accumulating dimension (resets_annually=false, e.g. projekt), and its
+ *     code is unique within the dimension (the DB UNIQUE is the arbiter).
  */
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
@@ -231,6 +236,78 @@ export async function createDimension(
   }
 
   return { ok: true, data: { dimension: dimension as DimensionRow }, created: true }
+}
+
+export interface CreateDimensionValueInput {
+  code: string
+  name: string
+  /** Omitted = true; false creates the value archived in one write. */
+  is_active?: boolean
+  start_date?: string | null
+  end_date?: string | null
+}
+
+export type CreatedDimensionValue = DimensionValueEntry & { dimension_id: string; created_at: string | null }
+
+/**
+ * Create a value (SIE #OBJEKT) under a dimension. The input is already
+ * shaped by the door's schema (strict Fortnox code, end_date not before
+ * start_date); this function holds the rules that need the database: the
+ * dimension must belong to the company, dates only on an accumulating
+ * dimension, and the code must be free in the dimension. A dry run checks
+ * the dimension and the date rule and writes nothing.
+ */
+export async function createDimensionValue(
+  ctx: OperationContext,
+  dimensionId: string,
+  input: CreateDimensionValueInput,
+  options: { dryRun?: boolean } = {},
+): Promise<OperationOutcome<CreatedDimensionValue>> {
+  const { supabase, companyId, log } = ctx
+  const { data: dimension, error: dimError } = await supabase
+    .from('dimensions')
+    .select('id, resets_annually')
+    .eq('id', dimensionId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (dimError) {
+    log.error('dimension fetch failed', dimError)
+    return { ok: false, code: 'UNKNOWN_ERROR', error: dimError }
+  }
+  if (!dimension) return { ok: false, code: 'DIMENSION_NOT_FOUND', details: { dimension_id: dimensionId } }
+
+  // Value dates only make sense on accumulating dimensions (projekt-style
+  // ranges). An explicit null is a harmless no-op; an actual date is refused.
+  if (dimension.resets_annually && (input.start_date != null || input.end_date != null)) {
+    return { ok: false, code: 'DIMENSION_VALUE_DATES_NOT_ALLOWED', details: { dimension_id: dimensionId } }
+  }
+
+  const value = {
+    dimension_id: dimensionId,
+    code: input.code,
+    name: input.name,
+    is_active: input.is_active ?? true,
+    start_date: input.start_date ?? null,
+    end_date: input.end_date ?? null,
+  }
+
+  if (options.dryRun) {
+    return { ok: true, dryRun: true, preview: { id: null, ...value, created_at: null } }
+  }
+
+  const { data, error } = await supabase
+    .from('dimension_values')
+    .insert({ company_id: companyId, ...value })
+    .select('id, dimension_id, code, name, is_active, start_date, end_date, created_at')
+    .single()
+  if (error) {
+    if (error.code === '23505') {
+      return { ok: false, code: 'DIMENSION_VALUE_DUPLICATE_CODE', details: { code: input.code } }
+    }
+    log.error('dimension value insert failed', error)
+    return { ok: false, code: 'DIMENSION_VALUE_CREATE_FAILED', details: { reason: getUserErrorMessage(error) } }
+  }
+  return { ok: true, data: data as CreatedDimensionValue, created: true }
 }
 
 export interface UpdateDimensionInput {

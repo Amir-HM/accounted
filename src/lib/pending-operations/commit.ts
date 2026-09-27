@@ -144,6 +144,7 @@ import { matchTransactionToRotRutPayout } from '@/lib/invoices/rot-rut-match-tra
 import { linkRotRutPayoutVoucher } from '@/lib/invoices/rot-rut-link-voucher'
 import { attachDocumentToTransaction } from '@/lib/transactions/document-attach'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
+import { createDimensionValue } from '@/lib/dimensions/registry-service'
 import { submitSIEJob, requestSIEJobAction } from '@/lib/import/sie-jobs'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
@@ -1672,7 +1673,7 @@ async function commitCreateSupplier(
  */
 async function commitCreateDimensionValue(
   supabase: SupabaseClient,
-  _userId: string,
+  userId: string,
   companyId: string,
   params: Record<string, unknown>
 ): Promise<ExecutorResult> {
@@ -1703,9 +1704,12 @@ async function commitCreateDimensionValue(
     }
   }
 
+  // The staged params address the dimension by its SIE number; the create
+  // itself (dates only on an accumulating dimension, the insert, a duplicate
+  // code) is createDimensionValue, the same rules the dashboard and v1 run.
   const { data: dimension, error: dimError } = await supabase
     .from('dimensions')
-    .select('id, sie_dim_no, name, resets_annually')
+    .select('id, sie_dim_no, name')
     .eq('company_id', companyId)
     .eq('sie_dim_no', validated.sie_dim_no)
     .maybeSingle()
@@ -1720,30 +1724,21 @@ async function commitCreateDimensionValue(
     }
   }
 
-  // Value dates only make sense on accumulating dimensions (projekt-style
-  // ranges): mirrors POST /api/dimensions/[id]/values.
-  if (dimension.resets_annually && (validated.start_date || validated.end_date)) {
-    return {
-      error: `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
-      status: 400,
-    }
-  }
-
-  const { data: created, error: insertError } = await supabase
-    .from('dimension_values')
-    .insert({
-      company_id: companyId,
-      dimension_id: dimension.id,
+  const outcome = await createDimensionValue(
+    { supabase, companyId, userId, log: log.child({ operation: 'create_dimension_value' }) },
+    dimension.id,
+    {
       code: validated.code,
       name: validated.name,
-      start_date: validated.start_date ?? null,
-      end_date: validated.end_date ?? null,
-    })
-    .select('id, code, name, is_active')
-    .single()
+      // optString's z.preprocess widens the inferred type; the inner schema
+      // is an ISO date string.
+      start_date: (validated.start_date as string | undefined) ?? null,
+      end_date: (validated.end_date as string | undefined) ?? null,
+    },
+  )
 
-  if (insertError) {
-    if (insertError.code === '23505') {
+  if (!outcome.ok) {
+    if (outcome.code === 'DIMENSION_VALUE_DUPLICATE_CODE') {
       // Duplicate code: treat the existing value as success (idempotency).
       const { data: existing, error: existingError } = await supabase
         .from('dimension_values')
@@ -1753,7 +1748,7 @@ async function commitCreateDimensionValue(
         .eq('code', validated.code)
         .maybeSingle()
       if (existingError || !existing) {
-        return { error: insertError.message, status: 500 }
+        return { error: getErrorEntry(outcome.code)?.message_sv ?? outcome.code, errorCode: outcome.code, status: 500 }
       }
       return {
         data: {
@@ -1767,17 +1762,32 @@ async function commitCreateDimensionValue(
         },
       }
     }
-    return { error: insertError.message, status: 500 }
+    if (outcome.code === 'DIMENSION_VALUE_DATES_NOT_ALLOWED') {
+      return {
+        error: `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
+        errorCode: outcome.code,
+        status: 400,
+      }
+    }
+    const entry = getErrorEntry(outcome.code)
+    const cause = (outcome.error as { message?: unknown } | undefined)?.message
+    return {
+      // Never an empty string: an empty error reads as success downstream.
+      error: outcome.messageSv || (typeof cause === 'string' ? cause : '') || entry?.message_sv || outcome.code,
+      errorCode: outcome.code,
+      status: entry?.httpStatus ?? 500,
+    }
   }
+  if (outcome.dryRun) return { data: outcome.preview }
 
   return {
     data: {
-      dimension_value_id: created.id,
+      dimension_value_id: outcome.data.id,
       sie_dim_no: dimension.sie_dim_no,
       dimension_name: dimension.name,
-      code: created.code,
-      name: created.name,
-      is_active: created.is_active,
+      code: outcome.data.code,
+      name: outcome.data.name,
+      is_active: outcome.data.is_active,
       already_existed: false,
     },
   }
