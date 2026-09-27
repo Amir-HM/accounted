@@ -215,8 +215,11 @@ const ERROR_PATTERN_MAP: [RegExp, string | null][] = [
     'Verifikationen kunde inte hittas.',
   ],
   [
-    /Only posted entries can be deleted/i,
-    'Endast bokförda verifikationer kan raderas.',
+    // delete_last_voucher has raised "Only posted or draft entries can be
+    // deleted (current status: ...)" since 20260528120600; the older wording
+    // stays matched for any caller still on it.
+    /Only posted (or draft )?entries can be deleted/i,
+    'Endast bokförda verifikationer och utkast kan raderas.',
   ],
   [
     /Cannot delete voucher in a closed fiscal period/i,

@@ -136,8 +136,15 @@ describe('getErrorMessage: what our own RPCs write for the reader still gets thr
   })
 
   it('an English P0001 message with no translation passes through as before', () => {
-    const message = 'Only posted or draft entries can be deleted (current status: cancelled)'
+    const message = 'Payment batch is not in an exportable state'
     expect(getErrorMessage(pg('P0001', message), { context: 'journal_entry', statusCode: 400 })).toBe(message)
+  })
+
+  it('the live delete_last_voucher status refusal gets its Swedish sentence', () => {
+    const message = 'Only posted or draft entries can be deleted (current status: cancelled)'
+    expect(getErrorMessage(pg('P0001', message), { context: 'journal_entry', statusCode: 400 })).toBe(
+      'Endast bokförda verifikationer och utkast kan raderas.',
+    )
   })
 
   it('an unregistered code raised as P0001 passes through as before', () => {
