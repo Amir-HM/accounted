@@ -7837,6 +7837,7 @@
     "vat_filing_reference_placeholder": "t.ex. kvittensnummer",
     "vat_filing_failed": "Kunde inte markera perioden som inlämnad.",
     "vat_filing_unmark_failed": "Kunde inte ångra markeringen.",
+    "vat_filing_period_yearly": "Räkenskapsår {label}",
     "download_sie": "Ladda ner SIE-fil",
     "sie_moved_hint": "SIE-export finns nu under Importera/Exportera.",
     "sie_moved_link": "Öppna SIE-export",

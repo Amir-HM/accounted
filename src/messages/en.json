@@ -7837,6 +7837,7 @@
     "vat_filing_reference_placeholder": "e.g. receipt number",
     "vat_filing_failed": "Could not mark the period as filed.",
     "vat_filing_unmark_failed": "Could not undo the mark.",
+    "vat_filing_period_yearly": "Financial year {label}",
     "download_sie": "Download SIE file",
     "sie_moved_hint": "SIE export now lives under Import/Export.",
     "sie_moved_link": "Open SIE export",
