@@ -35,6 +35,7 @@ import DocumentViewerPane from '@/components/bookkeeping/DocumentViewerPane'
 import InboxDocumentPicker from '@/components/bookkeeping/InboxDocumentPicker'
 import type { UploadedFile } from '@/components/bookkeeping/DocumentUploadZone'
 import type { AvailableInboxDoc } from '@/components/bookkeeping/InboxDocumentPicker'
+import { carriedDocumentIds, underlagToCarry, uploadInFlight, type ReviewUnderlag } from './review-underlag'
 import VatTreatmentSelect from './VatTreatmentSelect'
 import AiCategorizeProposal, { AiStatusLine, pickFromRead, proposalMetaFromRead, type AiProposalMeta, type AssistantPick } from './AiCategorizeProposal'
 import { readIsFresh, type AssistantRead } from '@/lib/agent/categorize/read-shape'
@@ -59,7 +60,14 @@ interface QuickReviewDialogProps {
     proposal: BookingProposal,
     extras: { dimensions?: Record<string, string>; vatAmount?: number },
   ) => Promise<string | null>
-  onChangeTemplate?: () => void
+  /**
+   * "Byt": the review closes for the template picker. It hands over the
+   * underlag attached here (review-underlag.ts underlagToCarry), which the
+   * review the picker opens gets back as carriedUnderlag.
+   */
+  onChangeTemplate?: (underlag: ReviewUnderlag | null) => void
+  /** Underlag attached in the review that "Byt" closed: this one opens with it attached. */
+  carriedUnderlag?: ReviewUnderlag | null
   /** The assistant's stored read of this row, when one exists: the line opens with it instead of fetching. */
   assistantRead?: AssistantRead | null
   /**
@@ -82,6 +90,7 @@ export default function QuickReviewDialog({
   entityType,
   onConfirm,
   onChangeTemplate,
+  carriedUnderlag = null,
   assistantRead = null,
   onEditLines,
 }: QuickReviewDialogProps) {
@@ -109,12 +118,16 @@ export default function QuickReviewDialog({
   const [aiProposal, setAiProposal] = useState<AiProposalMeta | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
+  // Seeded with what "Byt" carried from the review it closed: a template
+  // switch keeps the underlag attached (PostHog PH 118).
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(() => carriedUnderlag?.files ?? [])
   // Underlag already sitting in the inkorg, picked instead of re-uploaded. The
   // journal entry does not exist yet at pick time, so these are held here and
   // linked (with their inbox_item_id, which consumes the inbox item) once the
   // booking returns a verifikat: same select-mode contract TransactionBookingDialog uses.
-  const [pickedInboxDocs, setPickedInboxDocs] = useState<AvailableInboxDoc[]>([])
+  const [pickedInboxDocs, setPickedInboxDocs] = useState<AvailableInboxDoc[]>(() => carriedUnderlag?.inboxDocs ?? [])
+  // Carried documents are not read again (see carriedDocumentIds).
+  const [carriedDocIds] = useState(() => carriedDocumentIds(carriedUnderlag))
   const [inboxPickerOpen, setInboxPickerOpen] = useState(false)
   const [showUploadZone, setShowUploadZone] = useState(false)
   const [showVatDropdown, setShowVatDropdown] = useState(false)
@@ -217,8 +230,10 @@ export default function QuickReviewDialog({
   // extraction has landed. The pick replaces the proposal (undo stays
   // offered) and reports itself for the calibration sample. Nothing here is
   // stored server-side: the row does not carry the document until booked.
+  // A document "Byt" carried over is not read again: the template the person
+  // picked after attaching it stands.
   useEffect(() => {
-    if (!open || !readDocId || !transaction?.id) return
+    if (!open || !readDocId || !transaction?.id || carriedDocIds.has(readDocId)) return
     let alive = true
     setDocReading(true)
     ;(async () => {
@@ -248,7 +263,7 @@ export default function QuickReviewDialog({
     return () => {
       alive = false
     }
-  }, [open, readDocId, transaction?.id, takeAssistantPick])
+  }, [open, readDocId, transaction?.id, takeAssistantPick, carriedDocIds])
   // The person's own VAT choice. It also settles the underlag question: a
   // rate picked by hand is what gets booked, and the moms line below offers
   // the document's figure as the way back. Without this the document's moms
@@ -266,7 +281,8 @@ export default function QuickReviewDialog({
     setDims({ ...(initialProposal.default_dimensions ?? {}) })
     // A document picked for the previous row must never follow the dialog to
     // the next one: it would attach that underlag to the wrong verifikat.
-    setPickedInboxDocs([])
+    // What "Byt" carried over is this row's own and stays.
+    setPickedInboxDocs(carriedUnderlag?.inboxDocs ?? [])
     setUseDocVat(true)
     // Re-seeding on the proposal alone would clobber in-flight edits; the
     // bag only changes together with the transaction.
@@ -668,7 +684,15 @@ export default function QuickReviewDialog({
               {picked || proposal.source === 'manual' ? t('rec_kicker_manual') : t('rec_kicker')}
             </span>
             {onChangeTemplate && !hasCounterpartyPattern && (
-              <button type="button" className={cn(QUIET_LINK_CLASS, 'text-[12.5px]')} onClick={onChangeTemplate}>
+              // The switch closes this review for the picker: the underlag
+              // attached here goes along to the review the pick opens, and
+              // an upload still on its way is waited for, not dropped.
+              <button
+                type="button"
+                className={cn(QUIET_LINK_CLASS, 'text-[12.5px] disabled:pointer-events-none disabled:opacity-50')}
+                disabled={uploadInFlight(uploadedFiles)}
+                onClick={() => onChangeTemplate(underlagToCarry({ files: uploadedFiles, inboxDocs: pickedInboxDocs }))}
+              >
                 {t('rec_change')}
               </button>
             )}
