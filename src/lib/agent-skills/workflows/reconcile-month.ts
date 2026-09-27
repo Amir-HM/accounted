@@ -105,6 +105,8 @@ When \`unexplained_difference\` is 0 through the month end: \`gnubok_reconcile_s
 
 \`force: true\` with a \`note\` signs despite a difference. Only on the user's explicit decision, with the user's own words for the note, and never for the skattekonto integrity case above.
 
+A bank sign-off with \`unmatched_ledger\` lines still open satisfies Stäm av but not \`gnubok_vat_close_check\`, which keeps its \`bank_unreconciled\` blocker until those verifikat have bank rows: import the missing bank rows as a bank file (Importera, Bankfil) and link them; nothing is booked again.
+
 ## Questions for the user
 
 Ask one precise question with the facts attached, never an open "what should I do".

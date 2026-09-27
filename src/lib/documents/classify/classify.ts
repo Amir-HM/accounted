@@ -93,6 +93,59 @@ interface DocumentRow {
   page_count: number | null
   admission_state: 'held' | 'admitted'
   extracted_data?: Record<string, unknown> | null
+  journal_entry_id?: string | null
+  journal_entry_line_id?: string | null
+}
+
+interface VerifikatShape {
+  source_type: string | null
+  lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+}
+
+/**
+ * What the verifikat says about an invoice's direction. A booked document is
+ * the evidence for a booking, and the booking's shape is the company's own
+ * record of which way the money went: a supplier debt raised (2440 credit)
+ * or an expense is a purchase, a customer claim raised (15xx debit) or
+ * revenue (3xxx credit) a sale. Beats the model's guess between the two
+ * invoice types (prod 2026-09-26: 217 purchase documents typed
+ * customer_invoice in 41 companies; Arcim's Kundfakturor held six supplier
+ * invoices). Says nothing for a payment (the claim or debt settled: the
+ * document on it is as often a payment notice as the invoice, and the text
+ * is the better judge), for a mixed shape, or for an entry that is neither.
+ */
+export function kindFromVerifikat(entry: VerifikatShape | null | undefined): 'supplier_invoice' | 'customer_invoice' | null {
+  if (!entry) return null
+  const source = entry.source_type ?? ''
+  if (source.startsWith('supplier_invoice_')) return 'supplier_invoice'
+  if (source === 'invoice_created' || source === 'invoice_cash_payment') return 'customer_invoice'
+  const sale = entry.lines.some((l) => (l.account_number.startsWith('15') && l.debit_amount > 0) || (l.account_number.startsWith('3') && l.credit_amount > 0))
+  const purchase = entry.lines.some((l) => (l.account_number === '2440' && l.credit_amount > 0) || (/^[4-7]/.test(l.account_number) && l.debit_amount > 0))
+  if (purchase && !sale) return 'supplier_invoice'
+  if (sale && !purchase) return 'customer_invoice'
+  return null
+}
+
+/** The verifikat a document is booked on, with its lines; null for a loose document or when the lookup fails. */
+async function verifikatOf(supabase: SupabaseClient, row: DocumentRow): Promise<VerifikatShape | null> {
+  let entryId = row.journal_entry_id ?? null
+  if (!entryId && row.journal_entry_line_id) {
+    const { data, error } = await supabase.from('journal_entry_lines').select('journal_entry_id').eq('id', row.journal_entry_line_id).maybeSingle()
+    if (error) log.warn('verifikat line lookup failed', { doc: row.id, reason: error.message })
+    entryId = (data as { journal_entry_id: string } | null)?.journal_entry_id ?? null
+  }
+  if (!entryId) return null
+  const { data, error } = await supabase.from('journal_entries').select('source_type, journal_entry_lines(account_number, debit_amount, credit_amount)').eq('id', entryId).maybeSingle()
+  if (error) {
+    log.warn('verifikat lookup failed', { doc: row.id, reason: error.message })
+    return null
+  }
+  const entry = data as { source_type: string | null; journal_entry_lines: Array<{ account_number: string; debit_amount: number | string; credit_amount: number | string }> } | null
+  if (!entry) return null
+  return {
+    source_type: entry.source_type,
+    lines: (entry.journal_entry_lines ?? []).map((l) => ({ account_number: String(l.account_number), debit_amount: Number(l.debit_amount), credit_amount: Number(l.credit_amount) })),
+  }
 }
 
 /**
@@ -115,7 +168,7 @@ export async function classifyDocument(supabase: SupabaseClient, documentId: str
   if (!getAiStatus().configured) return { status: 'skipped', reason: 'ai_unconfigured' }
   const { data: doc, error: docError } = await supabase
     .from('document_attachments')
-    .select('id, company_id, user_id, file_name, page_count, admission_state, extracted_data')
+    .select('id, company_id, user_id, file_name, page_count, admission_state, extracted_data, journal_entry_id, journal_entry_line_id')
     .eq('id', documentId)
     .maybeSingle()
   if (docError) return { status: 'error', reason: `document fetch failed: ${docError.message}` }
@@ -172,6 +225,14 @@ export async function classifyDocument(supabase: SupabaseClient, documentId: str
     classification = { ...classification, doc_type: inboxKind }
     signals.push('inbox_kind')
   }
+  // The verifikat says which way the money went: the company's own record beats the model's guess between the two.
+  if (classification.doc_type === 'customer_invoice' || classification.doc_type === 'supplier_invoice') {
+    const verifikatKind = kindFromVerifikat(await verifikatOf(supabase, row))
+    if (verifikatKind && verifikatKind !== classification.doc_type) {
+      classification = { ...classification, doc_type: verifikatKind }
+      signals.push('verifikat_kind')
+    }
+  }
   return persistClassification(supabase, row, classification, { model, promptSha256: sha256(system + '\n' + prompt), decidedBy: 'model', admission, signals, contentSha256 })
 }
 
@@ -180,7 +241,7 @@ export async function classifyDocument(supabase: SupabaseClient, documentId: str
  * a scan without a text layer is normal for a photographed receipt, a
  * duplicate is often the same invoice sent twice, a bundle needs splitting.
  */
-export type AuthenticitySignal = 'no_text_layer' | 'duplicate_content' | 'multi_document' | 'inbox_kind'
+export type AuthenticitySignal = 'no_text_layer' | 'duplicate_content' | 'multi_document' | 'inbox_kind' | 'verifikat_kind'
 
 async function authenticitySignals(
   supabase: SupabaseClient,

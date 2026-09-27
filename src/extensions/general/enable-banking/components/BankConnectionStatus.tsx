@@ -373,7 +373,7 @@ export function BankConnectionStatus({
                       </span>
                       {truncated && (
                         <Badge variant="outline">
-                          Bankens API returnerade kortare period än begärt: använd SIE-import för äldre data
+                          Bankens API returnerade kortare period än begärt: importera äldre bankhistorik som bankfil (Importera, Bankfil)
                         </Badge>
                       )}
                     </div>
