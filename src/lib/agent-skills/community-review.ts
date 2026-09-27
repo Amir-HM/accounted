@@ -115,7 +115,8 @@ export async function loadPendingItems(service: SupabaseClient): Promise<Pending
     .eq('tier', 'community').eq('is_active', true).eq('mcp_exposed', false).is('parent_atom_id', null).order('id')
   if (error) throw new Error(`Failed to read pending items: ${error.message}`)
   return ((data ?? []) as Array<{ id: string; title: string; description: string; body: string | null; trigger_signals: Record<string, unknown> | null }>)
-    .filter((row) => row.body)
+    // A withdrawn text is not waiting for approval: it waits for its folder to be removed (loadWithdrawnItems).
+    .filter((row) => row.body && !isWithdrawn(row.trigger_signals))
     .map((row) => {
       const slug = row.id.replace(/^community\//, '')
       const signals = row.trigger_signals ?? {}
@@ -133,6 +134,32 @@ export async function loadPendingItems(service: SupabaseClient): Promise<Pending
     })
 }
 
+function isWithdrawn(signals: Record<string, unknown> | null): boolean {
+  return typeof signals?.withdrawn_at === 'string'
+}
+
+/** Taken back by its author but still in the public repository: Accounted removes the folder. */
+export interface WithdrawnItem {
+  slug: string
+  title: string
+  withdrawn_at: string
+  /** The folder on GitHub, to delete. */
+  source: string
+}
+
+export async function loadWithdrawnItems(service: SupabaseClient): Promise<WithdrawnItem[]> {
+  const { data, error } = await service.from('agent_atom_registry')
+    .select('id, title, trigger_signals')
+    .eq('tier', 'community').eq('is_active', true).is('parent_atom_id', null).not('trigger_signals->>withdrawn_at', 'is', null).order('id')
+  if (error) throw new Error(`Failed to read withdrawn items: ${error.message}`)
+  return ((data ?? []) as Array<{ id: string; title: string; trigger_signals: Record<string, unknown> | null }>)
+    .filter((row) => isWithdrawn(row.trigger_signals))
+    .map((row) => {
+      const slug = row.id.replace(/^community\//, '')
+      return { slug, title: row.title, withdrawn_at: row.trigger_signals!.withdrawn_at as string, source: communityRepoUrl(slug) }
+    })
+}
+
 /**
  * "Godkänn och publicera": exposes a merged text to every company's AI, if
  * it is still the text the reviewer read (same fingerprint). Marks the
@@ -144,7 +171,7 @@ export async function approvePendingItem(service: SupabaseClient, slug: string, 
     .select('id, body, trigger_signals').eq('id', id).eq('tier', 'community').eq('is_active', true).eq('mcp_exposed', false).maybeSingle()
   if (error) throw new Error(`Failed to read ${id}: ${error.message}`)
   const atom = row as { id: string; body: string | null; trigger_signals: Record<string, unknown> | null } | null
-  if (!atom?.body || communityBodySha(atom.body) !== sha) return false
+  if (!atom?.body || communityBodySha(atom.body) !== sha || isWithdrawn(atom.trigger_signals)) return false
   const now = new Date().toISOString()
   // Compare-and-set on the body: a sync that stored a newer text since the read must not be exposed by this approval.
   const { data: exposed, error: updateError } = await service.from('agent_atom_registry')

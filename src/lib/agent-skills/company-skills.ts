@@ -10,7 +10,7 @@ export interface CompanySkillRow {
   name: string | null
   description: string | null
   body: string | null
-  share_status: 'private' | 'submitted' | 'published' | 'withdrawn'
+  share_status: 'private' | 'submitted' | 'published'
   created_by: string
   updated_at: string
   reviewed_at: string | null
@@ -39,7 +39,7 @@ export async function loadCompanySkillRows(supabase: SupabaseClient, companyId: 
 }
 
 export function ownSkill(row: CompanySkillRow): Skill | null {
-  if (row.atom_id || row.share_status === 'withdrawn' || row.draft || !row.name || !row.body) return null
+  if (row.atom_id || row.draft || !row.name || !row.body) return null
   return {
     slug: `own/${row.id}`, name: row.name, summary: row.description ?? '',
     body: row.body, tags: ['own'], tier: 'own', source: 'own', reviewedAt: row.reviewed_at, itemKind: row.kind ?? 'workflow',

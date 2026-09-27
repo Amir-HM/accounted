@@ -165,3 +165,11 @@ export function githubNewFileUrl(slug: string, content: string): string | null {
 export function communityRepoUrl(slug: string): string {
   return `https://github.com/${COMMUNITY_REPO}/tree/main/${COMMUNITY_DIR}/${slug}`
 }
+
+/** The public website, where every approved item has its own page. */
+export const COMMUNITY_SITE = 'https://www.accounted.se'
+
+/** A published item's page on accounted.se. */
+export function communityPageUrl(slug: string): string {
+  return `${COMMUNITY_SITE}/instruktioner/${slug}`
+}

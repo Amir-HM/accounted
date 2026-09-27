@@ -13,8 +13,8 @@ const log = createLogger('community.approved')
  * [{ slug, sha }], and whether sharing from the app is open. The website
  * lists community/<slug> of erp-mafia/accounted-skills only when its SKILL.md
  * hashes to sha, the text an Accounted reviewer approved, and shows the
- * "Dela från Accounted" button only while sharing is open. Until the
- * community launches (COMMUNITY_OPEN) the list is empty, as it is in the app.
+ * "Dela från Accounted" button only while sharing is open. While sharing is
+ * closed (COMMUNITY_OPEN) the list is empty, as it is in the app.
  *
  * No auth wrapper on purpose: there is no user or company here, and nothing
  * but names and hashes of files that are already public. The CDN caches it

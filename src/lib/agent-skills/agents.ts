@@ -51,12 +51,12 @@ const YEAR_END = 'horizontal/swedish-year-end-closing'
  * items are reviewed by Accounted and published through the public MIT repo
  * erp-mafia/accounted-skills (community-repo.ts, community-sync.ts).
  *
- * Closed for the Instruktioner launch (founder, 2026-09-26): "Dra tillbaka"
- * is one-way today (the author loses the item while a published copy stays
- * public). It reopens once withdrawing returns the item to private and the
- * reviewer can finish a withdrawal. Withdrawing an earlier submission still works.
+ * Open since 2026-09-27 (founder): withdrawing returns an item to private and
+ * hides a published text from every AI at once (migration 20260926172514);
+ * the reviewer is emailed about each share, and the author when the item's
+ * page is live on accounted.se (community-notify.ts).
  */
-export const COMMUNITY_OPEN = false
+export const COMMUNITY_OPEN = true
 
 /** What a company's own agent carries until the company changes it: the accounting law every flow stands on. */
 export const OWN_AGENT_KNOWLEDGE: readonly string[] = [COMPLIANCE]

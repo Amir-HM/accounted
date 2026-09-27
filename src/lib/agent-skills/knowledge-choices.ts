@@ -37,7 +37,7 @@ export function packFitsForm(atomId: string, entityType: EntityType): boolean {
 /**
  * Every pack a company can give an agent: live, exposed, top level
  * (references travel with their pack) and written for its legal form, then
- * the company's own knowledge items (added by a person, not withdrawn) as
+ * the company's own knowledge items (added by a person) as
  * `own/<id>`. Adding a pack checks against this list, so a pack for another
  * legal form cannot be added either.
  */

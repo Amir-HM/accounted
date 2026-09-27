@@ -535,6 +535,7 @@ export function ShareBox({ status, canWrite, onShare, publishedUrl, reviewNote, 
   const [handle, setHandle] = useState('')
   const [confirmed, setConfirmed] = useState(false)
   const [state, setState] = useState<'idle' | 'sending' | 'failed'>('idle')
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false)
   async function send(share: { author_handle: string } | 'withdraw') {
     setState('sending')
     const ok = await onShare(share)
@@ -548,11 +549,20 @@ export function ShareBox({ status, canWrite, onShare, publishedUrl, reviewNote, 
   if (status === 'submitted' || status === 'published') {
     return (
       <ActionRow title={t('adv_share_title')} desc={t(`share_status_${status}`)} alert={failed} below={status === 'published' && publishedUrl ? <a className={styles.catLink} href={publishedUrl} target="_blank" rel="noreferrer">{t('share_published_link')}</a> : undefined}>
-        <Button variant="outline" size="sm" disabled={!canWrite} loading={state === 'sending'} onClick={() => void send('withdraw')}>{t('share_withdraw')}</Button>
+        {/* A published item is in other people's AI: withdrawing it is asked once. A submitted one only leaves the review queue. */}
+        <Button variant="outline" size="sm" disabled={!canWrite} loading={state === 'sending'} onClick={() => status === 'published' ? setConfirmWithdraw(true) : void send('withdraw')}>{t('share_withdraw')}</Button>
+        <DestructiveConfirmDialog
+          open={confirmWithdraw}
+          onOpenChange={setConfirmWithdraw}
+          title={t('share_withdraw_title')}
+          description={t('share_withdraw_confirm')}
+          confirmLabel={t('share_withdraw')}
+          cancelLabel={t('cancel')}
+          onConfirm={() => send('withdraw')}
+        />
       </ActionRow>
     )
   }
-  if (status === 'withdrawn') return <ActionRow title={t('adv_share_title')} desc={t('share_status_withdrawn')} />
   return (
     <ActionRow title={t('adv_share_title')} desc={reviewNote ? t('share_returned', { note: reviewNote }) : t('adv_share_desc')}>
       <Button variant="outline" size="sm" disabled={!canWrite} onClick={() => { setState('idle'); setOpen(true) }}>{t('adv_share')}</Button>

@@ -10,6 +10,11 @@ vi.mock('@/lib/auth/require-write', () => ({ requireWritePermission: vi.fn() }))
 vi.mock('@/lib/company/context', () => ({ getActiveCompanyId: vi.fn().mockResolvedValue('company-a') }))
 vi.mock('@/lib/agent-skills/catalog', () => ({ loadSkillCatalog: vi.fn(), loadCatalogSkill: vi.fn() }))
 vi.mock('@/lib/agent-skills/company-skills', () => ({ loadCompanySkillRows: vi.fn() }))
+// Work scheduled with after() runs once the response is sent; here it is collected and run by hand.
+const later = vi.hoisted(() => ({ tasks: [] as Array<() => unknown> }))
+vi.mock('next/server', async (original) => ({ ...(await original<typeof import('next/server')>()), after: (task: () => unknown) => { later.tasks.push(task) } }))
+vi.mock('@/lib/agent-skills/community-notify', () => ({ notifyReviewersOfSubmission: vi.fn() }))
+vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: vi.fn(() => ({ service: true })) }))
 // Sharing is held back from release by COMMUNITY_OPEN; the submit tests below run with it open.
 const community = vi.hoisted(() => ({ open: true }))
 vi.mock('@/lib/agent-skills/agents', async (original) => ({ ...(await original<object>()), get COMMUNITY_OPEN() { return community.open } }))
@@ -17,6 +22,7 @@ import { requireAuth } from '@/lib/auth/require-auth'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { loadSkillCatalog, loadCatalogSkill } from '@/lib/agent-skills/catalog'
 import { loadCompanySkillRows } from '@/lib/agent-skills/company-skills'
+import { notifyReviewersOfSubmission } from '@/lib/agent-skills/community-notify'
 import { GET, POST } from '../route'
 import { PATCH, DELETE } from '../[id]/route'
 
@@ -35,6 +41,7 @@ beforeEach(() => {
   vi.mocked(loadCatalogSkill).mockResolvedValue(null)
   vi.mocked(loadCompanySkillRows).mockResolvedValue([privateSkill])
   community.open = true
+  later.tasks = []
 })
 
 describe('skills HTTP routes', () => {
@@ -110,6 +117,18 @@ describe('skills HTTP routes', () => {
     expect(findCalls('company_skills', 'eq')).toContainEqual(['company_id', 'company-a'])
     expect(findCalls('company_skills', 'eq')).toContainEqual(['share_status', 'private'])
   })
+  it('tells Accounted\'s reviewers about a share once the response is sent', async () => {
+    enqueue({ data: { id } })
+    expect((await PATCH(request('PATCH', { action: 'submit', author_handle: 'author', confirmed_no_customer_data: true, kind: 'rules' }), params)).status).toBe(200)
+    expect(notifyReviewersOfSubmission).not.toHaveBeenCalled()
+    await Promise.all(later.tasks.map((task) => task()))
+    expect(notifyReviewersOfSubmission).toHaveBeenCalledWith({ service: true }, { title: 'Own', handle: 'author', kind: 'rules' }, 'http://localhost/skills/granskning')
+  })
+  it('does not tell reviewers about a share that was not saved', async () => {
+    enqueue({ data: null })
+    expect((await PATCH(request('PATCH', { action: 'submit', author_handle: 'author', confirmed_no_customer_data: true }), params)).status).toBe(409)
+    expect(later.tasks).toHaveLength(0)
+  })
   it('stores the kind the author gives a shared item, and keeps the saved kind when none is given', async () => {
     enqueue({ data: { id } })
     expect((await PATCH(request('PATCH', { action: 'submit', author_handle: 'author', confirmed_no_customer_data: true, kind: 'analysis' }), params)).status).toBe(200)
@@ -142,8 +161,8 @@ describe('skills HTTP routes', () => {
     vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status: 'submitted' }])
     expect((await PATCH(request('PATCH', { action: 'edit', name: 'N', description: 'D', body: 'Changed' }), params)).status).toBe(409)
   })
-  it.each(['published', 'withdrawn'] as const)('freezes %s text too', async (share_status) => {
-    vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status }])
+  it('freezes published text too', async () => {
+    vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status: 'published' }])
     expect((await PATCH(request('PATCH', { action: 'edit', name: 'N', description: 'D', body: 'Changed' }), params)).status).toBe(409)
     expect(findCall('company_skills', 'update')).toBeUndefined()
   })
@@ -197,11 +216,23 @@ describe('skills HTTP routes', () => {
     expect((await PATCH(request('PATCH', { action: 'add' }), params)).status).toBe(409)
     expect(findCall('company_skills', 'update')).toBeUndefined()
   })
-  it('withdraws without deleting submission evidence', async () => {
-    vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status: 'submitted' }])
+  it.each(['submitted', 'published'] as const)('withdraws a %s item back to private, where the author can edit, share or delete it', async (share_status) => {
+    vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status }])
     enqueue({ data: { id } })
     expect((await PATCH(request('PATCH', { action: 'withdraw' }), params)).status).toBe(200)
-    expect(findCall('company_skills', 'update')?.[0]).toEqual({ share_status: 'withdrawn' })
+    expect(findCall('company_skills', 'update')?.[0]).toEqual({ share_status: 'private' })
+    expect(findCalls('company_skills', 'eq')).toContainEqual(['share_status', share_status])
+  })
+  it('refuses to withdraw an item that is not shared', async () => {
+    expect((await PATCH(request('PATCH', { action: 'withdraw' }), params)).status).toBe(409)
+    expect(findCall('company_skills', 'update')).toBeUndefined()
+  })
+  it('asks for a withdrawal before a shared item is deleted', async () => {
+    vi.mocked(loadCompanySkillRows).mockResolvedValue([{ ...privateSkill, share_status: 'submitted' }])
+    const response = await DELETE(request('DELETE'), params)
+    expect(response.status).toBe(409)
+    expect((await response.json()).error.message).toBe('Dra tillbaka delningen först.')
+    expect(findCall('company_skills', 'delete')).toBeUndefined()
   })
   it.each([PATCH, DELETE])('returns 404 for an out-of-tenant record', async (handler) => {
     vi.mocked(loadCompanySkillRows).mockResolvedValue([])

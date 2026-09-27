@@ -43,7 +43,7 @@ function Registry({ companyId, hrefBase }: { companyId: string; hrefBase: string
   const options = useSWR(['/api/agents/knowledge', companyId], ([url]) => readOptions(url))
   const usage = useSWR(['/api/skills/usage', companyId], ([url]) => readUsage(url))
   const own = (catalog.data ?? []).filter((skill): skill is SkillSummary & { installations: [{ installation_id: string }] } =>
-    skill.tier === 'own' && skill.shareStatus !== 'withdrawn' && !!skill.installations[0])
+    skill.tier === 'own' && !!skill.installations[0])
 
   // ── connection: asked on load and whenever the user comes back to the tab ──
   const [connected, setConnected] = useState<AiClient[] | null>(null)
