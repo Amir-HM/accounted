@@ -3524,7 +3524,7 @@
     "doc_link_failed_booked_description": "The transaction was booked, but {count} document(s) could not be attached to the journal entry: {files}. Open the entry to attach them again.",
     "doc_link_open_entry": "Open the entry",
     "generic_error": "An error occurred while posting.",
-    "cancel": "Cancel",
+    "close": "Close",
     "booking": "Posting...",
     "fetching_rate": "Fetching exchange rate…",
     "book": "Post"

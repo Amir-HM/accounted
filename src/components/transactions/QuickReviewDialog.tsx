@@ -923,7 +923,9 @@ export default function QuickReviewDialog({
           </div>
         )}
 
-        {/* Actions */}
+        {/* Actions. "Stäng", not "Avbryt": an underlag dropped in here is
+            archived and read the moment it lands, so closing undoes nothing;
+            the button only closes the review (PostHog PH 118). */}
         <div className="flex gap-2 pt-2">
           <Button
             variant="outline"
@@ -931,7 +933,7 @@ export default function QuickReviewDialog({
             onClick={() => onOpenChange(false)}
             disabled={isProcessing}
           >
-            {t('cancel')}
+            {t('close')}
           </Button>
           <Button
             className="flex-1"
