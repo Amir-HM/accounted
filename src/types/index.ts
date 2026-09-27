@@ -2284,7 +2284,10 @@ export interface IncomeStatementReport {
   financial_sections: IncomeStatementSection[]
   total_financial: number
   net_result: number
-  /** Statutory revenue per ÅRL, BAS 3000-3799. See lib/reports/income-definitions.ts. */
+  /**
+   * Nettoomsättning, BAS 3000-3799, before bokslut entries like every figure
+   * here (definitions.basis). See lib/reports/income-definitions.ts.
+   */
   nettoomsattning: number
   /** BAS 3800-3899. */
   aktiverat_arbete: number

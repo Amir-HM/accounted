@@ -1,7 +1,7 @@
 /**
- * gnubok_get_income_statement returns the statutory nettoomsättning and the
- * account definitions behind every figure, so an agent asked "what is our
- * revenue" answers with the same figure as the årsredovisning.
+ * gnubok_get_income_statement returns nettoomsättning and the account
+ * definitions behind every figure, including the basis (before bokslut) that
+ * separates these figures from a closed year's filed årsredovisning.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createQueuedMockSupabase } from '@/tests/helpers'
@@ -54,7 +54,7 @@ describe('gnubok_get_income_statement: statutory figures', () => {
       'user-1',
       supabase as never,
     )) as Record<string, unknown> & {
-      definitions: Record<string, { accounts: string }>
+      definitions: Record<string, { accounts: string; definition: string }>
     }
 
     expect(result.nettoomsattning).toBe(1000)
@@ -62,6 +62,7 @@ describe('gnubok_get_income_statement: statutory figures', () => {
     expect(result.total_revenue).toBe(1200)
     expect(result.rorelseresultat).toBe(900)
     expect(result.definitions.nettoomsattning.accounts).toBe('3000-3799')
+    expect(result.definitions.basis).toBeDefined()
 
     const props = (incomeStatement.outputSchema as { properties: Record<string, unknown> }).properties
     expect(props).toHaveProperty('nettoomsattning')

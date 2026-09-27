@@ -52,6 +52,15 @@ describe('income definitions', () => {
     expect(inAccountRanges('3401', NETTOOMSATTNING_RANGES)).toBe(true)
   })
 
+  it('states the pre-bokslut basis instead of promising the filed figures', () => {
+    const defs = INCOME_STATEMENT_DEFINITIONS
+    expect(Object.keys(defs)[0]).toBe('basis')
+    expect(defs.basis.definition).toMatch(/before bokslut/)
+    expect(defs.basis.definition).toMatch(/gnubok_preview_arsredovisning/)
+    expect(defs.net_result.definition).toMatch(/före bokslutstransaktioner/)
+    expect(defs.net_result.definition).not.toMatch(/^Årets resultat/)
+  })
+
   it('describes every figure with accounts and a definition', () => {
     for (const [key, def] of Object.entries(INCOME_STATEMENT_DEFINITIONS)) {
       expect(def.accounts, key).toMatch(/^\d{4}-\d{4}$/)

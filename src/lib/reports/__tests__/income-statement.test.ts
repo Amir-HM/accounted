@@ -424,6 +424,21 @@ describe('generateIncomeStatement with a fromDate range', () => {
 })
 
 describe('statutory RR lines', () => {
+  it('reads the pre-bokslut trial balance that definitions.basis describes', async () => {
+    mockTrialBalance.mockResolvedValue({ rows: [], totalDebit: 0, totalCredit: 0, isBalanced: true })
+
+    await generateIncomeStatement(supabase, 'company-1', 'period-1')
+
+    // definitions.basis tells callers every year_end entry is excluded. When
+    // #1051 stage 2 moves this to 'exclude-final', rewrite the basis with it.
+    expect(mockTrialBalance).toHaveBeenCalledWith(
+      supabase,
+      'company-1',
+      'period-1',
+      expect.objectContaining({ closingEntry: 'exclude-all-year-end' }),
+    )
+  })
+
   it('splits class 3 into nettoomsättning, aktiverat arbete and övriga rörelseintäkter', async () => {
     mockTrialBalance.mockResolvedValue({
       rows: [

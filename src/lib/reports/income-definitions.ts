@@ -11,9 +11,19 @@
  *
  * The iXBRL mapper and the income statement read these ranges from here, and
  * a test pins them to the INK2R mapping (which stays pure data, pinned to
- * the official BAS kopplingstabell), so an agent asking "what is our
- * revenue" gets the same nettoomsättning the årsredovisning and the
- * declaration show.
+ * the official BAS kopplingstabell). Same accounts is not yet the same
+ * figure, for two reasons the `basis` entry below tells the caller:
+ *
+ *   - Basis. The income statement drops every bokslut entry (source_type
+ *     'year_end': skatt, bokslutsdispositioner, year-end avskrivningar, the
+ *     kontantmetod cut-off), the operational convention whose move to
+ *     'exclude-final' is #1051 stage 2, deliberately deferred. The
+ *     årsredovisning and INK2R keep those entries and drop only the
+ *     resultatavslut. So the figures agree only while no bokslut entry is
+ *     booked; a closed year's filed figures come from
+ *     gnubok_preview_arsredovisning.
+ *   - Rounding. The income statement is exact to the öre; the årsredovisning
+ *     rounds to whole kronor and INK2R truncates them (SFL 22 kap. 1 §).
  *
  * Account numbers are strings; ranges compare lexicographically, exactly as
  * the K2 mapper always has.
@@ -40,13 +50,19 @@ export interface IncomeFigureDefinition {
 
 /**
  * Returned next to the figures (income statement, MCP, v1) so a caller
- * never has to guess which accounts a number sums.
+ * never has to guess which accounts a number sums or which entries it
+ * leaves out. `basis` comes first because it qualifies every figure after it.
  */
 export const INCOME_STATEMENT_DEFINITIONS = {
+  basis: {
+    accounts: '3000-8998',
+    definition:
+      "Resultaträkning before bokslut, exact to the öre: every year-end entry (skatt, bokslutsdispositioner, year-end avskrivningar, kontantmetod cut-off) is excluded. Matches the årsredovisning and INK2R only while no bokslut entry is booked; for a closed year's filed figures use gnubok_preview_arsredovisning.",
+  },
   nettoomsattning: {
     accounts: '3000-3799',
     definition:
-      'Nettoomsättning per ÅRL: sales incl. egna uttag (34xx), fakturerade kostnader, sidointäkter, net of intäktskorrigeringar. The statutory revenue figure used in the årsredovisning and INK2R 3.1.',
+      'Nettoomsättning: sales incl. egna uttag (34xx), fakturerade kostnader, sidointäkter, net of intäktskorrigeringar. Same accounts as the årsredovisning line and INK2R 3.1; see basis.',
   },
   aktiverat_arbete: {
     accounts: '3800-3899',
@@ -62,19 +78,19 @@ export const INCOME_STATEMENT_DEFINITIONS = {
   },
   total_expenses: {
     accounts: '4000-7999',
-    definition: 'All operating expenses (class 4-7), including avskrivningar and övriga rörelsekostnader.',
+    definition: 'Operating expenses (class 4-7), including avskrivningar and övriga rörelsekostnader booked outside bokslut; see basis.',
   },
   rorelseresultat: {
     accounts: '3000-7999',
-    definition: 'Rörelseresultat: all operating income minus all operating expenses, before finansiella poster, bokslutsdispositioner and skatt.',
+    definition: 'Rörelseresultat before bokslut entries: operating income minus operating expenses, before finansiella poster.',
   },
   total_financial: {
     accounts: '8000-8998',
-    definition: 'Finansiella poster, bokslutsdispositioner (88xx) and skatt (89xx) combined; 8999 årets resultat excluded.',
+    definition: 'Class 8 except 8999: finansiella poster, plus any bokslutsdispositioner (88xx) or skatt (89xx) booked outside bokslut; see basis.',
   },
   net_result: {
     accounts: '3000-8998',
-    definition: 'Årets resultat: rörelseresultat + total_financial.',
+    definition: 'Resultat före bokslutstransaktioner: rorelseresultat + total_financial. Not årets resultat once bokslut entries are booked; see basis.',
   },
 } as const satisfies Record<string, IncomeFigureDefinition>
 

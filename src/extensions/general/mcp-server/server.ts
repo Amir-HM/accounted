@@ -9836,7 +9836,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_get_income_statement',
-    keywords: ['resultaträkning', 'resultatrapport'],
+    keywords: ['resultaträkning', 'resultatrapport', 'kostnadsställe', 'projekt'],
     title: 'Income Statement (Resultaträkning)',
     description: 'Resultaträkning for a period or a from_date/to_date range. Revenue = nettoomsattning (3000-3799), not total_revenue; definitions gives each figure\'s accounts.',
     inputSchema: {
