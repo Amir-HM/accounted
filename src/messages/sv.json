@@ -449,7 +449,7 @@
     "keywords_templates": "Bokföringsmallar, Inlärda mönster, Motparter",
     "keywords_invoicing": "Fakturanummer, Prefix, Betalningsvillkor, Vår referens, Fakturatyper, Offert, Proforma, Återkommande, Självfaktura, Bankkonton, Bankgiro, Swish, IBAN, Betallänk, PDF, Utskrift",
     "keywords_sending": "Avsändare, Egen domän, Svarsadress, Kopia, E-posttexter, Påminnelser, Påminnelsetexter",
-    "keywords_connections": "Bank, PSD2, Skatteverket, Ombud, Peppol, E-faktura, WhatsApp, Stripe, Shopify, WooCommerce",
+    "keywords_connections": "Bank, PSD2, Skatteverket, Ombud, Peppol, E-faktura, WhatsApp, Stripe, Shopify, WooCommerce, Zettle",
     "keywords_api": "MCP, Claude, ChatGPT, Grok, API-nycklar, OAuth"
   },
   "settings_payments": {
@@ -7920,6 +7920,8 @@
     "desc_behandlingshistorik": "Vem gjorde vad och när: bokförda verifikationer, rättelser och ändringar i systemet (BFL 5 kap. 11 §)",
     "name_bokslutsbilagor": "Bokslutsbilagor",
     "desc_bokslutsbilagor": "Pärmen per räkenskapsår: varje balanskonto per balansdagen med bokfört saldo, underlag, signering och bifogade filer",
+    "name_systemdokumentation": "Systemdokumentation",
+    "desc_systemdokumentation": "Hur bokföringen är organiserad, framtagen ur företagets inställningar: kontoplan, delsystem, verifikationsserier, behandlingsregler, behörigheter och integrationer (BFL 5 kap. 11 §)",
     "bh_summary": "{count, plural, =1 {1 händelse} other {# händelser}}",
     "bh_range_to": "till",
     "bh_version": "Programversion",
@@ -9811,6 +9813,27 @@
     "signed_other_date": "t.o.m. {date} ({who}), inte balansdagen",
     "unsigned": "Ej signerad"
   },
+  "systemdokumentation": {
+    "load_failed": "Kunde inte ta fram systemdokumentationen.",
+    "summary": "Systemdokumentation för {period}, framtagen {generated} ur företagets inställningar. Ladda ner som PDF och spara den med räkenskapsinformationen.",
+    "col_section": "Avsnitt",
+    "col_content": "Innehåll",
+    "row_system": "Bokföringssystem",
+    "row_version": "programversion {version}",
+    "version_unknown": "okänd",
+    "row_accounts": "Kontoplan",
+    "accounts_count": "{standard}, {count, plural, =1 {1 aktivt konto} other {# aktiva konton}}",
+    "row_delsystem": "Delsystem som används",
+    "row_series": "Verifikationsserier",
+    "row_lock": "Bokföringen låst t.o.m.",
+    "no_lock_date": "Inget låsdatum",
+    "row_members": "Behörigheter",
+    "members_count": "{count, plural, =1 {1 användare} other {# användare}}",
+    "row_api_keys": "API-nycklar",
+    "api_keys_count": "{count, plural, =0 {Inga aktiva nycklar} =1 {1 aktiv nyckel} other {# aktiva nycklar}}",
+    "row_integrations": "Integrationer",
+    "supplement_note": "Dokumentet beskriver programmet och företagets inställningar. Företagets egna rutiner, arkivplan och ansvariga fyller du i med mallarna under Hjälp."
+  },
   "parties": {
     "decision_role_supplier": "Upplagd som leverantör",
     "decision_role_customer": "Upplagd som kund",
@@ -10433,7 +10456,6 @@
     "all_done": "Allt klart",
     "run_hint": "Prompten kopieras och {client} öppnas i en ny flik. Klistra in den i chatten och tryck Skicka.",
     "run_hint_desktop": "{client} öppnas med prompten ifylld.",
-    "prefill_caution": "Claude visar en varning för ifyllda länkar: texten kommer från {appName}, så läs den och tryck Skicka.",
     "prefilled_backup": "Syns ingen text? Den är kopierad, klistra in den.",
     "chatgpt_pick_app": "I ChatGPT: välj + → Utvecklarläge → {appName} innan du skickar.",
     "no_app": "Öppnades inget? Då finns Claude Desktop troligen inte på den här datorn.",
@@ -10442,7 +10464,6 @@
     "prompt_company_pin": "Företaget är {company} (company_id {companyId}): skicka company_id på varje anrop till Accounted.",
     "step_2_chatgpt": "Öppna ChatGPT på webben: Inställningar → Säkerhet och inloggning → slå på Utvecklarläge. Gå sedan till Plugins, välj + och skapa en app med namnet {appName} och adressen ovan.",
     "step_2_grok": "I Grok under Connectors: välj New Connector → Custom, namnge den {appName} och klistra in adressen.",
-    "run_hint_prefilled": "{client} öppnas i en ny flik med prompten ifylld. Den kopieras också, om den inte skulle synas.",
     "hero_title": "Börja här",
     "connect_kicker": "Kom igång",
     "connect_title": "Koppla din AI, så gör den jobbet åt dig",
@@ -11649,6 +11670,8 @@
     "stripe_help": "Betallänkar på fakturorna och Stripe-saldot som ett bankflöde.",
     "shopify": "Shopify",
     "woocommerce": "WooCommerce",
-    "shop_help": "Ordrar hämtas från webshoppen och bokförs."
+    "shop_help": "Ordrar hämtas från webshoppen och bokförs.",
+    "zettle": "Zettle",
+    "zettle_help": "Betalda köp och återbetalningar hämtas till Ordersidan, där du bokför dem."
   }
 }

@@ -449,7 +449,7 @@
     "keywords_templates": "Booking templates, Learned patterns, Counterparties",
     "keywords_invoicing": "Invoice number, Prefix, Payment terms, Our reference, Invoice types, Quote, Pro forma, Recurring, Self-billing, Bank accounts, Bankgiro, Swish, IBAN, Payment link, PDF, Print",
     "keywords_sending": "Sender, Own domain, Reply-to, Copy, Email texts, Reminders, Reminder texts",
-    "keywords_connections": "Bank, PSD2, Skatteverket, Agent, Peppol, E-invoice, WhatsApp, Stripe, Shopify, WooCommerce",
+    "keywords_connections": "Bank, PSD2, Skatteverket, Agent, Peppol, E-invoice, WhatsApp, Stripe, Shopify, WooCommerce, Zettle",
     "keywords_api": "MCP, Claude, ChatGPT, Grok, API keys, OAuth"
   },
   "settings_payments": {
@@ -7920,6 +7920,8 @@
     "desc_behandlingshistorik": "Who did what and when: posted vouchers, corrections and changes to the system (BFL 5 kap. 11 §)",
     "name_bokslutsbilagor": "Closing binder",
     "desc_bokslutsbilagor": "The binder per fiscal year: every balance sheet account as of the balance sheet date with booked balance, supporting documents, sign-off and attached files",
+    "name_systemdokumentation": "System documentation",
+    "desc_systemdokumentation": "How the bookkeeping is organised, generated from the company's settings: chart of accounts, subsystems, voucher series, processing rules, access and integrations (BFL 5 kap. 11 §)",
     "bh_summary": "{count, plural, =1 {1 event} other {# events}}",
     "bh_range_to": "to",
     "bh_version": "Software version",
@@ -9811,6 +9813,27 @@
     "signed_other_date": "through {date} ({who}), not the balance sheet date",
     "unsigned": "Not signed off"
   },
+  "systemdokumentation": {
+    "load_failed": "Could not generate the system documentation.",
+    "summary": "System documentation for {period}, generated {generated} from the company's settings. Download it as PDF and keep it with the accounting records.",
+    "col_section": "Section",
+    "col_content": "Content",
+    "row_system": "Bookkeeping system",
+    "row_version": "program version {version}",
+    "version_unknown": "unknown",
+    "row_accounts": "Chart of accounts",
+    "accounts_count": "{standard}, {count, plural, =1 {1 active account} other {# active accounts}}",
+    "row_delsystem": "Subsystems in use",
+    "row_series": "Voucher series",
+    "row_lock": "Bookkeeping locked through",
+    "no_lock_date": "No lock date",
+    "row_members": "Access",
+    "members_count": "{count, plural, =1 {1 user} other {# users}}",
+    "row_api_keys": "API keys",
+    "api_keys_count": "{count, plural, =0 {No active keys} =1 {1 active key} other {# active keys}}",
+    "row_integrations": "Integrations",
+    "supplement_note": "The document describes the program and the company's settings. The company's own routines, archive plan and responsible persons are filled in with the templates under Help."
+  },
   "parties": {
     "decision_role_supplier": "Set up as supplier",
     "decision_role_customer": "Set up as customer",
@@ -10433,7 +10456,6 @@
     "all_done": "All done",
     "run_hint": "Copies the prompt and opens {client} in a new tab. Paste it into the chat and press Send.",
     "run_hint_desktop": "Opens {client} with the prompt filled in.",
-    "prefill_caution": "Claude shows a warning for filled-in links: the text comes from {appName}, so read it and press Send.",
     "prefilled_backup": "No text there? It is copied, so paste it.",
     "chatgpt_pick_app": "In ChatGPT: pick + → Developer mode → {appName} before you send.",
     "no_app": "Nothing opened? Then Claude Desktop is probably not on this computer.",
@@ -10442,7 +10464,6 @@
     "prompt_company_pin": "The company is {company} (company_id {companyId}): send company_id on every call to Accounted.",
     "step_2_chatgpt": "Open ChatGPT on the web: Settings → Security and login → turn on Developer mode. Then go to Plugins, choose + and create an app named {appName} with the address above.",
     "step_2_grok": "In Grok under Connectors: choose New Connector → Custom, name it {appName} and paste the address.",
-    "run_hint_prefilled": "Opens {client} in a new tab with the prompt filled in. It is copied too, in case it does not show.",
     "hero_title": "Start here",
     "connect_kicker": "Get started",
     "connect_title": "Connect your AI and let it do the work",
@@ -11649,6 +11670,8 @@
     "stripe_help": "Payment links on invoices and the Stripe balance as a bank feed.",
     "shopify": "Shopify",
     "woocommerce": "WooCommerce",
-    "shop_help": "Orders are fetched from the web shop and booked."
+    "shop_help": "Orders are fetched from the web shop and booked.",
+    "zettle": "Zettle",
+    "zettle_help": "Paid purchases and refunds are fetched to the Orders page, where you book them."
   }
 }
