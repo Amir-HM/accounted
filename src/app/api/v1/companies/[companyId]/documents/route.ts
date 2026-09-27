@@ -278,6 +278,12 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
           // observe depends on the subscribers having finished. Awaiting
           // them held the 201 for the length of a model call.
           deferUploadedEvent: true,
+          // Linked to a verifikat on arrival: the booking is already known,
+          // so no model pass, the same rule as the provider underlag import
+          // and /api/import/documents/attach. An agent moving a company's
+          // underlag over links thousands of files in a row and paid one
+          // extraction call per file. An unlinked upload is still read.
+          ...(journalEntryId ? { extractionOwner: 'none' as const } : {}),
         },
       )
       // `storage_path` is deliberately omitted from the public response:
