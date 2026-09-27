@@ -31,7 +31,6 @@ export async function requeueStaleVerdicts(supabase: SupabaseClient, limit: numb
   type Verdict = { document_id: string; company_id: string; doc_type: string; rules_version: string | null; created_at: string }
   const rows: Verdict[] = []
   for (const change of CLASSIFY_RULES.changed) {
-    if (rows.length >= limit * 2) break
     const { data, error } = await supabase
       .from('document_classifications')
       .select('document_id, company_id, doc_type, rules_version, created_at')
