@@ -1183,13 +1183,19 @@ describe('commitPendingOperation: credit_supplier_invoice', () => {
       credited_invoice_id: original.id,
     })
     const { supabase, enqueueMany, findCall } = createQueuedMockSupabase()
+    // The shared credit service (lib/supplier-invoices/credit.ts) reads the
+    // original, checks the period lock and the method, then writes.
     enqueueMany([
-      { data: { id: 'op-1' }, error: null },
+      { data: { id: 'op-1' }, error: null }, // CAS claim
       { data: original, error: null },
-      { data: 2, error: null },
-      { data: creditNote, error: null },
-      { data: null, error: null },
+      { data: { bookkeeping_locked_through: null }, error: null }, // lock date
+      { data: null, error: null }, // fiscal period: none covering, not locked
       { data: { accounting_method: 'accrual' }, error: null },
+      { data: 2, error: null }, // arrival number
+      { data: creditNote, error: null }, // credit note insert
+      { data: null, error: null }, // items insert
+      { data: null, error: null }, // link the verifikat
+      { data: { id: original.id }, error: null }, // flip the original
       { data: null, error: null },
       { data: null, error: null },
       { data: null, error: null },
@@ -1215,11 +1221,47 @@ describe('commitPendingOperation: credit_supplier_invoice', () => {
       supabase,
       'company-1',
       'user-1',
-      creditNote,
+      expect.objectContaining({ id: creditNote.id }),
       originalItems,
       'swedish_business',
       'Office Depot AB',
     )
+  })
+
+  it('refuses a partial inbox credit note at commit and writes nothing', async () => {
+    const original = {
+      ...makeSupplierInvoice({ id: 'supplier-invoice-1', status: 'registered', total: 1250 }),
+      supplier: { name: 'Office Depot AB', supplier_type: 'swedish_business' },
+      items: [],
+    }
+    const { supabase, enqueueMany, findCall } = createQueuedMockSupabase()
+    enqueueMany([
+      { data: { id: 'op-1' }, error: null },
+      { data: original, error: null },
+      {
+        data: {
+          id: 'inbox-1',
+          document_id: null,
+          matched_supplier_id: null,
+          created_supplier_invoice_id: null,
+          created_journal_entry_id: null,
+          extracted_data: { documentKind: 'credit_note', invoice: { currency: 'SEK' }, totals: { total: -250 } },
+        },
+        error: null,
+      },
+      { data: null, error: null },
+    ])
+
+    const op = makePendingOp({
+      operation_type: 'credit_supplier_invoice',
+      params: { supplier_invoice_id: original.id, inbox_item_id: '66666666-6666-4666-8666-666666666666' },
+    })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('failed')
+    expect(result.http_status).toBe(400)
+    expect(result.code).toBe('SI_CREDIT_PARTIAL')
+    expect(findCall('supplier_invoices', 'insert')).toBeUndefined()
   })
 })
 

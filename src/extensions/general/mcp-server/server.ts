@@ -272,6 +272,11 @@ import {
 import { findUnknownArgKeys, listArgKeys, shortestExampleFor } from './arg-guard'
 import { decodeToolArgs } from './unicode-escape-guard'
 import { findSupplierCandidates, type SupplierRow } from './supplier-candidates'
+import { creditNoteHandoff } from './inbox-credit-note'
+import { resolveInboxKind } from '@/lib/documents/inbox-kind'
+import { resolveInboxCreditTarget } from '@/lib/supplier-invoices/credit-target'
+import { CreditSupplierInvoiceInputSchema, creditSupplierInvoice } from '@/lib/supplier-invoices/credit'
+import { throwOutcomeFailure } from '@/lib/operations/errors'
 import {
   matchSupplierByIdentity,
   matchSupplierId,
@@ -14032,12 +14037,12 @@ export const tools: McpTool[] = [
     name: 'gnubok_create_supplier_invoice_from_inbox',
     keywords: ['leverantörsfaktura', 'inkorg', 'underlag'],
     title: 'Create Supplier Invoice from Inbox',
-    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Stages for human review; honors dry_run. Unresolved supplier → staged:false + candidates + next.",
+    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Honors dry_run. Unresolved supplier or a credit note → staged:false + next.",
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        inbox_item_id: { type: 'string', description: 'UUID of the inbox item to convert' },
+        inbox_item_id: { type: 'string' },
         supplier_id_override: { type: 'string', description: 'Force this supplier UUID instead of the matched/extracted one' },
         vat_treatment_override: { type: 'string', enum: ['standard_25', 'reduced_12', 'reduced_6', 'reverse_charge', 'export', 'exempt'], description: 'Override extracted VAT treatment' },
         invoice_date_override: { type: 'string', description: 'Override extracted invoice date (YYYY-MM-DD). Use when OCR misses the date.' },
@@ -14087,7 +14092,7 @@ export const tools: McpTool[] = [
       // Fetch the inbox item with the attached source document
       const { data: inbox, error: inboxErr } = await supabase
         .from('invoice_inbox_items')
-        .select('id, status, extracted_data, matched_supplier_id, created_supplier_invoice_id, document_id')
+        .select('id, status, extracted_data, matched_supplier_id, created_supplier_invoice_id, document_id, kind_hint')
         .eq('id', inboxItemId)
         .eq('company_id', companyId)
         .single()
@@ -14129,6 +14134,21 @@ export const tools: McpTool[] = [
               : match.matchedOn === 'vat_number'
                 ? 'lookup_vat_number'
                 : 'lookup_name'
+        }
+      }
+
+      // A credit note is never a payable of its own (issue #2980): hand over
+      // to gnubok_credit_supplier_invoice with the invoice it credits.
+      if (resolveInboxKind(inbox) === 'credit_note') {
+        const creditTarget = await resolveInboxCreditTarget(supabase, companyId, inbox, { supplierId })
+        const handoff = creditNoteHandoff(inboxItemId, creditTarget)
+        return {
+          staged: false,
+          risk_level: getRiskLevel('create_supplier_invoice_from_inbox'),
+          actor: actor ?? { type: 'user' },
+          message: handoff.message,
+          preview: handoff.preview,
+          ...(handoff.next ? { next: handoff.next } : {}),
         }
       }
 
@@ -19343,13 +19363,13 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_credit_supplier_invoice',
-    keywords: ['leverantörsfaktura', 'kreditfaktura', 'kreditera'],
+    keywords: ['leverantörsfaktura', 'kreditfaktura', 'kreditera', 'kreditnota', 'inkorg'],
     title: 'Credit Supplier Invoice (Kreditfaktura)',
-    description: 'Stage credit-note (kreditfaktura) for a supplier invoice: mirror invoice with negative effect + reverses registration JE (accrual).',
+    description: 'Stage a kreditfaktura reversing a whole supplier invoice. For an inbox credit note pass inbox_item_id: its date, number and document are used.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { supplier_invoice_id: { type: 'string' } },
+      properties: { supplier_invoice_id: { type: 'string' }, inbox_item_id: { type: 'string' } },
       required: ['supplier_invoice_id'],
     },
     outputSchema: STAGED_OPERATION_SCHEMA,
@@ -19357,29 +19377,52 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase, actor) {
       const id = args.supplier_invoice_id as string
       if (!id) throw new Error('supplier_invoice_id is required')
+      const parsed = CreditSupplierInvoiceInputSchema.safeParse(
+        typeof args.inbox_item_id === 'string' ? { inbox_item_id: args.inbox_item_id } : {},
+      )
+      if (!parsed.success) throw Object.assign(new Error('inbox_item_id must be a UUID'), { code: 'VALIDATION_ERROR' })
 
-      const { data: inv } = await supabase
-        .from('supplier_invoices')
-        .select('id, supplier_invoice_number, total, currency, status, supplier:suppliers(name)')
-        .eq('id', id).eq('company_id', companyId).single()
-      if (!inv) throw new Error('Supplier invoice not found')
-      if (inv.status === 'credited') throw new Error('Fakturan har redan krediterats')
+      // The approval runs this same service for real: the dry run refuses
+      // now what the commit would refuse (already credited, a partial or
+      // mismatching credit note, a locked period), and says which date the
+      // credit books on.
+      const preview = await creditSupplierInvoice(
+        { supabase, companyId, userId, log },
+        id,
+        parsed.data,
+        { dryRun: true },
+      )
+      if (!preview.ok) throwOutcomeFailure(preview)
+      if (!preview.dryRun) throw new Error('credit preview did not run as a dry run')
+      const p = preview.preview as {
+        credit_note: { supplier_invoice_number: string; total: number; currency: string }
+        original_supplier_invoice_number: string
+        supplier_name: string | null
+        credit_date: string
+        date_source: string
+        would_create_reversal_journal_entry: boolean
+      }
 
       return stagePendingOperation(supabase, companyId, userId, 'credit_supplier_invoice',
-        `Kreditera leverantörsfaktura ${inv.supplier_invoice_number}`,
-        { supplier_invoice_id: id },
+        `Kreditera leverantörsfaktura ${p.original_supplier_invoice_number}`,
+        { supplier_invoice_id: id, ...parsed.data },
         {
-          supplier_invoice_number: inv.supplier_invoice_number,
-          supplier_name: (inv.supplier as { name?: string } | null)?.name,
-          total: inv.total,
-          currency: inv.currency,
-          method: 'creates KREDIT- mirror invoice + reverses registration JE (accrual)',
+          supplier_invoice_number: p.original_supplier_invoice_number,
+          supplier_name: p.supplier_name,
+          total: p.credit_note.total,
+          currency: p.credit_note.currency,
+          credit_note_number: p.credit_note.supplier_invoice_number,
+          credit_date: p.credit_date,
+          credit_date_source: p.date_source,
+          posts_journal_entry: p.would_create_reversal_journal_entry,
+          ...(parsed.data.inbox_item_id ? { inbox_item_id: parsed.data.inbox_item_id } : {}),
         },
         actor,
         {
           description: 'After approval the credit note is posted and the leverantörsskuld cleared. Verify with gnubok_get_supplier_ledger.',
           tool: 'gnubok_get_supplier_ledger',
-        }
+        },
+        { dateForPeriodCheck: p.credit_date },
       )
     },
   },

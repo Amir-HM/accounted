@@ -3758,6 +3758,19 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Posten är redan kopplad till en leverantörsfaktura.',
     message_en: 'The inbox item is already linked to a supplier invoice.',
   },
+  // Issue #2980: a credit note never becomes a payable of its own.
+  INBOX_ITEM_IS_CREDIT_NOTE: {
+    httpStatus: 409,
+    message_sv:
+      'Posten är en kreditfaktura. Kreditera fakturan den avser i stället för att registrera en ny leverantörsfaktura.',
+    message_en:
+      'The inbox item is a credit note. Credit the invoice it refers to instead of registering a new supplier invoice.',
+    remediation: {
+      description:
+        'details.credit_target says which invoice it credits (status matched, partial, amount_differs, already_credited, ambiguous or none, with candidates). For a matched one, credit it with the inbox item: POST /supplier-invoices/{id}/credit with inbox_item_id. If the reading is wrong (it is a normal invoice), correct documentKind and the totals on the inbox item first.',
+      tool: 'gnubok_credit_supplier_invoice',
+    },
+  },
   INBOX_ITEM_EDIT_LOCKED: {
     httpStatus: 409,
     message_sv: 'Posten är redan kopplad till en leverantörsfaktura och kan inte ändras.',
@@ -4093,6 +4106,35 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     httpStatus: 500,
     message_sv: 'Kunde inte kreditera leverantörsfakturan.',
     message_en: 'Failed to credit supplier invoice.',
+  },
+  // Issue #2980: a supplier's credit note from the inbox credits the invoice
+  // it references, and only when it is for all of it.
+  SI_CREDIT_PARTIAL: {
+    httpStatus: 400,
+    message_sv:
+      'Kreditfakturan gäller bara en del av fakturan. Kreditera krediterar alltid hela fakturan, så den kan inte användas här. Bokför kreditfakturan som en egen verifikation, eller kreditera hela fakturan och registrera en ny för det som återstår.',
+    message_en:
+      'The credit note covers only part of the invoice. Crediting always reverses the whole invoice, so it cannot be used here. Book the credit note as a verifikat of its own, or credit the whole invoice and register a new one for what remains.',
+    remediation: {
+      description:
+        'details carries credit_total and invoice_total. Do not credit the whole invoice for a partial credit note. Hand over to the user: book the credit note as its own verifikat (reverse the credited part on 2440, the cost account and 2641), or credit the whole invoice and register a corrected invoice for the rest.',
+    },
+  },
+  SI_CREDIT_DOCUMENT_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Kreditfakturan stämmer inte med fakturan: leverantör, valuta eller belopp skiljer sig, eller så saknas beloppet. Kontrollera uppgifterna i inkorgen.',
+    message_en:
+      'The credit note does not fit the invoice: the supplier, the currency or the amount differs, or the amount was not read. Check the reading in the inbox.',
+    remediation: {
+      description:
+        'details.reason is supplier, currency, exceeds or amount_missing. Correct the reading (PATCH /inbox-items/{id}) or pick the invoice the credit note actually references.',
+    },
+  },
+  SI_CREDIT_DOCUMENT_UNAVAILABLE: {
+    httpStatus: 409,
+    message_sv: 'Kreditfakturans dokument hittades inte eller hör redan till en annan verifikation.',
+    message_en: 'The credit note document was not found or already belongs to another verifikat.',
   },
   SI_BATCH_NOT_FOUND: {
     httpStatus: 404,
