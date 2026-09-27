@@ -3,7 +3,8 @@
  *
  * Priority chain:
  * 1. Zod validation field errors
- * 2. Postgres error code map
+ * 2. Postgres error code map (a database error envelope never shows the
+ *    database's own text: see databaseErrorMessage)
  * 3. HTTP status code map
  * 4. Context-specific fallback
  * 5. Generic fallback
@@ -55,23 +56,73 @@ function pick(b: Bilingual, locale: ErrorLocale): string {
 
 // A RESTRICT foreign key names the register that still depends on the row, so
 // the refusal can say what the row is and what to do instead. Keyed by
-// constraint name; consulted only for 23503.
+// constraint name; consulted only for 23503. A refusal nobody mapped still
+// gets the generic 23503 sentence below, never the database's own text.
 //
-// depreciation_schedules_journal_entry_id_fkey: delete_last_voucher on a
-// planenlig avskrivning. The database refuses at the DELETE, before anything
-// is removed, and that refusal is deliberate (issue #2779): a posted
-// avskrivning is corrected with storno, not deleted.
-const FOREIGN_KEY_REFUSAL_MAP: Record<string, Bilingual> = {
-  depreciation_schedules_journal_entry_id_fkey: {
-    sv: 'Verifikatet bokför en avskrivning i anläggningsregistret och kan inte raderas. Gör en rättelse (storno) i stället.',
-    en: 'This voucher posts a depreciation in the fixed asset register and cannot be deleted. Make a correction (storno) instead.',
-  },
+// Every entry is a delete a user can start and the database refuses on
+// purpose, before anything is removed. Sizing (#2831): Postgres logs, 30 days
+// to 2026-09-27, sandbox teardown excluded.
+//
+// The voucher DELETE route (delete_last_voucher) on a verifikat a register
+// still points at. A posted verifikat is corrected, never deleted (BFL 5 kap.
+// 5 §), so each sentence names the register's own way back:
+//   - depreciation_schedules_journal_entry_id_fkey: planenlig avskrivning
+//     (issue #2779).
+//   - assets_disposal_journal_entry_id_fkey: avyttring or utrangering.
+//   - accrual_schedule_installments_journal_entry_id_fkey: a periodisering's
+//     monthly upplösning (7 refusals).
+//   - accrual_schedules_origin_journal_entry_id_fkey: the invoice booking a
+//     periodisering starts from. Crediting the invoice cancels the schedule
+//     and reverses its upplösningar (cancelSchedulesForSource).
+//   - salary_runs_*_entry_id_fkey: the four verifikat a booked payroll run
+//     posts (2 refusals). "Korrigera lönekörning (storno)" is the run's own
+//     correction.
+// The draft payroll run DELETE route:
+//   - salary_payment_files_salary_run_id_fkey: a run that went back to draft
+//     after its payment file was generated. The file is räkenskapsinformation
+//     kept for seven years (migration 20260919105035), so the run stays
+//     (3 refusals).
+const DEPRECIATION_VOUCHER: Bilingual = {
+  sv: 'Verifikatet bokför en avskrivning i anläggningsregistret och kan inte raderas. Gör en rättelse (storno) i stället.',
+  en: 'This voucher posts a depreciation in the fixed asset register and cannot be deleted. Make a correction (storno) instead.',
+}
+const DISPOSAL_VOUCHER: Bilingual = {
+  sv: 'Verifikatet bokför en avyttring i anläggningsregistret och kan inte raderas. Gör en rättelse (storno) i stället.',
+  en: 'This voucher posts a disposal in the fixed asset register and cannot be deleted. Make a correction (storno) instead.',
+}
+const ACCRUAL_RELEASE_VOUCHER: Bilingual = {
+  sv: 'Verifikatet löser upp en periodisering och kan inte raderas. Gör en rättelse (storno) i stället.',
+  en: 'This voucher releases an accrual and cannot be deleted. Make a correction (storno) instead.',
+}
+const ACCRUAL_ORIGIN_VOUCHER: Bilingual = {
+  sv: 'Verifikatet bokför en faktura som periodiseras och kan inte raderas. Kreditera fakturan i stället, så avbryts periodiseringen.',
+  en: 'This voucher books an invoice that is being accrued and cannot be deleted. Credit the invoice instead, which cancels the accrual.',
+}
+const PAYROLL_VOUCHER: Bilingual = {
+  sv: 'Verifikatet bokför en lönekörning och kan inte raderas. Använd Korrigera lönekörning (storno) på lönekörningen i stället.',
+  en: 'This voucher posts a payroll run and cannot be deleted. Use Correct payroll run (storno) on the payroll run instead.',
+}
+const PAYROLL_RUN_WITH_PAYMENT_FILE: Bilingual = {
+  sv: 'Lönekörningen kan inte raderas eftersom en betalfil har skapats för den, och betalfilen ska sparas i sju år. Ändra lönekörningen i stället.',
+  en: 'This payroll run cannot be deleted because a payment file was generated for it, and that file must be kept for seven years. Edit the payroll run instead.',
 }
 
-function matchForeignKeyRefusal(obj: Record<string, unknown>, locale: ErrorLocale): string | null {
-  if (obj.code !== '23503' || typeof obj.message !== 'string') return null
+const FOREIGN_KEY_REFUSAL_MAP: Record<string, Bilingual> = {
+  depreciation_schedules_journal_entry_id_fkey: DEPRECIATION_VOUCHER,
+  assets_disposal_journal_entry_id_fkey: DISPOSAL_VOUCHER,
+  accrual_schedule_installments_journal_entry_id_fkey: ACCRUAL_RELEASE_VOUCHER,
+  accrual_schedules_origin_journal_entry_id_fkey: ACCRUAL_ORIGIN_VOUCHER,
+  salary_runs_salary_entry_id_fkey: PAYROLL_VOUCHER,
+  salary_runs_avgifter_entry_id_fkey: PAYROLL_VOUCHER,
+  salary_runs_vacation_entry_id_fkey: PAYROLL_VOUCHER,
+  salary_runs_pension_entry_id_fkey: PAYROLL_VOUCHER,
+  salary_payment_files_salary_run_id_fkey: PAYROLL_RUN_WITH_PAYMENT_FILE,
+}
+
+function matchForeignKeyRefusal(code: string, message: string, locale: ErrorLocale): string | null {
+  if (code !== '23503') return null
   for (const [constraint, text] of Object.entries(FOREIGN_KEY_REFUSAL_MAP)) {
-    if (obj.message.includes(`"${constraint}"`)) return pick(text, locale)
+    if (message.includes(`"${constraint}"`)) return pick(text, locale)
   }
   return null
 }
@@ -226,6 +277,82 @@ function tryMatchKnownError(message: string): string | null {
 }
 
 /**
+ * A Postgres SQLSTATE (two-character class, three-character subclass) or a
+ * PostgREST PGRSTnnn code. Every SQLSTATE carries a digit, which keeps an
+ * all-letter five-character value (a ROT/RUT work code such as 'BUTIK') from
+ * being read as one. Our own codes are words (/^[A-Z_]+$/), never this shape.
+ */
+function isDatabaseErrorCode(code: unknown): code is string {
+  return typeof code === 'string' && (/^(?=.*\d)[0-9A-Z]{5}$/.test(code) || /^PGRST\d{3}$/.test(code))
+}
+
+/**
+ * Codes whose message the database writes itself: data exceptions (class 22),
+ * integrity constraint violations (23), syntax and access rule violations
+ * (42), and PostgREST's own PGRST codes. That text is English and names
+ * tables, columns, constraints and the rejected values, so it never reaches
+ * the user. Codes our RPCs speak through by default (P0001 raise_exception
+ * and the rest) are not in this set: their message is ours.
+ */
+function isDatabaseAuthoredCode(code: string): boolean {
+  return code.startsWith('PGRST') || ['22', '23', '42'].includes(code.slice(0, 2))
+}
+
+/** A message that opens with a registered code ("CODE" or "CODE: detail"). */
+function registeredCodeMessage(message: string, locale: ErrorLocale): string | null {
+  const code = /^([A-Z][A-Z0-9_]*)(?::|$)/.exec(message)?.[1]
+  const entry = code ? getErrorEntry(code) : undefined
+  return entry ? pick({ sv: entry.message_sv, en: entry.message_en }, locale) : null
+}
+
+/**
+ * What a database error envelope says to the user (issue #2831).
+ *
+ * supabase-js hands back `{ code, message, details, hint }`: the same shape as
+ * an app error envelope, which is why the bare-envelope branch used to return
+ * the database's English text, constraint names included. Here the message
+ * is heard only when it was written for the reader: a constraint with its own
+ * sentence, a registered code (our RPCs raise e.g. "CASH_ACCOUNT_PRIMARY_
+ * INELIGIBLE: disabled" under 23514), a Swedish sentence, or a known pattern.
+ * For a database-authored code anything else gets the code's generic Swedish
+ * sentence, then the status, context and generic fallbacks.
+ *
+ * The known patterns apply to every code: delete_last_voucher raises its
+ * English refusals as P0001, and the patterns written for them (#369) went
+ * unused once the bare-envelope branch returned them first. Beyond these
+ * translations, null for the codes our RPCs speak through (P0001 and the
+ * rest): the caller keeps its handling, so their messages pass as before.
+ */
+function databaseErrorMessage(
+  code: string,
+  message: string,
+  options: GetErrorMessageOptions,
+): string | null {
+  const locale = options.locale ?? 'sv'
+  const text = message.trim()
+  if (text) {
+    const refusal = matchForeignKeyRefusal(code, text, locale)
+    if (refusal) return refusal
+    const registered = registeredCodeMessage(text, locale)
+    if (registered) return registered
+    if (isSwedishDatabaseMessage(text)) return text
+    const known = tryMatchKnownError(text)
+    if (known) return known
+  }
+
+  if (!isDatabaseAuthoredCode(code)) return null
+  const mapped = POSTGRES_ERROR_MAP[code]
+  return mapped ? pick(mapped, locale) : fallbackMessage(options)
+}
+
+/** Steps 4 to 6 of the priority chain: HTTP status, context, generic. */
+function fallbackMessage({ context, statusCode, locale = 'sv' }: GetErrorMessageOptions): string {
+  if (statusCode && HTTP_STATUS_MAP[statusCode]) return pick(HTTP_STATUS_MAP[statusCode], locale)
+  if (context && CONTEXT_FALLBACKS[context]) return pick(CONTEXT_FALLBACKS[context], locale)
+  return pick(GENERIC_FALLBACK, locale)
+}
+
+/**
  * Swedish tokens that mark a sentence as Swedish. STRONG ones are
  * unambiguous (never English, rare in technical output) and count 2 on their
  * own; WEAK ones are common function words that also exist in English or are
@@ -296,10 +423,27 @@ export function looksLikeUserFacingSwedish(message: string): boolean {
   if (!text) return false
   if (TECHNICAL_LEAK_PATTERNS.some((p) => p.test(text))) return false
   if (/[åäöÅÄÖ]/.test(text)) return true
+  return hasSwedishWords(text)
+}
+
+function hasSwedishWords(text: string): boolean {
   if (SWEDISH_STRONG_RE.test(text)) return true
   const weak = new Set<string>()
   for (const m of text.matchAll(SWEDISH_WEAK_RE)) weak.add(m[2].toLowerCase())
   return weak.size >= 2
+}
+
+/**
+ * looksLikeUserFacingSwedish for a message the database raised, which is
+ * judged on its own words only. The å/ä/ö shortcut does not apply: our RPCs
+ * raise English prose around Swedish names ("Only byrå team owners and
+ * admins ...", "... is räkenskapsinformation per BFL"), and Postgres quotes
+ * the rejected value verbatim (22P02: invalid input syntax for type uuid:
+ * "Företag"), so quoted text does not count either.
+ */
+function isSwedishDatabaseMessage(text: string): boolean {
+  if (TECHNICAL_LEAK_PATTERNS.some((p) => p.test(text))) return false
+  return hasSwedishWords(text.replace(/"[^"]*"/g, ''))
 }
 
 /**
@@ -417,7 +561,7 @@ export function getErrorMessage(
   error: unknown,
   options: GetErrorMessageOptions = {}
 ): string {
-  const { context, statusCode, locale = 'sv' } = options
+  const { locale = 'sv' } = options
 
   // 1. If it's a string, check if it's already Swedish or matches a known pattern
   if (typeof error === 'string' && error.trim()) {
@@ -432,9 +576,13 @@ export function getErrorMessage(
 
     // Before the bare-envelope branch below: a raw PostgREST error has the
     // same { code, message } shape and would be returned verbatim from there.
-    const foreignKeyRefusal = matchForeignKeyRefusal(obj, locale)
-    if (foreignKeyRefusal) return foreignKeyRefusal
+    // Keyed on `message` being present too, the shape supabase-js returns:
+    // a route body like { error: 'Swedish sentence', code } is not one.
     if (obj.code === 'PT409') return conflictMessage(obj.message, locale)
+    if (isDatabaseErrorCode(obj.code) && typeof obj.message === 'string') {
+      const databaseMessage = databaseErrorMessage(obj.code, obj.message, options)
+      if (databaseMessage !== null) return databaseMessage
+    }
 
     // Bare envelope inner-error shape: { code, message, message_en?, ... }.
     // Happens when a caller forwards `result.error` (the inner object) instead
@@ -489,6 +637,12 @@ export function getErrorMessage(
         details?: unknown
       }
       if (structured.code === 'PT409') return conflictMessage(structured.message, locale)
+
+      // A database error forwarded inside the envelope is judged the same way.
+      if (isDatabaseErrorCode(structured.code) && typeof structured.message === 'string') {
+        const databaseMessage = databaseErrorMessage(structured.code, structured.message, options)
+        if (databaseMessage !== null) return databaseMessage
+      }
 
       // The canonical envelope keeps Zod issues under error.details. Read
       // them before the generic VALIDATION_ERROR registry message in either locale.
@@ -771,18 +925,8 @@ export function getErrorMessage(
     if (isSwedishUserMessage(error.message)) return error.message
   }
 
-  // 4. HTTP status code map
-  if (statusCode && HTTP_STATUS_MAP[statusCode]) {
-    return pick(HTTP_STATUS_MAP[statusCode], locale)
-  }
-
-  // 5. Context-specific fallback
-  if (context && CONTEXT_FALLBACKS[context]) {
-    return pick(CONTEXT_FALLBACKS[context], locale)
-  }
-
-  // 6. Generic fallback
-  return pick(GENERIC_FALLBACK, locale)
+  // 4-6. HTTP status code map, context-specific fallback, generic fallback
+  return fallbackMessage(options)
 }
 
 // PSD2 bank-connection OAuth callback errors. The Enable Banking callback
