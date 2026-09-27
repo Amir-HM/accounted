@@ -3474,6 +3474,7 @@
   "tx_quick_review": {
     "vat_doc_wins": "Bokförs med underlagets moms {amount}.",
     "vat_rate_wins": "Bokförs med satsens moms {amount}.",
+    "vat_template_rate_differs": "Underlaget anger {doc} % moms, mallen bokar {template} %.",
     "changed_from": "Bytt från {label}. Kontrollera konto och moms nedan.",
     "changed_undo": "Ångra",
     "vat_use_proposal": "Använd förslagets {amount}",
