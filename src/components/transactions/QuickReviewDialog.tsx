@@ -13,7 +13,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { ToastAction } from '@/components/ui/toast'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { AttnLine } from '@/components/ui/attn-line'
-import { needsUnderlagPrompt, vatDisagrees, type TransactionUnderlag } from '@/lib/transactions/underlag-read'
+import { needsUnderlagPrompt, vatDisagrees, vatTreatmentAfterAccountChange, type TransactionUnderlag } from '@/lib/transactions/underlag-read'
 
 async function fetchUnderlag(url: string): Promise<TransactionUnderlag> {
   const res = await fetch(url)
@@ -159,21 +159,40 @@ export default function QuickReviewDialog({
         null)
   const inDialogExtraction = useDocumentExtraction(inDialogDocId)
   const readDocId = inDialogExtraction.status === 'succeeded' ? inDialogDocId : null
+  // What the underlag says, whichever door it came through: the row's own
+  // (pinned, or matched in the inbox), or the one attached here once it has
+  // been read. Its moms is offered over the proposal's rate below and is
+  // what an account change books; a document dropped in here used to be
+  // read for the assistant only, never for the moms (PostHog PH 118).
+  const docFacts = underlag?.facts ?? inDialogExtraction.facts
   const [docReading, setDocReading] = useState(false)
   // The whole dialog takes a dropped file, not only the dashed box: the box
   // is folded away until asked for, so the first drag also unfolds it.
   const dropSurfaceRef = useRef<HTMLDivElement>(null)
 
-  // An account the person (or the assistant) sets: the proposal becomes an
-  // account booking on it. A class-2 account carries no VAT.
+  // An account the person sets: the proposal becomes an account booking on
+  // it, with the moms vatTreatmentAfterAccountChange decides (none on a
+  // class-2 account, the underlag's rate over a carried-over default). The
+  // rate counts when the document is in the row's currency, the condition
+  // its moms amount is offered under below.
   const amountForLegs = transaction?.amount ?? 0
+  const underlagVatRate =
+    docFacts && (docFacts.currency ?? transaction?.currency) === transaction?.currency ? docFacts.vat_rate : null
+  const vatRegistered = companySettings?.vat_registered
   const handleAccountChange = useCallback((account: string) => {
     if (!account) return
     setProposal((p) => {
       const current = p.booking.kind === 'account' ? p.booking.vat_treatment : (p.vat_treatment ?? 'exempt')
-      return withAccount(p, account, account.startsWith('2') ? 'exempt' : current, amountForLegs)
+      const vat = vatTreatmentAfterAccountChange({
+        account,
+        current,
+        underlagRate: underlagVatRate,
+        chosenByHand: !useDocVat,
+        vatRegistered,
+      })
+      return withAccount(p, account, vat, amountForLegs)
     })
-  }, [amountForLegs])
+  }, [amountForLegs, underlagVatRate, useDocVat, vatRegistered])
   // The assistant's pick, taken into this review: the proposal becomes the
   // account it named with its VAT. A pick that pre-filled on its own leaves
   // nothing to undo; one the person clicked, or one read off a document
@@ -385,7 +404,7 @@ export default function QuickReviewDialog({
         : l.side === 'kredit' && /^26[123]/.test(l.account),
     )
     .reduce((sum, l) => sum + l.amount, 0)
-  const docVat = underlag?.facts?.vat_amount ?? null
+  const docVat = docFacts?.vat_amount ?? null
   const docVatUsable =
     docVat != null &&
     docVat > 0 &&
@@ -395,7 +414,7 @@ export default function QuickReviewDialog({
     !hasCounterpartyPattern &&
     proposedVatSek > 0 &&
     !sekConversionMissing &&
-    (underlag?.facts?.currency ?? tx.currency) === tx.currency
+    (docFacts?.currency ?? tx.currency) === tx.currency
   const proposedVatInTxCurrency =
     sekAmount && Math.abs(sekAmount) > 0 ? proposedVatSek * (Math.abs(tx.amount) / Math.abs(sekAmount)) : proposedVatSek
   const docVatDiffers = docVatUsable && vatDisagrees(docVat, proposedVatInTxCurrency)
@@ -904,7 +923,9 @@ export default function QuickReviewDialog({
           </div>
         )}
 
-        {/* Actions */}
+        {/* Actions. "Stäng", not "Avbryt": an underlag dropped in here is
+            archived and read the moment it lands, so closing undoes nothing;
+            the button only closes the review (PostHog PH 118). */}
         <div className="flex gap-2 pt-2">
           <Button
             variant="outline"
@@ -912,7 +933,7 @@ export default function QuickReviewDialog({
             onClick={() => onOpenChange(false)}
             disabled={isProcessing}
           >
-            {t('cancel')}
+            {t('close')}
           </Button>
           <Button
             className="flex-1"

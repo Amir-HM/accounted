@@ -3524,7 +3524,7 @@
     "doc_link_failed_booked_description": "Transaktionen bokfördes, men {count} underlag kunde inte bifogas verifikatet: {files}. Öppna verifikatet för att bifoga på nytt.",
     "doc_link_open_entry": "Öppna verifikatet",
     "generic_error": "Ett fel uppstod vid bokföring.",
-    "cancel": "Avbryt",
+    "close": "Stäng",
     "booking": "Bokför...",
     "fetching_rate": "Hämtar växelkurs…",
     "book": "Bokför"

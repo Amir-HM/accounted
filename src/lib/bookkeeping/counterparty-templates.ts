@@ -16,6 +16,7 @@ import {
 } from './vat-registration'
 import { dimensionsBagKey } from './dimension-resolver'
 import { resolveSekAmount } from './currency-utils'
+import { stripBankNoise as stripBankMethodPhrases } from './booking-templates'
 import { createLogger } from '@/lib/logger'
 import type {
   CategorizationTemplate,
@@ -131,6 +132,21 @@ export function normalizeCounterpartyName(raw: string): string {
   // Drop trailing month/initials tokens before merchant-name normalization so
   // "ngrok JW" and "Ngrok Mars" collapse to the same canonical "ngrok".
   return normalizeMerchantName(stripTrailingNoiseTokens(cleaned))
+}
+
+/**
+ * Whether a bank descriptor names a counterparty at all. Some lines carry
+ * only the bank's payment-method wording and a number: Handelsbanken writes
+ * "INTERNET BET 4" on every internet-bank payment, whoever was paid. Such a
+ * line is neither learned as a counterparty nor matched against one: a
+ * template learned from "INTERNET BET 1" sits one edit away from every other
+ * internet payment, so the fuzzy tier offered its account for unrelated
+ * suppliers (PostHog PH 118). The phrases are the catalog matcher's list
+ * (stripBankNoise in ./booking-templates), not a second one; the persisted
+ * key (normalizeCounterpartyName) is untouched.
+ */
+export function namesCounterparty(raw: string): boolean {
+  return /\p{L}/u.test(stripBankMethodPhrases(raw.toLowerCase()))
 }
 
 /**
@@ -328,7 +344,12 @@ export async function findCounterpartyTemplatesBatch(
 
   if (!allTemplates || allTemplates.length === 0) return result
 
-  const templates = allTemplates as CategorizationTemplate[]
+  // A template learned from a line that names no one ("internet bet 1",
+  // stored before namesCounterparty guarded learning) is identity-free: in
+  // the token and fuzzy tiers it would claim any descriptor near its words.
+  const templates = (allTemplates as CategorizationTemplate[]).filter((t) =>
+    namesCounterparty(t.counterparty_name),
+  )
 
   // Build alias lookup: lowercase alias → template. An alias that equals
   // another template's canonical counterparty_name (only reachable through a
@@ -371,7 +392,7 @@ export async function findCounterpartyTemplatesBatch(
     // original keeps every era's keys and aliases aligned (same rationale as
     // buildMerchantHistory in lib/transactions/category-suggestions.ts).
     const rawName = tx.merchant_name || tx.original_description || tx.description
-    if (!rawName) continue
+    if (!rawName || !namesCounterparty(rawName)) continue
 
     const normalized = normalizeCounterpartyName(rawName)
     if (!normalized || normalized.length < 2) continue
@@ -997,7 +1018,9 @@ export async function upsertCounterpartyTemplate(
   // ingest-time phrase strip would fork template identities by era.
   const rawName =
     transaction.merchant_name || transaction.original_description || transaction.description
-  if (!rawName) return
+  // A line that names no one ("INTERNET BET 4") teaches nothing about a
+  // counterparty: the matcher skips it too (namesCounterparty).
+  if (!rawName || !namesCounterparty(rawName)) return
 
   const normalized = normalizeCounterpartyName(rawName)
   if (!normalized || normalized.length < 2) return
