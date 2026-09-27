@@ -5,6 +5,14 @@ vi.mock('../lib/sync', () => ({
   syncAccountTransactions: vi.fn(),
 }))
 
+// The shared sync lease has its own tests (lib/__tests__/sync-lease.test.ts);
+// here only whether the initial backfill takes it matters.
+const { mockClaimSyncLease } = vi.hoisted(() => ({ mockClaimSyncLease: vi.fn() }))
+vi.mock('../lib/sync-lease', async () => {
+  const actual = await vi.importActual<typeof import('../lib/sync-lease')>('../lib/sync-lease')
+  return { ...actual, claimSyncLease: (...args: unknown[]) => mockClaimSyncLease(...args) }
+})
+
 // Keep ledger preparation deterministic. Selection writes use the real
 // configuration wrapper and an RPC stub; pg-real tests verify atomicity.
 const { mockAllocate, mockGetRevokedConnectionIds } = vi.hoisted(() => ({
@@ -221,6 +229,8 @@ describe('PATCH /accounts (enable-banking)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     eventBus.clear()
+    // Default: the initial backfill wins the shared sync lease.
+    mockClaimSyncLease.mockResolvedValue(true)
     mockRunReconciliation.mockResolvedValue({
       matches: [],
       applied: 0,
@@ -982,8 +992,95 @@ describe('PATCH /accounts (enable-banking)', () => {
       expect(body.initial_sync_error).toBeUndefined()
 
       expect(mockedSync).not.toHaveBeenCalled()
+      // No backfill, so no lease: a selection edit leaves the syncs alone.
+      expect(mockClaimSyncLease).not.toHaveBeenCalled()
       // Only one update: the original selection edit, no metadata follow-up.
       expect(stub.selectionReceipts).toHaveLength(1)
+    })
+
+    describe('shared sync lease (crm#188)', () => {
+      const pendingStub = (): SupabaseStub => ({
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'pending_selection',
+          accounts_data: [{ uid: 'acc-1', currency: 'SEK', enabled: true }],
+        },
+      })
+
+      it('claims the lease on the connection before the backfill starts, then runs it', async () => {
+        mockedSync.mockResolvedValue({
+          requestedFromDate: '2026-01-01',
+          historyNarrowed: false,
+          imported: 5,
+          duplicates: 0,
+          errors: 0,
+          returnedMinBookingDate: '2026-02-01',
+          returnedMaxBookingDate: '2026-05-13',
+        })
+        const stub = pendingStub()
+        const supabase = buildSupabase(stub)
+
+        const res = await accountsRoute.handler(
+          makeRequest({ connection_id: 'conn-1', enabled_uids: ['acc-1'] }),
+          makeContext(supabase)
+        )
+
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.initial_sync).toMatchObject({ imported: 5 })
+        expect(body.initial_sync_error).toBeUndefined()
+        expect(mockClaimSyncLease).toHaveBeenCalledTimes(1)
+        expect(mockClaimSyncLease).toHaveBeenCalledWith(supabase, 'conn-1', expect.any(Number))
+        expect(mockedSync).toHaveBeenCalledTimes(1)
+        expect(mockClaimSyncLease.mock.invocationCallOrder[0]).toBeLessThan(mockedSync.mock.invocationCallOrder[0])
+        expect(stub.capturedSync).toMatchObject({ p_connection_id: 'conn-1', p_initial_sync: expect.any(Object) })
+      })
+
+      it('leaves the backfill to the cron when another sync holds the lease, and still saves the selection', async () => {
+        mockClaimSyncLease.mockResolvedValue(false)
+        const stub = pendingStub()
+        const ctx = makeContext(buildSupabase(stub))
+
+        const res = await accountsRoute.handler(
+          makeRequest({ connection_id: 'conn-1', enabled_uids: ['acc-1'] }),
+          ctx
+        )
+
+        // Answered like the timeout: the save stands, the cron runs the import.
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.success).toBe(true)
+        expect(body.initial_sync).toBeUndefined()
+        expect(body.initial_sync_error).toBe('initial_sync_deferred')
+        expect(mockedSync).not.toHaveBeenCalled()
+        expect(stub.capturedSync).toBeUndefined()
+        expect(stub.selectionReceipts).toHaveLength(1)
+        expect(stub.selectionReceipts?.[0]?.status).toBe('active')
+        expect(ctx.log.error).not.toHaveBeenCalled()
+      })
+
+      it('does not run the backfill without the lease when the claim itself fails', async () => {
+        mockClaimSyncLease.mockRejectedValue(new Error('lease write failed'))
+        const stub = pendingStub()
+        const ctx = makeContext(buildSupabase(stub))
+
+        const res = await accountsRoute.handler(
+          makeRequest({ connection_id: 'conn-1', enabled_uids: ['acc-1'] }),
+          ctx
+        )
+
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.success).toBe(true)
+        expect(body.initial_sync_error).toBe('initial_sync_deferred')
+        expect(mockedSync).not.toHaveBeenCalled()
+        expect(stub.selectionReceipts?.[0]?.status).toBe('active')
+        expect(ctx.log.warn).toHaveBeenCalledWith(
+          expect.stringContaining('Could not claim the sync lease'),
+          expect.objectContaining({ connectionId: 'conn-1', message: 'lease write failed' })
+        )
+      })
     })
 
     it('still flips status to active when inline sync fails, surfacing initial_sync_error', async () => {
