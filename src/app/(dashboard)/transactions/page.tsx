@@ -26,6 +26,7 @@ import { SKATTEKONTO_ACCOUNT } from '@/lib/skatteverket/manual-verifikat-prefill
 import { CategoryPopover } from '@/components/transactions/CategoryPopover'
 import { cashAccountKontoLabel, cashAccountLogoUrl } from '@/lib/cash-accounts/labels'
 import type { RowProposal } from '@/components/transactions/TransactionInboxCard'
+import { underlagForReview, type CarriedUnderlag, type ReviewUnderlag } from '@/components/transactions/review-underlag'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import TransactionStatusBar from '@/components/transactions/TransactionStatusBar'
 import BankSyncStatusChip from '@/components/transactions/BankSyncStatusChip'
@@ -461,6 +462,8 @@ interface QuickReviewState {
   proposal: BookingProposal
   /** The person chose it from the picker, as opposed to the row's recommendation. */
   picked: boolean
+  /** Underlag attached in the review that "Byt" closed, carried into this one. */
+  underlag: ReviewUnderlag | null
 }
 
 export default function TransactionsPage() {
@@ -556,6 +559,9 @@ export default function TransactionsPage() {
   const [templatePickerTransaction, setTemplatePickerTransaction] = useState<TransactionWithInvoice | null>(null)
   // The element the picker opens beside (chip or Bokför button); null = the dialog.
   const [templatePickerAnchor, setTemplatePickerAnchor] = useState<HTMLElement | null>(null)
+  // The underlag "Byt" took from the review it closed, for the review this
+  // picker opens on the same row (review-underlag.ts underlagForReview).
+  const [templatePickerUnderlag, setTemplatePickerUnderlag] = useState<CarriedUnderlag | null>(null)
   // The picker renders non-modal (agent sheet stays usable); hand-restore
   // page modality while it is open. See useDashShellInert in ui/dialog.tsx.
   useDashShellInert(templatePickerOpen)
@@ -4050,13 +4056,22 @@ export default function TransactionsPage() {
   function openCategoryDialog(transaction: TransactionWithInvoice, anchor?: HTMLElement) {
     setTemplatePickerTransaction(transaction)
     setTemplatePickerAnchor(anchor ?? null)
+    // Opened from the row, not by "Byt": no review's underlag to carry.
+    setTemplatePickerUnderlag(null)
     setTemplatePickerOpen(true)
   }
 
   // The one door into the review: a proposal, and whether the person picked it.
+  // Opened from the picker "Byt" opened, it gets the underlag the closed
+  // review held; every other way in starts without one.
   function openReview(transaction: TransactionWithInvoice, proposal: BookingProposal, picked: boolean) {
+    const underlag = underlagForReview(templatePickerUnderlag, {
+      transactionId: transaction.id,
+      fromPicker: templatePickerOpen,
+    })
     setTemplatePickerOpen(false)
-    setQuickReview({ transaction, proposal, picked })
+    setTemplatePickerUnderlag(null)
+    setQuickReview({ transaction, proposal, picked, underlag })
     setQuickReviewOpen(true)
   }
 
@@ -4124,10 +4139,13 @@ export default function TransactionsPage() {
     openReview(transaction, proposal, true)
   }
 
-  function handleChangeTemplate() {
+  // "Byt": the review closes for the picker and hands over the underlag
+  // attached in it, so the review the pick opens still has it (PostHog PH 118).
+  function handleChangeTemplate(underlag: ReviewUnderlag | null) {
     setQuickReviewOpen(false)
     if (quickReview?.transaction) {
       setTemplatePickerTransaction(quickReview.transaction)
+      setTemplatePickerUnderlag(underlag ? { ...underlag, transactionId: quickReview.transaction.id } : null)
       setTemplatePickerOpen(true)
     }
   }
@@ -4898,6 +4916,7 @@ export default function TransactionsPage() {
           entityType={entityType as EntityType}
           onConfirm={handleQuickReviewConfirm}
           onChangeTemplate={handleChangeTemplate}
+          carriedUnderlag={quickReview?.underlag ?? null}
           assistantRead={quickReview ? (assistantReadsRef.current[quickReview.transaction.id] ?? null) : null}
           onEditLines={handleEditProposedLines}
         />
