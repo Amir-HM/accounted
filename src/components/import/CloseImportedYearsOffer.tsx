@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
 import { useToast } from '@/components/ui/use-toast'
 import { useCompany } from '@/contexts/CompanyContext'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { useFiscalPeriods } from '@/lib/reference-data/hooks'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { closableImportedYears, closeYearsInOrder } from '@/lib/onboarding/closable-imported-years'
@@ -57,8 +57,10 @@ export function CloseImportedYearsOffer({
       const result = await closeYearsInOrder(targets, async (id) => {
         const res = await fetch(`/api/bookkeeping/fiscal-periods/${id}/close-external`, { method: 'POST' })
         if (res.ok) return null
-        const body = await res.json().catch(() => ({}))
-        return typeof body?.error === 'string' ? body.error : t('close_years_error_generic')
+        // The route answers with the { error: { code, message } } envelope;
+        // the refusal (for example unbooked bank transactions) is the useful part.
+        const body = await res.json().catch(() => null)
+        return body ? getErrorMessage(body, { statusCode: res.status }) : t('close_years_error_generic')
       })
       if (result.closed.length > 0) {
         void refresh()
@@ -84,8 +86,7 @@ export function CloseImportedYearsOffer({
       <p className="font-medium">{t('close_years_title', { count: targets.length, years: names })}</p>
       <p className="text-muted-foreground">{t('close_years_body')}</p>
       <div className="flex flex-wrap items-center gap-3 pt-1">
-        <Button variant="outline" size="sm" disabled={running} onClick={() => void run()}>
-          {running ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+        <Button variant="outline" size="sm" loading={running} onClick={() => void run()}>
           {t('close_years_action')}
         </Button>
         {showUnderlagLink ? (
