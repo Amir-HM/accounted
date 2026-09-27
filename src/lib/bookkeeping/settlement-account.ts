@@ -1,6 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Logger } from '@/lib/logger'
+import type { CashAccount } from '@/types'
 import { BookkeepingDatabaseError } from '@/lib/bookkeeping/errors'
+import { primaryIneligibleReason } from '@/lib/cash-accounts/primary'
 
 const FALLBACK_ACCOUNT = '1930'
 
@@ -96,4 +98,55 @@ export async function resolveSettlementAccount(
   }
 
   return data.ledger_account as string
+}
+
+/**
+ * Resolve the BAS ledger account a SEK payment with NO bank row of its own
+ * settles on: the net pay of a salary run, booked on the payment date before
+ * any bank transaction exists (issue #3097).
+ *
+ * The company's primary cash account is the answer the product already gives
+ * for "which bank account, when nothing else says" (lib/cash-accounts/primary.ts):
+ * the user picks it under Inställningar → Bokföring, audit_cash_accounts_routing
+ * logs every change, and reconciliation files unbound rows under it. A primary
+ * counts only when it is one the user could pick today (primaryIneligibleReason:
+ * enabled, SEK, a giro or bank account), so a payment never lands on a
+ * disabled or foreign-currency account. Without a usable primary this is the
+ * unbound-SEK-row answer above (the only enabled SEK account, else 1930), so a
+ * company with no cash accounts at all (legacy) keeps booking on 1930.
+ *
+ * A failed primary lookup throws instead of degrading to 1930: a verifikat
+ * booked on the wrong bank account needs a storno to correct (BFL 5 kap), a
+ * retry does not. For that reason this does not go through cash-accounts
+ * getPrimary(), which logs a failed lookup and returns null.
+ */
+export async function resolvePrimaryBankAccount(
+  supabase: SupabaseClient,
+  companyId: string,
+  log: Logger,
+): Promise<string> {
+  // At most one row: a partial unique index keeps one primary per company.
+  const { data, error } = await supabase
+    .from('cash_accounts')
+    .select('ledger_account, enabled, currency')
+    .eq('company_id', companyId)
+    .eq('is_primary', true)
+    .maybeSingle()
+
+  if (error) {
+    throw new BookkeepingDatabaseError('resolve_settlement_account', error.message)
+  }
+
+  const primary = data as Pick<CashAccount, 'ledger_account' | 'enabled' | 'currency'> | null
+  if (primary?.ledger_account) {
+    const reason = primaryIneligibleReason(primary)
+    if (reason === null) return primary.ledger_account
+    log.warn('primary cash account cannot carry a payment; resolving without it', {
+      companyId,
+      ledgerAccount: primary.ledger_account,
+      reason,
+    })
+  }
+
+  return resolveSettlementAccount(supabase, companyId, null, log, 'SEK')
 }
