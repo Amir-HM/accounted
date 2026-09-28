@@ -634,6 +634,14 @@ describe('tools/list payload size guard', () => {
     //     envelope's operation_id note and the generated tools' dry_run and
     //     idempotency_key notes. Measured 63 302 on the old base; rebased onto
     //     #3169 it measures 64 860, 170 under main alone. Ceiling unchanged.
+    //   * One definition of nettoomsättning (#3103): gnubok_get_income_statement
+    //     names nettoomsattning (3000-3799) as the revenue figure and
+    //     declares it in its outputSchema; the per-figure account
+    //     definitions travel in the response, not the schema. Paid for by
+    //     dropping the description's restatement of the dimensions arg
+    //     (+4 against main). Report data_status (#3105) is returned but not
+    //     declared in any outputSchema, so it costs the catalog nothing.
+    //     All three together measure 64 848 (main 65 028). Ceiling unchanged.
     expect(approxTokens).toBeLessThan(65_500)
   })
 
