@@ -2864,8 +2864,14 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
   const [error, setError] = useState<string | null>(null)
   const [accountFrom, setAccountFrom] = useState('')
   const [accountTo, setAccountTo] = useState('')
+  // Only the newest request may land. The window changes right after mount
+  // (the date-range control resolves its preset, or a drill-down's window),
+  // and the superseded request must not overwrite the ledger it was
+  // replaced by when it happens to finish last.
+  const requestSeq = React.useRef(0)
 
   const fetchData = useCallback(async (fromOverride?: string, toOverride?: string) => {
+    const seq = ++requestSeq.current
     const from = fromOverride ?? accountFrom
     const to = toOverride ?? accountTo
     setLoading(true)
@@ -2882,6 +2888,7 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
       }
       const res = await fetch(`/api/reports/general-ledger?${params}`)
       const result = await res.json()
+      if (seq !== requestSeq.current) return
       if (result.error) {
         // Envelope object, not a string: see the note on the other report
         // fetches. Rendering it bare blanks the page.
@@ -2890,9 +2897,9 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
         setData(result.data)
       }
     } catch {
-      setError('Kunde inte hämta huvudbok')
+      if (seq === requestSeq.current) setError('Kunde inte hämta huvudbok')
     } finally {
-      setLoading(false)
+      if (seq === requestSeq.current) setLoading(false)
     }
   }, [periodId, accountFrom, accountTo, dimensionFilter, dateRange])
 
