@@ -248,7 +248,7 @@ export const employeesWorkedDaysUpsert = defineOperation({
   id: 'employees.worked-days.upsert',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Register worked hours per day for an employee (bulk upsert).',
@@ -352,7 +352,7 @@ export const employeesWorkedDaysDelete = defineOperation({
   id: 'employees.worked-days.delete',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: false,
   docs: {
     summary: 'Delete worked days for an employee in a date range.',
@@ -488,7 +488,7 @@ export const employeesBenefitsCreate = defineOperation({
   id: 'employees.benefits.create',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Register a benefit (förmån) on an employee.',
@@ -569,7 +569,7 @@ export const employeesBenefitsUpdate = defineOperation({
   id: 'employees.benefits.update',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Partially update a benefit (förmån) on an employee.',
@@ -829,7 +829,7 @@ export const employeesRecurringLinesCreate = defineOperation({
   id: 'employees.recurring-lines.create',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Create a recurring payslip line for an employee.',
@@ -891,7 +891,7 @@ export const employeesRecurringLinesUpdate = defineOperation({
   id: 'employees.recurring-lines.update',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Update a recurring payslip line.',
@@ -959,7 +959,7 @@ export const employeesRecurringLinesDelete = defineOperation({
   id: 'employees.recurring-lines.delete',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: false,
   docs: {
     summary: 'Delete a recurring payslip line, or deactivate it if a run already used it.',

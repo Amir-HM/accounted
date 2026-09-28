@@ -49,6 +49,15 @@ import {
   salaryRunsUnapprove,
 } from './salary-run-lifecycle'
 import {
+  salaryRunsCorrect,
+  salaryRunsEmployeesAdd,
+  salaryRunsEmployeesRemove,
+  salaryRunsLinesCreate,
+  salaryRunsLinesDelete,
+  salaryRunsList,
+  salaryRunsMarkPaid,
+} from './salary-run-structure'
+import {
   employeesBenefitsCreate,
   employeesBenefitsDelete,
   employeesBenefitsList,
@@ -216,6 +225,14 @@ export const OPERATIONS: readonly AnyOperation[] = [
   salaryRunsRevert,
   salaryRunsUnapprove,
   salaryRunsAttachExpenseClaims,
+  // salary-run-structure (MCP only: the v1 doors are the hand-written salary-run routes)
+  salaryRunsList,
+  salaryRunsEmployeesAdd,
+  salaryRunsEmployeesRemove,
+  salaryRunsLinesCreate,
+  salaryRunsLinesDelete,
+  salaryRunsCorrect,
+  salaryRunsMarkPaid,
   // salary-employee-setup (MCP only: the v1 doors are the hand-written employee routes)
   employeesWorkedDaysList,
   employeesWorkedDaysUpsert,

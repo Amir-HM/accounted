@@ -2714,6 +2714,15 @@ export type PendingOperationType =
   // Completes / reopens the period's moms deadline; no ledger impact.
   | 'mark_vat_period_filed'
   | 'unmark_vat_period_filed'
+  // Payroll over MCP, run structure (lib/operations/salary-run-structure.ts):
+  // who is on a draft run, its payslip lines, the paid mark, and the
+  // rättelsekörning of a booked run (storno + a new draft for the period).
+  | 'add_salary_run_employee'
+  | 'remove_salary_run_employee'
+  | 'add_payslip_line'
+  | 'delete_payslip_line'
+  | 'mark_salary_run_paid'
+  | 'correct_salary_run'
   // Payroll over MCP, employee setup (lib/operations/salary-employee-setup.ts):
   // worked hours for hourly staff, förmåner, recurring payslip lines, and the
   // soft delete (is_active=false; the row stays for the salary history).

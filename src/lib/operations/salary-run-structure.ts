@@ -33,7 +33,6 @@ import { listSalaryRuns, SalaryRunListFiltersSchema, SalaryRunStatusSchema } fro
 import { markSalaryRunPaid } from '@/lib/salary/mark-paid'
 import { createPayslipLine, deletePayslipLine, type SalaryLineItemRow } from '@/lib/salary/payslip-lines'
 import { addEmployeeToRun, removeEmployeeFromRun } from '@/lib/salary/run-employees'
-import type { PendingOperationType } from '@/types'
 import { defineOperation, type OperationOutcome } from './types'
 
 const SALARY_RUN_ID = z.string().uuid().describe('The salary run (salary_run_id from gnubok_list_salary_runs).')
@@ -193,7 +192,7 @@ export const salaryRunsEmployeesAdd = defineOperation({
   id: 'salary-runs.employees.add',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Add an employee to a draft salary run.',
@@ -247,8 +246,7 @@ export const salaryRunsEmployeesAdd = defineOperation({
       'Stage adding an active employee to a draft salary run: snapshots their salary, degree and tax table and seeds the Grundlön or Timlön line (pass hours_worked for hourly staff). Creating a run already adds every active employee. Recalculate afterwards.',
     keywords: ['lägg till anställd', 'anställd i lönekörning', 'ny anställd lönekörning', 'saknas i lönekörningen', 'timlön timmar'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'add_salary_run_employee' as PendingOperationType,
+      pendingType: 'add_salary_run_employee',
       title: () => 'Lägg till anställd i lönekörningen',
     },
   },
@@ -294,7 +292,7 @@ export const salaryRunsEmployeesRemove = defineOperation({
   id: 'salary-runs.employees.remove',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Remove an employee from a draft salary run.',
@@ -329,8 +327,7 @@ export const salaryRunsEmployeesRemove = defineOperation({
       'Stage removing an employee from a draft salary run together with all their payslip lines on it, manual ones included. The employee record is untouched. For a month without pay on record, set this month\'s salary to 0 instead. Recalculate afterwards.',
     keywords: ['ta bort anställd', 'ta bort från lönekörning', 'ingen lön denna månad', 'tjänstledig hela månaden'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'remove_salary_run_employee' as PendingOperationType,
+      pendingType: 'remove_salary_run_employee',
       title: () => 'Ta bort anställd från lönekörningen',
     },
   },
@@ -421,7 +418,7 @@ export const salaryRunsLinesCreate = defineOperation({
   id: 'salary-runs.lines.create',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: true,
   docs: {
     summary: 'Add a payslip line for one employee on a draft salary run.',
@@ -538,8 +535,7 @@ export const salaryRunsLinesCreate = defineOperation({
       'engångsskatt',
     ],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'add_payslip_line' as PendingOperationType,
+      pendingType: 'add_payslip_line',
       title: (input) =>
         `Lägg till lönebeskedsrad: ${String(input.description)} (${roundOre(Number(input.amount))} kr)`,
     },
@@ -577,7 +573,7 @@ export const salaryRunsLinesDelete = defineOperation({
   id: 'salary-runs.lines.delete',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: false,
   docs: {
     summary: 'Delete a payslip line from a draft salary run.',
@@ -620,8 +616,7 @@ export const salaryRunsLinesDelete = defineOperation({
       'Stage deleting one payslip line from a draft salary run (salary_line_item_id from gnubok_get_payslip). Lines the calculation derives (absence, OB, benefits, recurring lines) come back on recalculation. To change a line, use gnubok_update_payslip_line.',
     keywords: ['ta bort lönerad', 'radera lönebeskedsrad', 'ta bort bonus', 'ta bort avdrag', 'fel lönerad'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'delete_payslip_line' as PendingOperationType,
+      pendingType: 'delete_payslip_line',
       title: () => 'Ta bort lönebeskedsrad',
     },
   },
@@ -802,8 +797,7 @@ export const salaryRunsCorrect = defineOperation({
       'ändra bokförd lön',
     ],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'correct_salary_run' as PendingOperationType,
+      pendingType: 'correct_salary_run',
       title: () => 'Rätta bokförd lönekörning (storno och ny korrigeringskörning)',
     },
   },
@@ -871,7 +865,7 @@ export const salaryRunsMarkPaid = defineOperation({
   id: 'salary-runs.mark-paid',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
+  risk: 'medium',
   reversible: false,
   docs: {
     summary: 'Mark an approved salary run as paid, without booking it.',
@@ -908,8 +902,7 @@ export const salaryRunsMarkPaid = defineOperation({
       'Stage marking an approved salary run as paid once the salaries went out; paid_at is the approval time. Posts nothing and pays nothing. Not needed before booking: gnubok_book_salary_run marks an approved run paid on its way to booked.',
     keywords: ['markera utbetald', 'lön utbetald', 'lönen betald', 'betald lönekörning', 'utbetalning genomförd'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'mark_salary_run_paid' as PendingOperationType,
+      pendingType: 'mark_salary_run_paid',
       title: () => 'Markera lönekörningen som utbetald',
     },
   },

@@ -354,6 +354,14 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_revert_salary_run: 'payroll:write',
   gnubok_unapprove_salary_run: 'payroll:write',
   gnubok_attach_salary_expense_claims: 'payroll:write',
+  // Payroll over MCP, run structure (lib/operations/salary-run-structure.ts).
+  gnubok_list_salary_runs: 'payroll:read',
+  gnubok_add_salary_run_employee: 'payroll:write',
+  gnubok_remove_salary_run_employee: 'payroll:write',
+  gnubok_add_payslip_line: 'payroll:write',
+  gnubok_delete_payslip_line: 'payroll:write',
+  gnubok_correct_salary_run: 'payroll:write',
+  gnubok_mark_salary_run_paid: 'payroll:write',
   // Payroll over MCP, employee setup (lib/operations/salary-employee-setup.ts).
   gnubok_list_worked_days: 'payroll:read',
   gnubok_set_worked_days: 'payroll:write',

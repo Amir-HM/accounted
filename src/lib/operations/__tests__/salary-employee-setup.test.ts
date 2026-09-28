@@ -109,16 +109,16 @@ beforeEach(() => {
 
 const EXPECTED = [
   { op: employeesWorkedDaysList, id: 'employees.worked-days.list', kind: 'read', scope: 'payroll:read', risk: 'low', tool: 'gnubok_list_worked_days' },
-  { op: employeesWorkedDaysUpsert, id: 'employees.worked-days.upsert', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_set_worked_days', pendingType: 'set_worked_days' },
-  { op: employeesWorkedDaysDelete, id: 'employees.worked-days.delete', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_delete_worked_days', pendingType: 'delete_worked_days' },
+  { op: employeesWorkedDaysUpsert, id: 'employees.worked-days.upsert', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_set_worked_days', pendingType: 'set_worked_days' },
+  { op: employeesWorkedDaysDelete, id: 'employees.worked-days.delete', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_delete_worked_days', pendingType: 'delete_worked_days' },
   { op: employeesBenefitsList, id: 'employees.benefits.list', kind: 'read', scope: 'payroll:read', risk: 'low', tool: 'gnubok_list_employee_benefits' },
-  { op: employeesBenefitsCreate, id: 'employees.benefits.create', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_add_employee_benefit', pendingType: 'add_employee_benefit' },
-  { op: employeesBenefitsUpdate, id: 'employees.benefits.update', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_update_employee_benefit', pendingType: 'update_employee_benefit' },
+  { op: employeesBenefitsCreate, id: 'employees.benefits.create', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_add_employee_benefit', pendingType: 'add_employee_benefit' },
+  { op: employeesBenefitsUpdate, id: 'employees.benefits.update', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_update_employee_benefit', pendingType: 'update_employee_benefit' },
   { op: employeesBenefitsDelete, id: 'employees.benefits.delete', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_delete_employee_benefit', pendingType: 'delete_employee_benefit' },
   { op: employeesRecurringLinesList, id: 'employees.recurring-lines.list', kind: 'read', scope: 'payroll:read', risk: 'low', tool: 'gnubok_list_employee_recurring_lines' },
-  { op: employeesRecurringLinesCreate, id: 'employees.recurring-lines.create', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_add_employee_recurring_line', pendingType: 'add_employee_recurring_line' },
-  { op: employeesRecurringLinesUpdate, id: 'employees.recurring-lines.update', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_update_employee_recurring_line', pendingType: 'update_employee_recurring_line' },
-  { op: employeesRecurringLinesDelete, id: 'employees.recurring-lines.delete', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_delete_employee_recurring_line', pendingType: 'delete_employee_recurring_line' },
+  { op: employeesRecurringLinesCreate, id: 'employees.recurring-lines.create', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_add_employee_recurring_line', pendingType: 'add_employee_recurring_line' },
+  { op: employeesRecurringLinesUpdate, id: 'employees.recurring-lines.update', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_update_employee_recurring_line', pendingType: 'update_employee_recurring_line' },
+  { op: employeesRecurringLinesDelete, id: 'employees.recurring-lines.delete', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_delete_employee_recurring_line', pendingType: 'delete_employee_recurring_line' },
   { op: employeesDelete, id: 'employees.delete', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_delete_employee', pendingType: 'delete_employee' },
 ] as const
 

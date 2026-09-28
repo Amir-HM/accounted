@@ -106,12 +106,16 @@ beforeEach(() => {
 describe('contract', () => {
   const v1 = new Map(listEndpoints().map((endpoint) => [endpoint.operation, endpoint]))
 
-  it('reuses the v1 operation id, scope and risk of the hand-written route it mirrors', () => {
+  it('reuses the v1 operation id and scope of the hand-written route it mirrors, never at a lower risk', () => {
+    // The MCP approval tier may be stricter than the v1 label: a staged write
+    // that changes a pay outcome is reviewed at medium (risk-tiers.ts), as the
+    // hand-written update_payslip_line and set_run_salary already are.
+    const rank = { low: 0, medium: 1, high: 2 } as const
     for (const op of OPERATIONS) {
       const endpoint = v1.get(op.id)
       expect(endpoint, `${op.id}: no v1 route registers this operation id`).toBeDefined()
       expect(op.scope, op.id).toBe(endpoint!.scope)
-      expect(op.risk, op.id).toBe(endpoint!.risk)
+      expect(rank[op.risk], op.id).toBeGreaterThanOrEqual(rank[endpoint!.risk as keyof typeof rank])
       expect(op.http, `${op.id}: MCP only, the v1 door is the hand-written route`).toBeUndefined()
     }
   })
