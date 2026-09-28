@@ -2,6 +2,7 @@
  * Account dimension rules over MCP: the tools generated from
  * src/lib/operations/dimension-rules.ts. Reads run directly, writes stage a
  * pending operation after a dry run that refuses what could never commit.
+ * Also the retag log read generated from src/lib/operations/dimension-retag.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createQueuedMockSupabase } from '@/tests/helpers'
@@ -106,5 +107,47 @@ describe('dimension rule tools', () => {
       title: 'Dimensionsregel för konto 4010: obligatorisk',
       params: { account_number: '4010', dimension_id: DIM_ID, rule_type: 'required' },
     })
+  })
+})
+
+describe('gnubok_list_dimension_retag_log', () => {
+  it('is a search-only read over the same log read as v1, scoped to the company', async () => {
+    const logTool = tool('gnubok_list_dimension_retag_log')
+    expect(logTool).toBeDefined()
+    expect(isDefaultCatalogTool(logTool)).toBe(false)
+    expect(TOOL_SCOPE_MAP.gnubok_list_dimension_retag_log).toBe('reports:read')
+
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueue({
+      data: [
+        {
+          id: RULE_ID,
+          journal_entry_id: DIM_ID,
+          line_id: DIM_ID,
+          old_dimensions: {},
+          new_dimensions: { '6': 'P001' },
+          actor: null,
+          reason: 'Retro-taggning',
+          created_at: '2026-09-28T09:14:00Z',
+        },
+      ],
+      error: null,
+      count: 1,
+    })
+
+    const result = (await logTool.execute({ line_id: DIM_ID }, 'company-1', 'user-1', supabase as never)) as {
+      entries: Array<Record<string, unknown>>
+      total_count: number
+      has_more: boolean
+    }
+
+    expect(result.entries[0]).toMatchObject({ retag_log_id: RULE_ID, new_dimensions: { '6': 'P001' } })
+    expect(result.entries[0]).not.toHaveProperty('id')
+    expect(result).toMatchObject({ total_count: 1, has_more: false })
+    expect(findCalls('dimension_retag_log', 'eq')).toEqual([
+      ['company_id', 'company-1'],
+      ['line_id', DIM_ID],
+    ])
+    expect(findCalls('dimension_retag_log', 'range')).toEqual([[0, 49]])
   })
 })

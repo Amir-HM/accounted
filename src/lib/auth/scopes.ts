@@ -435,6 +435,8 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   // Retag of posted lines (operation dimensions.retag-lines), the write
   // gnubok_tag_journal_lines stages.
   'POST /api/v1/companies/:companyId/dimensions/retag': 'bookkeeping:write',
+  // Its history (operation dimensions.retag-log), read like the registry.
+  'GET /api/v1/companies/:companyId/dimensions/retag-log': 'reports:read',
 
   // Articles (artikelregister, #895): read-only list so invoice items can
   // link article_id / copy housework_type + revenue_account. Rides

@@ -18,7 +18,7 @@ import {
   dimensionRulesList,
   dimensionRulesUpdate,
 } from './dimension-rules'
-import { dimensionsRetagLines } from './dimension-retag'
+import { dimensionsRetagLines, dimensionsRetagLog } from './dimension-retag'
 import {
   accountsActivate,
   accountsCreate,
@@ -208,8 +208,9 @@ export const OPERATIONS: readonly AnyOperation[] = [
   dimensionRulesCreate,
   dimensionRulesUpdate,
   dimensionRulesDelete,
-  // dimension-retag (v1 only: MCP has gnubok_tag_journal_lines over the same service)
+  // dimension-retag (the write is v1 only: MCP has gnubok_tag_journal_lines over the same service)
   dimensionsRetagLines,
+  dimensionsRetagLog,
   // accounts
   accountsCreate,
   accountsUpdate,

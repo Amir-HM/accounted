@@ -1116,7 +1116,7 @@ Example response `200`:
 **Change the dimension tags (kostnadsställe, projekt) on posted journal lines.**
 `scope:bookkeeping:write · risk:medium · idempotent · dry-run · reversible`
 
-Sets dimension tags on lines of posted verifikat, the one thing about a posted line that may change: amounts, accounts and texts never do. mode merge (default) sets the pairs in `dimensions` and keeps every other dimension the line carries; replace makes the line's tags exactly `dimensions`. Each line is its own transaction through the audited retag path, which writes an immutable before/after row with the reason (dimension_retag_log) and refuses a line in a closed or locked period, on or before the bookkeeping lock date, on a draft, or with a code that is not an active registry value. Partial success is success: refused lines are listed in failed. Idempotent. Dry-runnable: the dry run shows each line's tags before and after.
+Sets dimension tags on lines of posted verifikat, the one thing about a posted line that may change: amounts, accounts and texts never do. mode merge (default) sets the pairs in `dimensions` and keeps every other dimension the line carries; replace makes the line's tags exactly `dimensions`. Each line is its own transaction through the audited retag path, which writes an immutable before/after row with the reason (GET /dimensions/retag-log) and refuses a line in a closed or locked period, on or before the bookkeeping lock date, on a draft, or with a code that is not an active registry value. Partial success is success: refused lines are listed in failed. Idempotent. Dry-runnable: the dry run shows each line's tags before and after.
 
 **Use when:** Posted lines lack a project or cost centre, or carry the wrong one, and you know the line ids (lines[].id of GET /journal-entries/{id}).
 **Do not use for:** Changing amounts, accounts or dates (a rättelse: POST /journal-entries/{id}/correct), tagging lines of a draft (edit the draft), or clearing every tag of a line (the dashboard only).
@@ -1187,6 +1187,84 @@ Example response `200`:
     "failed_count": 0,
     "failed": [],
     "mode": "merge"
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `GET /api/v1/companies/{companyId}/dimensions/retag-log`
+
+**Read the history of dimension tag changes on posted lines, newest first.**
+`scope:reports:read · risk:low · idempotent`
+
+The immutable trail behind every retag of a posted line: the tags before and after, who made the change, when and why. Filter by journal_entry_id and/or line_id, or read the whole company's history. The log outlives its lines (an undone SIE import deletes the verifikat, not the history). Paged with limit and offset: total_count, has_more and next_offset say what is left.
+
+**Use when:** Explaining why a line carries its project or cost centre, or auditing who changed dimension tags on booked history.
+**Do not use for:** Rättelser of amounts, accounts or texts (GET /journal-entries/{id}/rattelse-log) or the company-wide change history (GET /audit-trail).
+
+**Pitfalls:**
+- An id of another company matches nothing: the answer is an empty page, not a 404.
+- Tags set when the line was booked are not here: only later changes are.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `journal_entry_id` | query | `string` | no | Only changes to lines of this verifikat. |
+| `line_id` | query | `string` | no | Only changes to this line. |
+| `limit` | query | `number` | no | Page size, 1-200 (default 50). |
+| `offset` | query | `number` | no | Rows to skip (next_offset of the previous page). |
+
+Response `200`:
+```ts
+{
+  data: {
+    entries: { retag_log_id: string, journal_entry_id: string, line_id: string, old_dimensions: Record<string, string>, new_dimensions: Record<string, string>, actor: string | null, reason: string, created_at: string }[],
+    count: number,
+    total_count: number,
+    has_more: boolean,
+    next_offset?: number
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "entries": [
+      {
+        "retag_log_id": "1c2d…",
+        "journal_entry_id": "7b3a…",
+        "line_id": "9f1c…",
+        "old_dimensions": {
+          "1": "KS01"
+        },
+        "new_dimensions": {
+          "1": "KS01",
+          "6": "P001"
+        },
+        "actor": "9d2b…",
+        "reason": "Projektet saknades på fakturan",
+        "created_at": "2026-09-28T09:14:00Z"
+      }
+    ],
+    "count": 1,
+    "total_count": 1,
+    "has_more": false
   },
   "meta": {
     "request_id": "req_…",
