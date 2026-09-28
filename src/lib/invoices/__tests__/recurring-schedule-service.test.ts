@@ -601,14 +601,17 @@ describe('executeRecurringSchedule auto-send', () => {
         new MandatoryDimensionMissingError([
           { account_number: '3001', sie_dim_no: '6', dimension_name: 'Projekt' },
         ]),
-      'Konto 3001 kräver Projekt',
+      ['Konto 3001 kräver Projekt'],
     ],
     [
       'a schedule tag whose value has since been archived',
       () => new DimensionValidationError([{ sie_dim_no: '6', code: 'P009', reason: 'archived_value' }]),
-      '"P009" är arkiverat',
+      // Fragments, not the whole sentence: the engine's wording names the
+      // dimension ("... i dimension 6 är arkiverat") once the dimension
+      // error-message change lands, and this test must hold either way.
+      ['"P009"', 'arkiverat'],
     ],
-  ])('%s stops the send: no email, the invoice back to draft, the reason on the schedule', async (_label, refusal, reasonText) => {
+  ])('%s stops the send: no email, the invoice back to draft, the reason on the schedule', async (_label, refusal, reasonFragments) => {
     enqueueUntilSendPath()
     enqueue({ data: [{ id: 'inv-1' }], error: null }) // status flip draft -> sent
     enqueue({ data: null, error: null }) // rollback to draft
@@ -622,7 +625,7 @@ describe('executeRecurringSchedule auto-send', () => {
 
     expect(result.autoSent).toBe(false)
     expect(result.warning).toContain('Auto-utskick stoppades: faktura F-1 kunde inte bokföras')
-    expect(result.warning).toContain(reasonText)
+    for (const fragment of reasonFragments) expect(result.warning).toContain(fragment)
     expect(result.warning).toContain('ligger kvar som utkast')
     expect(mockSendEmail).not.toHaveBeenCalled()
     expect(mockSendTrackedInvoiceEmail).not.toHaveBeenCalled()
