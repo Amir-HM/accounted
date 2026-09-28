@@ -49,6 +49,20 @@ import {
   salaryRunsUnapprove,
 } from './salary-run-lifecycle'
 import {
+  employeesBenefitsCreate,
+  employeesBenefitsDelete,
+  employeesBenefitsList,
+  employeesBenefitsUpdate,
+  employeesDelete,
+  employeesRecurringLinesCreate,
+  employeesRecurringLinesDelete,
+  employeesRecurringLinesList,
+  employeesRecurringLinesUpdate,
+  employeesWorkedDaysDelete,
+  employeesWorkedDaysList,
+  employeesWorkedDaysUpsert,
+} from './salary-employee-setup'
+import {
   invoicesBook,
   invoicesBulkBook,
   supplierInvoicesBook,
@@ -202,6 +216,19 @@ export const OPERATIONS: readonly AnyOperation[] = [
   salaryRunsRevert,
   salaryRunsUnapprove,
   salaryRunsAttachExpenseClaims,
+  // salary-employee-setup (MCP only: the v1 doors are the hand-written employee routes)
+  employeesWorkedDaysList,
+  employeesWorkedDaysUpsert,
+  employeesWorkedDaysDelete,
+  employeesBenefitsList,
+  employeesBenefitsCreate,
+  employeesBenefitsUpdate,
+  employeesBenefitsDelete,
+  employeesRecurringLinesList,
+  employeesRecurringLinesCreate,
+  employeesRecurringLinesUpdate,
+  employeesRecurringLinesDelete,
+  employeesDelete,
   // invoice-booking
   invoicesBook,
   invoicesBulkBook,

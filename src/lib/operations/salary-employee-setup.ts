@@ -59,7 +59,6 @@ import {
   type WorkedDayPreview,
   type WorkedDayRow,
 } from '@/lib/salary/worked-days'
-import type { PendingOperationType } from '@/types'
 import { defineOperation, type OperationOutcome } from './types'
 
 const EMPLOYEE_ID = z.string().uuid().describe('The employee id (employees.id), from gnubok_list_employees.')
@@ -300,8 +299,7 @@ export const employeesWorkedDaysUpsert = defineOperation({
       'Stage registering worked hours per date for an hourly employee (1-92 days, optional shift start and end for OB). A date already registered is overwritten. Dates a calculated, approved, paid or booked salary run has read are refused. Recalculate the draft run afterwards.',
     keywords: ['registrera timmar', 'arbetade timmar', 'tidrapport', 'timanställd', 'timlön', 'ob-tillägg', 'skift', 'arbetstid'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'set_worked_days' as PendingOperationType,
+      pendingType: 'set_worked_days',
       title: (input) => {
         const dates = (input.days as Array<{ work_date: string }>).map((day) => day.work_date).sort()
         const count = dates.length === 1 ? '1 dag' : `${dates.length} dagar`
@@ -392,8 +390,7 @@ export const employeesWorkedDaysDelete = defineOperation({
       'Stage removing the worked hours registered for an employee in a date range (from = to for one day). Dates a calculated, approved, paid or booked salary run has read are refused. The preview counts the rows that would go.',
     keywords: ['ta bort timmar', 'radera tidrapport', 'arbetade timmar', 'tidrapport', 'timanställd'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'delete_worked_days' as PendingOperationType,
+      pendingType: 'delete_worked_days',
       title: (input) => `Ta bort arbetade timmar ${dateSpan(String(input.from), String(input.to))}`,
     },
   },
@@ -544,8 +541,7 @@ export const employeesBenefitsCreate = defineOperation({
       "Stage registering a förmån on an employee: the monthly förmånsvärde you supply (e.g. bilförmån from Skatteverket's calculator; bike takes annual_market_value). Every salary run whose payment date is within valid_from..valid_to adds it to the tax basis.",
     keywords: ['lägg till förmån', 'ny förmån', 'bilförmån', 'förmånsbil', 'kostförmån', 'cykelförmån', 'bostadsförmån', 'friskvård', 'förmånsvärde'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'add_employee_benefit' as PendingOperationType,
+      pendingType: 'add_employee_benefit',
       title: (input) => `Lägg till förmån: ${String(input.description)}`,
     },
   },
@@ -617,8 +613,7 @@ export const employeesBenefitsUpdate = defineOperation({
       "Stage a change to an employee's förmån: monthly value, validity (valid_to ends it), is_active or description. The benefit type cannot change. A draft salary run keeps the old line until it is recalculated.",
     keywords: ['ändra förmån', 'förmånsvärde', 'avsluta förmån', 'pausa förmån', 'bilförmån', 'cykelförmån'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'update_employee_benefit' as PendingOperationType,
+      pendingType: 'update_employee_benefit',
       title: () => 'Ändra förmån',
     },
   },
@@ -680,8 +675,7 @@ export const employeesBenefitsDelete = defineOperation({
       'Stage removing a förmån from an employee. A benefit a calculated salary run already derived a payslip line from is kept and deactivated instead, so the line keeps its source. To end it on a date, update valid_to instead.',
     keywords: ['ta bort förmån', 'radera förmån', 'avsluta förmån', 'bilförmån', 'förmån'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'delete_employee_benefit' as PendingOperationType,
+      pendingType: 'delete_employee_benefit',
       title: () => 'Ta bort förmån',
     },
   },
@@ -872,8 +866,7 @@ export const employeesRecurringLinesCreate = defineOperation({
       'Stage a recurring payslip line for an employee: a monthly deduction (negative amount) such as a bike bruttolöneavdrag or a union fee, derived into every salary run whose payment date is within valid_from..valid_to.',
     keywords: ['återkommande avdrag', 'återkommande lönerad', 'bruttolöneavdrag', 'nettolöneavdrag', 'fackavgift', 'löneväxling', 'förmånscykel'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'add_employee_recurring_line' as PendingOperationType,
+      pendingType: 'add_employee_recurring_line',
       title: (input) => `Lägg till återkommande lönerad: ${String(input.description)}`,
     },
   },
@@ -943,8 +936,7 @@ export const employeesRecurringLinesUpdate = defineOperation({
       'Stage a change to a recurring payslip line: amount (negative, a deduction), description, account, validity (valid_to ends it) or is_active. item_type cannot change. Recalculate a draft salary run afterwards.',
     keywords: ['ändra löneavdrag', 'ändra återkommande lönerad', 'bruttolöneavdrag', 'fackavgift', 'avsluta avdrag'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'update_employee_recurring_line' as PendingOperationType,
+      pendingType: 'update_employee_recurring_line',
       title: () => 'Ändra återkommande lönerad',
     },
   },
@@ -1009,8 +1001,7 @@ export const employeesRecurringLinesDelete = defineOperation({
       'Stage removing a recurring payslip line. A line a salary run already derived from is kept and deactivated instead, so its payslip rows keep their source; the preview says which will happen. To end it on a date, update valid_to instead.',
     keywords: ['ta bort löneavdrag', 'ta bort återkommande lönerad', 'avsluta avdrag', 'fackavgift', 'bruttolöneavdrag'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'delete_employee_recurring_line' as PendingOperationType,
+      pendingType: 'delete_employee_recurring_line',
       title: () => 'Ta bort återkommande lönerad',
     },
   },
@@ -1042,8 +1033,9 @@ export const employeesDelete = defineOperation({
   id: 'employees.delete',
   kind: 'write',
   scope: 'payroll:write',
-  risk: 'low',
-  // Nothing on the API sets is_active back to true.
+  // Medium although the v1 DELETE declares low: nothing on the API sets
+  // is_active back to true, so the approver gets the irreversibility warning.
+  risk: 'medium',
   reversible: false,
   docs: {
     summary: 'Remove an employee who has left: the employee is deactivated, never deleted.',
@@ -1077,8 +1069,7 @@ export const employeesDelete = defineOperation({
       'Stage removing an employee who has left: the employee is deactivated (is_active=false) and new salary runs leave them out. Nothing is deleted: the row, personnummer and salary history are kept (BFL 7 kap). Nothing on the API reactivates them.',
     keywords: ['ta bort anställd', 'inaktivera anställd', 'anställd har slutat', 'slutat', 'avregistrera anställd'],
     stage: {
-      // integrator: add to PendingOperationType
-      pendingType: 'delete_employee' as PendingOperationType,
+      pendingType: 'delete_employee',
       title: () => 'Inaktivera anställd',
     },
   },

@@ -67,6 +67,18 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   revert_salary_run: 'low',
   unapprove_salary_run: 'medium',
   attach_salary_expense_claims: 'medium',
+  // Payroll over MCP, employee setup: inputs to the next calculation, no
+  // verifikat. Removing a förmån and deactivating an employee are medium:
+  // nothing on the API reactivates an employee.
+  set_worked_days: 'low',
+  delete_worked_days: 'low',
+  add_employee_benefit: 'low',
+  update_employee_benefit: 'low',
+  delete_employee_benefit: 'medium',
+  add_employee_recurring_line: 'low',
+  update_employee_recurring_line: 'low',
+  delete_employee_recurring_line: 'low',
+  delete_employee: 'medium',
   create_supplier_payment_batch: 'high',
   cancel_supplier_payment_batch: 'medium',
   book_invoice: 'high',

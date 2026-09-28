@@ -119,7 +119,7 @@ const EXPECTED = [
   { op: employeesRecurringLinesCreate, id: 'employees.recurring-lines.create', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_add_employee_recurring_line', pendingType: 'add_employee_recurring_line' },
   { op: employeesRecurringLinesUpdate, id: 'employees.recurring-lines.update', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_update_employee_recurring_line', pendingType: 'update_employee_recurring_line' },
   { op: employeesRecurringLinesDelete, id: 'employees.recurring-lines.delete', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_delete_employee_recurring_line', pendingType: 'delete_employee_recurring_line' },
-  { op: employeesDelete, id: 'employees.delete', kind: 'write', scope: 'payroll:write', risk: 'low', tool: 'gnubok_delete_employee', pendingType: 'delete_employee' },
+  { op: employeesDelete, id: 'employees.delete', kind: 'write', scope: 'payroll:write', risk: 'medium', tool: 'gnubok_delete_employee', pendingType: 'delete_employee' },
 ] as const
 
 /** A valid input per write, for the staging round trip. */
