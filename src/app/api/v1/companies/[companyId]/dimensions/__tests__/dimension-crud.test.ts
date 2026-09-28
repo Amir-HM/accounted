@@ -26,6 +26,7 @@ vi.mock('@supabase/supabase-js', async () => {
 })
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
+import { hashRequest } from '@/lib/api/idempotency'
 import { POST as createDimension } from '../route'
 import { PATCH as updateDimension, DELETE as deleteDimension } from '../[id]/route'
 
@@ -183,6 +184,149 @@ describe('POST /api/v1/companies/:companyId/dimensions', () => {
     expect(body.data.preview).toMatchObject({ sie_dim_no: 20, parent_sie_dim_no: 6, number_auto_picked: true })
     expect(client.rpc).not.toHaveBeenCalled()
     expect(client.calls.some((c) => c.method === 'insert')).toBe(false)
+  })
+})
+
+describe('POST /api/v1/companies/:companyId/dimensions: sub-dimensions (#UNDERDIM)', () => {
+  it('201 with parent_sie_dim_no for a sub-dimension under projekt', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      rpc: { data: null, error: null },
+      dimensions: [
+        { data: [{ sie_dim_no: 1 }, { sie_dim_no: 6 }], error: null },
+        { data: { ...CUSTOM_DIM, name: 'Kampanj', parent_sie_dim_no: 6, resets_annually: false }, error: null },
+      ],
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      request(BASE, {
+        method: 'POST',
+        body: '{"name":"Kampanj","parent_sie_dim_no":6,"resets_annually":false}',
+      }),
+      companyParams,
+    )
+    expect(res.status).toBe(201)
+    expect((await res.json()).data.dimension).toMatchObject({ name: 'Kampanj', parent_sie_dim_no: 6 })
+    const insert = client.calls.find((c) => c.table === 'dimensions' && c.method === 'insert')
+    expect(insert?.args[0]).toMatchObject({
+      company_id: COMPANY_ID,
+      sie_dim_no: 20,
+      name: 'Kampanj',
+      parent_sie_dim_no: 6,
+      resets_annually: false,
+    })
+  })
+
+  it('400 DIMENSION_PARENT_INVALID for a parent that is not in the registry, nothing written', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      rpc: { data: null, error: null },
+      dimensions: { data: [{ sie_dim_no: 1 }, { sie_dim_no: 6 }], error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      request(BASE, { method: 'POST', body: '{"name":"Kampanj","parent_sie_dim_no":30}' }),
+      companyParams,
+    )
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('DIMENSION_PARENT_INVALID')
+    expect(body.error.details).toMatchObject({ parent_sie_dim_no: 30 })
+    expect(client.calls.some((c) => c.table === 'dimensions' && c.method === 'insert')).toBe(false)
+  })
+
+  it('400 DIMENSION_PARENT_INVALID when the dimension would be its own parent', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      rpc: { data: null, error: null },
+      dimensions: { data: [{ sie_dim_no: 1 }, { sie_dim_no: 6 }], error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      request(BASE, { method: 'POST', body: '{"name":"Kampanj","sie_dim_no":25,"parent_sie_dim_no":25}' }),
+      companyParams,
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('DIMENSION_PARENT_INVALID')
+    expect(client.calls.some((c) => c.table === 'dimensions' && c.method === 'insert')).toBe(false)
+  })
+
+  it('400 VALIDATION_ERROR for a parent that is not a positive integer', async () => {
+    mockServiceClient.mockReturnValue(makeClient({ company_members: MEMBER }))
+    const res = await createDimension(
+      request(BASE, { method: 'POST', body: '{"name":"Kampanj","parent_sie_dim_no":"sex"}' }),
+      companyParams,
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('VALIDATION_ERROR')
+  })
+})
+
+describe('POST /api/v1/companies/:companyId/dimensions: idempotency', () => {
+  const PATH = `/api/v1/companies/${COMPANY_ID}/dimensions`
+  const BODY = { name: 'Avdelning' }
+
+  it('400 when the Idempotency-Key header is missing, nothing written', async () => {
+    const client = makeClient({ company_members: MEMBER })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      new Request(BASE, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer test-fixture-not-a-real-key', 'Content-Type': 'application/json' },
+        body: JSON.stringify(BODY),
+      }),
+      companyParams,
+    )
+    expect(res.status).toBe(400)
+    expect(client.calls.some((c) => c.table === 'dimensions' && c.method === 'insert')).toBe(false)
+  })
+
+  it('replays a retried create with the same key instead of inserting a second dimension', async () => {
+    const cached = { data: { dimension: { ...CUSTOM_DIM } }, meta: { request_id: 'req_first' } }
+    const client = makeClient({
+      company_members: MEMBER,
+      idempotency_keys: {
+        data: {
+          request_hash: hashRequest({ method: 'POST', path: PATH, body: BODY }),
+          response_status: 'success',
+          response_body: cached,
+          expires_at: null,
+        },
+        error: null,
+      },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      request(BASE, { method: 'POST', body: JSON.stringify(BODY), headers: { 'Idempotency-Key': 'retry-key-1' } }),
+      companyParams,
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Idempotent-Replayed')).toBe('true')
+    expect(await res.json()).toEqual(cached)
+    expect(client.calls.some((c) => c.table === 'dimensions')).toBe(false)
+  })
+
+  it('409 IDEMPOTENCY_KEY_REUSE when the key comes back with a different body', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      idempotency_keys: {
+        data: {
+          request_hash: hashRequest({ method: 'POST', path: PATH, body: { name: 'Något annat' } }),
+          response_status: 'success',
+          response_body: {},
+          expires_at: null,
+        },
+        error: null,
+      },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await createDimension(
+      request(BASE, { method: 'POST', body: JSON.stringify(BODY), headers: { 'Idempotency-Key': 'retry-key-1' } }),
+      companyParams,
+    )
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('IDEMPOTENCY_KEY_REUSE')
+    expect(client.calls.some((c) => c.table === 'dimensions')).toBe(false)
   })
 })
 

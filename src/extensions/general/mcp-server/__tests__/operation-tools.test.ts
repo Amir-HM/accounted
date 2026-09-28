@@ -76,4 +76,31 @@ describe('generated operation tools', () => {
     ).rejects.toMatchObject({ code: 'DIMENSION_SYSTEM_DELETE' })
     expect(inserts).toEqual([])
   })
+  it('refuses a sub-dimension whose parent is not in the registry at staging, without staging anything', async () => {
+    const tool = tools.find((t) => t.name === 'gnubok_create_dimension')!
+    const written: string[] = []
+    const chain = (table: string, data: unknown): unknown =>
+      new Proxy(
+        {},
+        {
+          get(_t, prop) {
+            if (prop === 'then') return (resolve: (v: unknown) => void) => resolve({ data, error: null })
+            return (..._args: unknown[]) => {
+              if (prop === 'insert' || prop === 'update') written.push(table)
+              return chain(table, data)
+            }
+          },
+        },
+      )
+    const supabase = {
+      from: vi.fn((table: string) => chain(table, table === 'dimensions' ? [{ sie_dim_no: 1 }, { sie_dim_no: 6 }] : null)),
+      rpc: vi.fn(),
+    }
+    await expect(
+      tool.execute({ name: 'Kampanj', parent_sie_dim_no: 30 }, 'company-1', 'user-1', supabase as never),
+    ).rejects.toMatchObject({ code: 'DIMENSION_PARENT_INVALID' })
+    expect(written).toEqual([])
+    // A dry run is also the staging preview: it never seeds the system dims.
+    expect(supabase.rpc).not.toHaveBeenCalled()
+  })
 })
