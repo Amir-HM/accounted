@@ -45,6 +45,11 @@ import {
 } from './lib/declaration-prep'
 import { submitVatDeclarationChain } from './lib/vat-submit'
 import { completeTaxDeadline } from '@/lib/deadlines/complete-tax-deadline'
+import {
+  VAT_FILING_DEADLINE_TYPES,
+  vatFilingFiscalYearEndMonth,
+  vatFilingTaxPeriod,
+} from '@/lib/vat/filing-record'
 import { getSystemAuthMode, isSystemAuthConfigured, getOmbudOrgNumber, getSystemCertInfo } from './lib/system-auth/config'
 import {
   getConnection,
@@ -2901,38 +2906,30 @@ function parseQueryParams(
 }
 
 /**
- * Build the deadline generator's tax_period string (`YYYY-MM` monthly,
- * `YYYY-QN` quarterly) from the picker params. Yearly periods use the
- * fiscal-year label and need company settings; see yearlyVatTaxPeriod.
+ * The deadline generator's tax_period for the picker params, from the one
+ * definition of a VAT period key (lib/vat/filing-record.ts). A yearly label
+ * (`YYYY`, or `YYYY-1/YYYY` for a broken räkenskapsår; year = the year it
+ * ends) depends on the company's fiscal year, hence the settings read.
  */
-function vatTaxPeriod(periodType: VatPeriodType, year: number, period: number): string | null {
-  if (periodType === 'monthly') return `${year}-${String(period).padStart(2, '0')}`
-  if (periodType === 'quarterly') return `${year}-Q${period}`
-  return null
-}
-
-/**
- * The moms_yearly row's tax_period is the generator's fiscal-year label:
- * `YYYY` for calendar fiscal years and `YYYY-1/YYYY` for broken ones (year
- * = the FY-end year). Derived from company settings because the picker only
- * carries the year.
- */
-async function yearlyVatTaxPeriod(ctx: ExtensionContext, year: number): Promise<string> {
+async function vatTaxPeriod(
+  ctx: ExtensionContext,
+  periodType: VatPeriodType,
+  year: number,
+  period: number,
+): Promise<string> {
   const { data } = await ctx.supabase
     .from('company_settings')
-    .select('fiscal_year_start_month')
+    .select('entity_type, fiscal_year_start_month')
     .eq('company_id', ctx.companyId)
     .maybeSingle()
-  const startMonth = data?.fiscal_year_start_month ?? 1
-  return startMonth === 1 ? `${year}` : `${year - 1}/${year}`
+  return vatFilingTaxPeriod(periodType, year, period, vatFilingFiscalYearEndMonth(data))
 }
 
 /**
  * Complete the moms deadline for the period identified by the request's
- * optional periodType/year/period query params. Both monthly and quarterly
- * types are passed for sub-annual periods: company settings decide which one
- * exists, the other is a no-op. Best-effort by design (completeTaxDeadline
- * never throws).
+ * optional periodType/year/period query params. Every moms deadline type is
+ * passed: the cadences' tax_period formats never overlap, so the label alone
+ * picks the row. Best-effort by design (completeTaxDeadline never throws).
  */
 async function completeVatDeadlineFromRequest(
   request: Request,
@@ -2943,19 +2940,20 @@ async function completeVatDeadlineFromRequest(
   const periodType = url.searchParams.get('periodType') as VatPeriodType | null
   const year = Number(url.searchParams.get('year'))
   const period = Number(url.searchParams.get('period'))
-  if (!periodType || !Number.isFinite(year) || !Number.isFinite(period) || !year || !period) {
+  if (
+    (periodType !== 'monthly' && periodType !== 'quarterly' && periodType !== 'yearly') ||
+    !Number.isFinite(year) ||
+    !Number.isFinite(period) ||
+    !year ||
+    !period
+  ) {
     return
   }
-  const taxPeriod =
-    periodType === 'yearly'
-      ? await yearlyVatTaxPeriod(ctx, year)
-      : vatTaxPeriod(periodType, year, period)
-  if (!taxPeriod) return
   await completeTaxDeadline(
     ctx.supabase,
     ctx.companyId,
-    periodType === 'yearly' ? ['moms_yearly'] : ['moms_monthly', 'moms_quarterly'],
-    taxPeriod,
+    [...VAT_FILING_DEADLINE_TYPES],
+    await vatTaxPeriod(ctx, periodType, year, period),
     newStatus
   )
 }

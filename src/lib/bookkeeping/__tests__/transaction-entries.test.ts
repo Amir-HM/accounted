@@ -50,21 +50,6 @@ vi.mock('../vat-entries', () => ({
       }
     }
   ),
-  generateReverseChargeLines: vi.fn().mockImplementation(
-    (baseAmount: number, vatRate: number = 0.25) => {
-      const vatAmount = Math.round(baseAmount * vatRate * 100) / 100
-      let outputAccount: string
-      switch (vatRate) {
-        case 0.12: outputAccount = '2624'; break
-        case 0.06: outputAccount = '2634'; break
-        default: outputAccount = '2614'; break
-      }
-      return [
-        { account_number: '2645', debit_amount: vatAmount, credit_amount: 0, line_description: `Fiktiv ingående moms` },
-        { account_number: outputAccount, debit_amount: 0, credit_amount: vatAmount, line_description: `Fiktiv utgående moms` },
-      ]
-    }
-  ),
   extractNetAmount: vi.fn().mockImplementation(
     (totalAmount: number, vatRate: number) => {
       if (vatRate === 0) return totalAmount

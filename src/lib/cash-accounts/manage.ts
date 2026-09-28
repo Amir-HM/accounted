@@ -1,8 +1,9 @@
 /**
  * What a user can do to the company's bank and cash accounts (cash_accounts):
  * create one by hand, edit it (verifikationsserie, payee details, name,
- * enabled), make it the primary, and choose the default payee account per
- * invoice currency. One implementation behind the dashboard routes
+ * enabled), make it the primary, remove one that never became bookkeeping,
+ * and choose the default payee account per invoice currency. One
+ * implementation behind the dashboard routes
  * (/api/cash-accounts/**), the v1 operations and the MCP tools
  * (lib/operations/cash-accounts.ts), so every door applies the same rules:
  *
@@ -381,6 +382,136 @@ export async function setPrimaryCashAccount(
   } catch (err) {
     log.error('cash_accounts make primary failed', err as Error)
     return failed(err)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remove
+// ---------------------------------------------------------------------------
+
+/** Why remove_cash_account refused, as the RPC names it. */
+export type CashAccountRemovalRefusal =
+  | 'bank_connected'
+  | 'primary'
+  | 'booked'
+  | 'ignored'
+  | 'match_history'
+  | 'in_use'
+  | 'ledger_history'
+
+/** One registered error per refusal: its message carries the way out. */
+export const CASH_ACCOUNT_REMOVAL_CODES: Record<CashAccountRemovalRefusal, string> = {
+  bank_connected: 'CASH_ACCOUNT_REMOVE_BANK_CONNECTED',
+  primary: 'CASH_ACCOUNT_REMOVE_PRIMARY',
+  booked: 'CASH_ACCOUNT_REMOVE_BOOKED',
+  ignored: 'CASH_ACCOUNT_REMOVE_IGNORED',
+  match_history: 'CASH_ACCOUNT_REMOVE_MATCH_HISTORY',
+  in_use: 'CASH_ACCOUNT_REMOVE_IN_USE',
+  ledger_history: 'CASH_ACCOUNT_REMOVE_LEDGER_HISTORY',
+}
+
+export interface RemovedCashAccount {
+  cash_account_id: string
+  ledger_account: string
+  /** Unbooked transactions that went with the account. */
+  deleted_transactions: number
+  /** Rows whose underlag stays in Arkiv, now paired with nothing. */
+  released_underlag: number
+  /** Agreement obligations the removed rows had matched, back to expected. */
+  released_obligations: number
+}
+
+type RemovalResult =
+  | ({ ok: false; reason: CashAccountRemovalRefusal | 'not_found' } & Record<string, unknown>)
+  | {
+      ok: true
+      dry_run: true
+      cash_account_id: string
+      ledger_account: string
+      transactions: number
+      underlag: number
+    }
+  | ({ ok: true; dry_run: false } & RemovedCashAccount)
+
+/**
+ * Remove a bank account that never became bookkeeping, with its
+ * transactions, in one transaction (#3130). What qualifies is decided inside
+ * remove_cash_account (migration 20260927212000), not here: not held by a
+ * live bank connection, not the primary, no transaction booked, linked,
+ * ignored or with match history, nothing on invoices or in a reconciliation,
+ * no posted lines on its ledger. A refusal names the reason and changes
+ * nothing. Underlag is never deleted, only unpaired from the removed rows.
+ *
+ * Owner/admin, like every other bank-account write here; the RPC checks the
+ * same role itself. A dry run answers the same checks and what would go
+ * (the settings dialog shows it before the confirmation), without locking
+ * or writing.
+ */
+export async function removeCashAccount(
+  ctx: OperationContext,
+  cashAccountId: string,
+  options: { dryRun?: boolean } = {},
+): Promise<OperationOutcome<RemovedCashAccount>> {
+  const { supabase, companyId, userId, log } = ctx
+  if (!UUID_RE.test(cashAccountId)) return NOT_FOUND
+  const denied = await requireCompanyAdmin(ctx, BANK_ADMIN_MESSAGE)
+  if (denied) return denied
+
+  const { data, error } = await supabase.rpc('remove_cash_account', {
+    p_company_id: companyId,
+    p_cash_account_id: cashAccountId,
+    p_user_id: userId,
+    p_dry_run: options.dryRun === true,
+  })
+  if (error) {
+    // The database's own owner/admin check: the membership changed between
+    // the read above and the call.
+    if (error.code === '42501') {
+      return { ok: false, code: 'FORBIDDEN', messageSv: BANK_ADMIN_MESSAGE, details: { required_roles: ['owner', 'admin'] } }
+    }
+    log.error('cash_accounts remove failed', error)
+    // Passed through as is: a PT409 CASH_ACCOUNT_OPERATION_BUSY maps to its
+    // own retryable code.
+    return failed(error)
+  }
+
+  const result = data as RemovalResult | null
+  if (!result) return failed(new Error('remove_cash_account returned no result'))
+  if (!result.ok) {
+    if (result.reason === 'not_found') return NOT_FOUND
+    const { ok: _ok, reason, ...rest } = result
+    return {
+      ok: false,
+      code: CASH_ACCOUNT_REMOVAL_CODES[reason] ?? 'UNKNOWN_ERROR',
+      details: { cash_account_id: cashAccountId, reason, ...rest },
+    }
+  }
+  if (result.dry_run) {
+    return {
+      ok: true,
+      dryRun: true,
+      preview: {
+        cash_account_id: result.cash_account_id,
+        ledger_account: result.ledger_account,
+        transactions: result.transactions,
+        underlag: result.underlag,
+      },
+    }
+  }
+  log.info('cash account removed', {
+    companyId,
+    cashAccountId,
+    deletedTransactions: result.deleted_transactions,
+  })
+  return {
+    ok: true,
+    data: {
+      cash_account_id: result.cash_account_id,
+      ledger_account: result.ledger_account,
+      deleted_transactions: result.deleted_transactions,
+      released_underlag: result.released_underlag,
+      released_obligations: result.released_obligations,
+    },
   }
 }
 

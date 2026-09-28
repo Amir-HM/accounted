@@ -4,7 +4,8 @@ import { escapeHtml, sanitizeSubjectLine } from './user-text'
 /**
  * Community sharing emails. "Publicerad" goes to the author once the item's
  * page is live on accounted.se, with one-click shares to LinkedIn and X (the
- * page has its own share card). "Att granska" goes to Accounted's reviewers
+ * page has its own share card) and a link to make a post image with their
+ * photo (the page's #dela box). "Att granska" goes to Accounted's reviewers
  * when an item is shared. Titles and handles are written by users: escaped.
  * Same calm layout as the other notices, signed by the app, the destination
  * of every button shown in plain text.
@@ -79,7 +80,7 @@ export function publishedEmailHtml(data: PublishedEmailData): string {
         <a href="${escapeHtml(share.linkedin)}" style="${PRIMARY} margin: 0 8px 8px 0;">Dela på LinkedIn</a>
         <a href="${escapeHtml(share.x)}" style="${SECONDARY} margin: 0 8px 8px 0;">Dela på X</a>
       </div>
-      <p style="margin: 0 0 32px 0; font-size: 13px; color: #9ca3af;">Sidan: <a href="${page}#dela" style="color: #6b7280;">${page}</a></p>`
+      <p style="margin: 0 0 32px 0; font-size: 14px; color: #6b7280;">Vill du lägga upp en bild med ditt foto? <a href="${page}#dela" style="color: #1a1a1a;">Gör den här</a>.</p>`
   const footer = `Du får det här mejlet eftersom du delade en instruktion från ${appName}. Vill du ta tillbaka den? Öppna den under Instruktioner och välj Dra tillbaka.`
   return layout('Din instruktion är publicerad', content, footer)
 }
@@ -96,7 +97,7 @@ export function publishedEmailText(data: PublishedEmailData): string {
     '',
     `Dela på LinkedIn: ${share.linkedin}`,
     `Dela på X: ${share.x}`,
-    `Sidan: ${data.pageUrl}`,
+    `Gör en bild med ditt foto att lägga upp: ${data.pageUrl}#dela`,
     '',
     'Med vänliga hälsningar,',
     appName,

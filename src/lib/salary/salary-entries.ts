@@ -1,4 +1,5 @@
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
+import { resolvePrimaryBankAccount } from '@/lib/bookkeeping/settlement-account'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import {
   coerceDimensionsBag,
@@ -258,11 +259,15 @@ export async function createSalaryRunEntries(
 
   const desc = salaryRunDescription(run)
 
-  await ensureSalaryAccountsExist(supabase, companyId, userId, postingRun)
+  // The bank account the net pay leaves from: the company's primary cash
+  // account, the same resolver the preview route calls (issue #3097).
+  const bankAccount = await resolvePrimaryBankAccount(supabase, companyId, log)
+
+  await ensureSalaryAccountsExist(supabase, companyId, userId, postingRun, bankAccount)
 
   // The four line sets come from the same builder the preview route renders,
   // so what the user approved on screen is what posts.
-  const built = buildSalaryRunEntryLines(postingRun, desc)
+  const built = buildSalaryRunEntryLines(postingRun, desc, bankAccount)
 
   const post = (description: string, lines: CreateJournalEntryLineInput[]): Promise<JournalEntry> => {
     const input: CreateJournalEntryInput = {
@@ -303,7 +308,7 @@ export async function createSalaryRunEntries(
 }
 
 export interface SalaryRunEntryLines {
-  /** Entry 1: löner, kostnadsersättning, nettolöneavdrag, personalskatt, nettolön. */
+  /** Entry 1: löner, kostnadsersättning, nettolöneavdrag, personalskatt, nettolön (on the bank account). */
   salaryLines: CreateJournalEntryLineInput[]
   /** Entry 2: arbetsgivaravgifter (7510 / 2731 / 3740). Always present, zero-shaped for a nollkörning. */
   avgifterLines: CreateJournalEntryLineInput[]
@@ -321,8 +326,18 @@ export interface SalaryRunEntryLines {
  * 2731 split, dimension buckets) cannot be present in one and missing in
  * the other: feedback seq 384229 was a preview that debited 7385 for a
  * bilförmån with no counter line because it had its own copy of the loop.
+ *
+ * `bankAccount` is the ledger account the net pay is credited on. It is a
+ * fact about the company, not about payroll, so the builder takes it instead
+ * of carrying a constant: callers pass resolvePrimaryBankAccount() (a
+ * hardcoded 1930 here booked salaries off a company's real bank account,
+ * issue #3097).
  */
-export function buildSalaryRunEntryLines(run: SalaryRunData, desc: string): SalaryRunEntryLines {
+export function buildSalaryRunEntryLines(
+  run: SalaryRunData,
+  desc: string,
+  bankAccount: string,
+): SalaryRunEntryLines {
   const postingRun = resolveLoneVaxlingPension(run)
   const totalVacation = postingRun.employees.reduce((sum, e) => sum + e.vacation_accrual, 0)
   const totalVacationAvgifter = postingRun.employees.reduce(
@@ -332,7 +347,7 @@ export function buildSalaryRunEntryLines(run: SalaryRunData, desc: string): Sala
   const totalPension = postingRun.employees.reduce((sum, e) => sum + (e.pension_contribution || 0), 0)
   const totalSlp = postingRun.employees.reduce((sum, e) => sum + (e.pension_slp || 0), 0)
   return {
-    salaryLines: buildSalaryLines(postingRun, desc),
+    salaryLines: buildSalaryLines(postingRun, desc, bankAccount),
     avgifterLines: buildAvgifterLines(postingRun, desc),
     vacationLines:
       totalVacation > 0 || totalVacationAvgifter > 0
@@ -349,9 +364,13 @@ export function buildSalaryRunEntryLines(run: SalaryRunData, desc: string): Sala
  * Debit:  7321/7331 skattefri kostnadsersättning, 2820 utlägg repaid with
  *         the salary (outside gross, inside the net payout)
  * Credit: 2710 Personalskatt (total tax withheld)
- * Credit: 1930 Företagskonto (total net salary)
+ * Credit: `bankAccount`, the company's bank account (total net salary)
  */
-function buildSalaryLines(run: SalaryRunData, desc: string): CreateJournalEntryLineInput[] {
+function buildSalaryLines(
+  run: SalaryRunData,
+  desc: string,
+  bankAccount: string,
+): CreateJournalEntryLineInput[] {
   const lines: CreateJournalEntryLineInput[] = []
 
   // Aggregate salary expenses by (account, dimensions), dimensions PR8. The
@@ -494,7 +513,7 @@ function buildSalaryLines(run: SalaryRunData, desc: string): CreateJournalEntryL
   const totalNet = run.employees.reduce((sum, e) => sum + e.net_salary, 0)
   if (totalNet > 0) {
     lines.push({
-      account_number: SALARY_ACCOUNTS.BANK,
+      account_number: bankAccount,
       debit_amount: 0,
       credit_amount: Math.round(totalNet * 100) / 100,
       line_description: `${desc}: Nettolön`,
@@ -804,11 +823,13 @@ async function ensureSalaryAccountsExist(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
-  run: SalaryRunData
+  run: SalaryRunData,
+  bankAccount: string,
 ): Promise<void> {
   const needed = new Set<string>()
 
   for (const account of Object.values(SALARY_ACCOUNTS)) needed.add(account)
+  needed.add(bankAccount)
 
   for (const emp of run.employees) {
     needed.add(getEmployeeSalaryAccount(emp.employment_type))

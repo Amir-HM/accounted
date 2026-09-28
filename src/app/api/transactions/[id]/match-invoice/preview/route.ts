@@ -291,7 +291,7 @@ export const GET = withRouteContext(
         const vatTreatment = totals.vat > 0
           ? (rate === 25 ? 'standard_25' : rate === 12 ? 'reduced_12' : rate === 6 ? 'reduced_6' : inv.vat_treatment)
           : inv.vat_treatment
-        const revenueAcct = getRevenueAccount(vatTreatment, entityType)
+        const revenueAcct = getRevenueAccount(vatTreatment, entityType, inv.delivery_country)
         creditLines.push({
           account_number: revenueAcct,
           debit_amount: 0,

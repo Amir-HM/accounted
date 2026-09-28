@@ -262,6 +262,7 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   // ── Cash accounts ──────────────────────────────────────────────────
   'POST /api/cash-accounts': covered([`POST ${V}/cash-accounts`, 'gnubok_create_cash_account']),
   'PATCH /api/cash-accounts/:id': covered([`PATCH ${V}/cash-accounts/:id`, 'gnubok_update_cash_account'], 'the ledger account is not editable on any door'),
+  'DELETE /api/cash-accounts/:id': gap('P3', 'removing a wrongly synced, unbooked bank account (#3130) deletes bank rows; whether an API key or agent may do that is a founder call, so it ships dashboard-only'),
   'POST /api/cash-accounts/:id/primary': covered([`POST ${V}/cash-accounts/:id/set-primary`, 'gnubok_set_primary_cash_account']),
   'PUT /api/cash-accounts/payee-defaults': covered([`PUT ${V}/cash-accounts/payee-defaults`, 'gnubok_set_invoice_payee_default']),
 
@@ -670,4 +671,4 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
  * The exact number of 'gap' entries today. Covering a gap means lowering
  * this; adding one means raising it in the same diff, visibly.
  */
-export const GAP_CEILING = 135
+export const GAP_CEILING = 136

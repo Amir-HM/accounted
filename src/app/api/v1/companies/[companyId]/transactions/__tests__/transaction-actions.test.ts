@@ -543,6 +543,25 @@ describe('POST /transactions/:id/match-batch', () => {
     expect(wrote(client)).toBe(false)
   })
 
+  // Issue #3097: the RPC books the bank leg on the row's own cash account, so
+  // the dry run projects that account, not 1930.
+  it("dry run projects the bank leg on the row's own cash account", async () => {
+    const client = makeClient({
+      company_members: OWNER,
+      invoices,
+      transactions: { data: { id: TX_ID, amount: 1250, currency: 'SEK', date: '2026-05-12', journal_entry_id: null, cash_account_id: CA_ID }, error: null },
+      cash_accounts: { data: { ledger_account: '1931' }, error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post({ allocations }, '?dry_run=true')
+    expect(res.status).toBe(200)
+    const lines = (await res.json()).data.preview.expected_lines as Array<{ account_number: string; debit: number; credit: number }>
+    expect(lines.at(-1)).toMatchObject({ account_number: '1931', debit: 1250, credit: 0 })
+    expect(lines.some((l) => l.account_number === '1930')).toBe(false)
+    expect(client.calls).toContainEqual({ table: 'cash_accounts', method: 'eq', args: ['id', CA_ID] })
+    expect(wrote(client)).toBe(false)
+  })
+
   it('dry run refuses allocations that do not sum to the row', async () => {
     mockServiceClient.mockReturnValue(
       makeClient({ company_members: OWNER, invoices, transactions: { data: { id: TX_ID, amount: 1000, currency: 'SEK', date: '2026-05-12', journal_entry_id: null }, error: null } }),

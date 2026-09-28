@@ -40,6 +40,7 @@ import {
   type BatchAllocationPreviewInvoice,
 } from '@/lib/invoices/batch-allocation-preview'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
+import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { roundOre } from '@/lib/money'
 
 export type MatchBatchAllocation =
@@ -277,18 +278,25 @@ async function previewMatchBatch(
   input: MatchBatchInput,
   overridden: boolean,
 ): Promise<OperationOutcome<MatchBatchResult>> {
-  const { supabase, companyId } = ctx
+  const { supabase, companyId, log } = ctx
   const { allocations } = input
 
   const { data: txRow, error: txError } = await supabase
     .from('transactions')
-    .select('id, amount, currency, date, journal_entry_id')
+    .select('id, amount, currency, date, journal_entry_id, cash_account_id')
     .eq('id', transactionId)
     .eq('company_id', companyId)
     .maybeSingle()
   if (txError) return failed(txError)
   if (!txRow) return { ok: false, code: 'BATCH_TX_NOT_FOUND' }
-  const transaction = txRow as { id: string; amount: number; currency: string | null; date: string; journal_entry_id: string | null }
+  const transaction = txRow as {
+    id: string
+    amount: number
+    currency: string | null
+    date: string
+    journal_entry_id: string | null
+    cash_account_id: string | null
+  }
   if (transaction.journal_entry_id) return { ok: false, code: 'BATCH_TX_ALREADY_BOOKED' }
   if (transaction.amount === 0) return { ok: false, code: 'BATCH_TX_ZERO_AMOUNT' }
 
@@ -332,8 +340,18 @@ async function previewMatchBatch(
   if (totalAllocated - txAbs > 0.005) return { ok: false, code: 'BATCH_AMOUNT_EXCEEDS_TX', details: { total_allocated: totalAllocated, transaction_amount: txAbs } }
   if (txAbs - totalAllocated > 0.005) return { ok: false, code: 'BATCH_AMOUNT_BELOW_TX', details: { total_allocated: totalAllocated, transaction_amount: txAbs } }
 
+  // The bank leg the RPC posts: capture_bank_booking_context's account for
+  // this row, which resolveSettlementAccount mirrors (issue #3097).
+  const currency = transaction.currency ?? 'SEK'
+  let bankAccount: string
+  try {
+    bankAccount = await resolveSettlementAccount(supabase, companyId, transaction.cash_account_id, log, currency)
+  } catch (err) {
+    return failed(err)
+  }
   const expected = buildBatchAllocationPreview({
-    transaction: { amount: transaction.amount, currency: transaction.currency ?? 'SEK', date: transaction.date },
+    transaction: { amount: transaction.amount, currency, date: transaction.date },
+    bankAccount,
     allocations,
     invoices,
   })

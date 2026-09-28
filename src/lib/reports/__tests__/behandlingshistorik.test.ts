@@ -910,6 +910,26 @@ describe('auditRowToEvent: behandlingsregler', () => {
     expect(system.details).toEqual(['Aktivt: Nej → Ja'])
   })
 
+  // remove_cash_account (20260927212000, #3130): the removal names the
+  // account from old_state and says how many unbooked rows went with it.
+  it('cash_accounts: a user removal names the account and the unbooked rows that went', () => {
+    const removed = auditRowToEvent(
+      auditRow({
+        table_name: 'cash_accounts',
+        action: 'DELETE',
+        old_state: { id: 'ca-1', name: 'Privatkonto', ledger_account: '1931', currency: 'SEK' },
+        new_state: { name: 'Privatkonto', ledger_account: '1931', deleted_transactions: 162, released_underlag: 0 },
+      }),
+    )!
+    expect(removed).toMatchObject({
+      category: 'installningar',
+      code: 'cash_account.deleted',
+      event: 'Bankkonto borttaget',
+      object: 'Privatkonto 1931',
+    })
+    expect(removed.details).toEqual(['Obokförda transaktioner borttagna: 162'])
+  })
+
   it('categorization_templates: the learning columns never reach the report', () => {
     // The DB trigger filters these already (20260901103000 + 20260901200000);
     // the read model must not resurrect them if a row slips through, or every

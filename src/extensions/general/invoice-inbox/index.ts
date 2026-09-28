@@ -104,6 +104,8 @@ import {
   type UpdateInboxItemFieldsInput,
 } from '@/lib/documents/inbox-item-actions'
 import { convertInboxItemToSupplierInvoice } from '@/lib/documents/inbox-convert'
+import { resolveInboxKind, type InboxKindSource } from '@/lib/documents/inbox-kind'
+import { resolveInboxCreditTarget } from '@/lib/supplier-invoices/credit-target'
 import { lookupPortal } from '@/lib/receipt-hunt/portal-directory'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
@@ -741,6 +743,49 @@ export const invoiceInboxExtension: Extension = {
 
         if (error) return NextResponse.json({ error: error.message }, { status: 500 })
         return NextResponse.json({ data: { events: events ?? [] } })
+      },
+    },
+
+    // ── Which invoice a credit note in the inbox credits ────
+    // Issue #2980: a supplier's credit note is handled by crediting the
+    // invoice it references (POST /api/supplier-invoices/:id/credit with the
+    // inbox item), never registered as a payable. The rail asks here which
+    // invoice that is; resolution rules in lib/supplier-invoices/credit-target.ts.
+    {
+      method: 'GET',
+      path: '/items/:id/credit-target',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+        const url = new URL(request.url)
+        const id = url.searchParams.get('_id')
+        if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+
+        const { data: item, error } = await ctx.supabase
+          .from('invoice_inbox_items')
+          .select('id, kind_hint, matched_supplier_id, extracted_data, document_id')
+          .eq('id', id)
+          .eq('company_id', ctx.companyId)
+          .maybeSingle()
+        if (error) return sessionFailureResponse({ ok: false, code: 'UNKNOWN_ERROR', error }, extensionLog, ctx.requestId ?? '')
+        if (!item) return sessionFailureResponse({ ok: false, code: 'INBOX_ITEM_NOT_FOUND' }, extensionLog, ctx.requestId ?? '')
+
+        const row = item as {
+          kind_hint: string | null
+          matched_supplier_id: string | null
+          extracted_data: Record<string, unknown> | null
+          document_id: string | null
+        }
+        // Same stand-in as the item routes: the document's reading when the item has none.
+        if (row.extracted_data == null && row.document_id) {
+          const { data: doc } = await ctx.supabase.from('document_attachments').select('extracted_data').eq('id', row.document_id).eq('company_id', ctx.companyId).maybeSingle()
+          row.extracted_data = (doc as { extracted_data?: Record<string, unknown> | null } | null)?.extracted_data ?? null
+        }
+        if (resolveInboxKind(row as InboxKindSource) !== 'credit_note') {
+          return NextResponse.json({ data: { is_credit_note: false, credit_target: null } })
+        }
+        const creditTarget = await resolveInboxCreditTarget(ctx.supabase, ctx.companyId, row)
+        return NextResponse.json({ data: { is_credit_note: true, credit_target: creditTarget } })
       },
     },
 

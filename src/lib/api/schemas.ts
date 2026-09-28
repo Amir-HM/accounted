@@ -25,6 +25,7 @@ import { SalaryCalculationPolicySchema } from '@/lib/salary/calculation-policy'
 import { MAX_INVOICE_EMAIL_COPY_RECIPIENTS } from '@/lib/invoices/email-recipients'
 import { INVOICE_POSTING_ACCOUNT_REGEX } from '@/lib/invoices/posting-account'
 import { computeLineNet } from '@/lib/invoices/line-amounts'
+import { INVOICE_VAT_TREATMENT_OVERRIDES } from '@/lib/invoices/invoice-vat-override'
 import {
   DEDUCTION_LINE_ERRORS,
   HOUSEWORK_TYPE_VALUES,
@@ -38,6 +39,7 @@ import {
   COUNTRY_CONSISTENCY_MESSAGES,
   checkCountryConsistency,
   defaultCountryForParty,
+  isAssignedCountryCode,
   normalizeCountryCode,
 } from '@/lib/vat/country-codes'
 import {
@@ -623,6 +625,34 @@ function refineRotRutLineCompleteness(
   })
 }
 
+/**
+ * Per-invoice VAT treatment (#2906). Omitted = the customer decides (create)
+ * or the draft keeps what it has (edit); null clears. The two travel as a
+ * pair: sending either replaces both. The rules live in
+ * resolveInvoiceVatRules (lib/invoices/vat-rules.ts), applied by the shared
+ * invoice builder; this is only the wire shape.
+ */
+export const InvoiceVatOverrideShape = {
+  vat_treatment: z
+    .enum(INVOICE_VAT_TREATMENT_OVERRIDES)
+    .nullable()
+    .optional()
+    .describe(
+      "This invoice's own VAT treatment instead of the customer's. standard = Swedish VAT at the line rates (ruta 05). export with delivery_country = export of goods (0 %, 3105, ruta 36); reverse_charge with delivery_country = intra-EU supply of goods (0 %, 3108, ruta 35). Without delivery_country, export / reverse_charge are the services treatments and only accepted where the customer already gets them. Omit to let the customer decide; null clears.",
+    ),
+  delivery_country: z
+    .string()
+    .regex(/^[A-Za-z]{2}$/, 'delivery_country must be an ISO 3166-1 alpha-2 code')
+    .transform((v) => normalizeCountryCode(v) as string)
+    // An unassigned code would read as "outside the EU" and unlock export.
+    .refine(isAssignedCountryCode, 'delivery_country must be an assigned ISO 3166-1 alpha-2 country code')
+    .nullable()
+    .optional()
+    .describe(
+      'ISO 3166-1 alpha-2 country the GOODS are transported to. Setting it declares the invoice a supply of goods; alone it implies the treatment (SE = standard, another EU member state = reverse_charge, elsewhere = export). XI = Northern Ireland (inside the EU for goods). Omit for services.',
+    ),
+}
+
 const CreateInvoiceBaseSchema = z.object({
   customer_id: uuid,
   invoice_date: isoDate,
@@ -730,6 +760,7 @@ const CreateInvoiceBaseSchema = z.object({
     .transform((v) => v || null)
     .nullable()
     .optional(),
+  ...InvoiceVatOverrideShape,
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 
@@ -2579,6 +2610,14 @@ export const CreateCashAccountSchema = z.object({
   payee: InvoicePaymentAccountSchema.optional(),
 }).strict()
 
+/**
+ * DELETE /api/cash-accounts/[id]: dry_run=true answers the same checks and
+ * what would go, without writing (the confirmation dialog's preview).
+ */
+export const RemoveCashAccountQuerySchema = z.object({
+  dry_run: z.enum(['true', 'false']).optional(),
+}).strict()
+
 /** PUT /api/cash-accounts/payee-defaults: which account invoices in a currency pay to. */
 export const SetInvoicePayeeDefaultSchema = z.object({
   currency: CurrencySchema,
@@ -2880,23 +2919,30 @@ export const CreateDeadlineSchema = z.object({
 })
 
 // ============================================================
-// VAT filing record (issue #2746)
+// VAT filing record (issues #2746, #2786)
 // ============================================================
 
 /**
- * A calendar VAT period: the two cadences whose deadline rows carry the
- * filing record (lib/vat/filing-record.ts). Helårsmoms is deliberately not
- * accepted: its deadline is labelled per räkenskapsår and is completed from
- * the calendar instead.
+ * A VAT period of any cadence, the key of the filing record
+ * (lib/vat/filing-record.ts). Yearly (helårsmoms) is the räkenskapsår, named
+ * like every yearly VAT period: the year it ends in, period 1. Shared by the
+ * dashboard routes and the vat-filings operations (v1 and MCP).
  */
 const vatFilingPeriodShape = {
-  period_type: z.enum(['monthly', 'quarterly']),
-  year: z.coerce.number().int().min(2000).max(2100),
-  period: z.coerce.number().int().min(1).max(12),
+  period_type: z
+    .enum(['monthly', 'quarterly', 'yearly'])
+    .describe('The momsperiod length; yearly is helårsmoms, one period per räkenskapsår.'),
+  year: z.coerce
+    .number()
+    .int()
+    .min(2000)
+    .max(2100)
+    .describe('Calendar year of the period; for yearly, the year the räkenskapsår ends.'),
+  period: z.coerce.number().int().min(1).max(12).describe('1-12 monthly, 1-4 quarterly, 1 yearly.'),
 }
 
 function refineVatFilingPeriod(
-  data: { period_type: 'monthly' | 'quarterly'; period: number },
+  data: { period_type: 'monthly' | 'quarterly' | 'yearly'; period: number },
   ctx: z.RefinementCtx,
 ) {
   if (data.period_type === 'quarterly' && data.period > 4) {
@@ -2904,6 +2950,13 @@ function refineVatFilingPeriod(
       code: 'custom',
       path: ['period'],
       message: 'For quarterly period_type, period must be 1-4.',
+    })
+  }
+  if (data.period_type === 'yearly' && data.period !== 1) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['period'],
+      message: 'For yearly period_type, period must be 1.',
     })
   }
 }
@@ -2914,9 +2967,17 @@ export const MarkVatFilingSchema = z
   .object({
     ...vatFilingPeriodShape,
     /** Swedish calendar date the declaration was filed. */
-    filed_on: saneIsoDate,
+    filed_on: saneIsoDate.describe(
+      'Swedish calendar date the declaration was filed (YYYY-MM-DD): after the period ended, not in the future.',
+    ),
     /** Skatteverket's reference (kvittensnummer); null clears a stored one. */
-    reference: z.string().trim().max(200).nullable().optional(),
+    reference: z
+      .string()
+      .trim()
+      .max(200)
+      .nullable()
+      .optional()
+      .describe("Skatteverket's reference (kvittensnummer). Omit to keep a stored one, null to clear it."),
   })
   .superRefine(refineVatFilingPeriod)
 
@@ -3522,7 +3583,30 @@ export const CreateEmployeeSchema = EmployeeSchemaBase.superRefine((data, ctx) =
 // (salary_type materializes as 'monthly' without monthly_salary present) and
 // (b) leak default values into routes that spread the parsed body into the
 // UPDATE (silently resetting e.g. is_sidoinkomst on unrelated edits).
+//
+// The update contract (#3008): an absent key leaves the column unchanged and
+// an explicit null clears it. Every column that is nullable in the database
+// accepts null here; before, only vacation_pay_rate and jämkning did, so an
+// emptied slutdatum (or email, bank account, ...) had no way to reach the
+// UPDATE and the stored value came back after save. NOT NULL columns keep
+// rejecting null. Cross-field rules on the merged row (a monthly employee
+// needs a salary, A-skatt needs a table, Växa-stöd needs a start date) are
+// checked by every door through lib/salary/employee-update-rules.ts.
 const EmployeeSchemaPatchBase = EmployeeSchemaBase.extend({
+  employment_end: EmployeeSchemaBase.shape.employment_end.nullable(),
+  monthly_salary: EmployeeSchemaBase.shape.monthly_salary.nullable(),
+  hourly_rate: EmployeeSchemaBase.shape.hourly_rate.nullable(),
+  tax_table_number: EmployeeSchemaBase.shape.tax_table_number.nullable(),
+  tax_municipality: EmployeeSchemaBase.shape.tax_municipality.nullable(),
+  clearing_number: EmployeeSchemaBase.shape.clearing_number.nullable(),
+  bank_account_number: EmployeeSchemaBase.shape.bank_account_number.nullable(),
+  email: EmployeeSchemaBase.shape.email.nullable(),
+  phone: EmployeeSchemaBase.shape.phone.nullable(),
+  address_line1: EmployeeSchemaBase.shape.address_line1.nullable(),
+  postal_code: EmployeeSchemaBase.shape.postal_code.nullable(),
+  city: EmployeeSchemaBase.shape.city.nullable(),
+  vaxa_stod_start: EmployeeSchemaBase.shape.vaxa_stod_start.nullable(),
+  vaxa_stod_end: EmployeeSchemaBase.shape.vaxa_stod_end.nullable(),
   employment_type: EmploymentTypeSchema,
   employment_degree: z.number().min(1).max(100),
   hours_per_week: z.number().positive().max(80),
@@ -3539,15 +3623,16 @@ const EmployeeSchemaPatchBase = EmployeeSchemaBase.extend({
 })
 
 export const UpdateEmployeeSchema = EmployeeSchemaPatchBase.partial().superRefine((data, ctx) => {
-  // Only validate salary when salary_type is being changed in this update
-  if (data.salary_type === 'monthly' && data.monthly_salary !== undefined && data.monthly_salary <= 0) {
+  // Only validate salary when salary_type is being changed in this update.
+  // A null amount (clear) counts as missing: the new salary type needs one.
+  if (data.salary_type === 'monthly' && data.monthly_salary !== undefined && (data.monthly_salary ?? 0) <= 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Månadslön måste vara större än 0 för månadslöneform',
       path: ['monthly_salary'],
     })
   }
-  if (data.salary_type === 'hourly' && data.hourly_rate !== undefined && data.hourly_rate <= 0) {
+  if (data.salary_type === 'hourly' && data.hourly_rate !== undefined && (data.hourly_rate ?? 0) <= 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Timlön måste vara större än 0 för timlöneform',
@@ -3572,17 +3657,15 @@ export const UpdateEmployeeSchema = EmployeeSchemaPatchBase.partial().superRefin
   }
 
   // Växa-stöd schema-level consistency check. The schema can only see what
-  // the PATCH body carries; the route layer is responsible for merged-
-  // state validation (i.e. an existing employee with vaxa_stod_start
-  // already set can have vaxa_stod_eligible flipped on without also
-  // sending start in the body). What the schema CAN enforce:
+  // the PATCH body carries; merged-state validation (an existing employee
+  // with vaxa_stod_start already set can have vaxa_stod_eligible flipped on
+  // without also sending start in the body, or have start cleared while the
+  // stored flag stays on) is lib/salary/employee-update-rules.ts, run by
+  // every door. What the schema CAN enforce:
   //   - If the body enables vaxa_stod AND clears vaxa_stod_start explicitly
   //     (sending null), reject: that would orphan the eligibility flag.
-  //   - If the body sets vaxa_stod_eligible=true AND vaxa_stod_start is
-  //     present in the body but invalid relative to vaxa_stod_end, reject.
-  // The first case isn't currently expressible via .partial() (null != absent),
-  // so the practical schema-level check is the second one. The route
-  // layer will add a merged-state check when needed.
+  //   - If both dates are in the body, the end may not precede the start
+  //     (a null date skips the ordering check).
   if (
     data.vaxa_stod_eligible === true &&
     'vaxa_stod_start' in data &&
