@@ -10857,6 +10857,8 @@
     "review_remove_folder": "Ta bort mappen",
     "review_approve": "Godkänn och publicera",
     "review_view_source": "Visa på GitHub",
+    "review_mfa_required": "Granskningen kräver inloggning med tvåfaktorsautentisering eller BankID. Aktivera tvåfaktorsautentisering under Inställningar > Säkerhet och logga in igen.",
+    "review_mfa_action": "Gå till Säkerhet",
     "review_changed": "Texten har ändrats sedan sidan laddades. Ladda om och läs igen.",
     "review_privacy_kinds": {
       "personnummer": "personnummer",

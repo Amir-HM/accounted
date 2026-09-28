@@ -10857,6 +10857,8 @@
     "review_remove_folder": "Remove the folder",
     "review_approve": "Approve and publish",
     "review_view_source": "View on GitHub",
+    "review_mfa_required": "The review queue requires signing in with two-factor authentication or BankID. Turn on two-factor authentication under Settings > Security and sign in again.",
+    "review_mfa_action": "Go to Security",
     "review_changed": "The text changed since the page loaded. Reload and read it again.",
     "review_privacy_kinds": {
       "personnummer": "personal ID number",
