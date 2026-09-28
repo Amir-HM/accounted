@@ -245,11 +245,13 @@ export async function buildArsredovisningData(
   const currentYearResult = mapping.br['AretsResultatEgetKapital']?.current ?? 0
   const distributableEquity = mapping.totals.frittEgetKapital.current
 
-  // Duplicate-value consistency with the RR (mirrors build-input.ts): the
-  // flerårsöversikt is computed from the income statement (ALL class-3
-  // revenue), but nettoomsättning per ÅRL is strictly 3000-3799. Override
-  // the current + previous year so the FB table ties to the RR two pages
-  // later. Older years have no RR in the document and keep the IS values.
+  // Duplicate-value consistency with the RR (mirrors build-input.ts). Since
+  // #1116 buildFlerarsoversikt maps every year through mapTrialBalancesToK2
+  // on the pre-closing trial balance (Nettoomsattning = 3000-3799), so this
+  // is not a class-3 correction: it pins the current and previous year to
+  // the very mapping the RR is built from, so the FB table ties to the RR
+  // two pages later by construction rather than by a second computation.
+  // Older years have no RR in the document and keep their own mapping.
   if (flerarsoversikt.length > 0) {
     const lastIdx = flerarsoversikt.length - 1
     flerarsoversikt[lastIdx] = {

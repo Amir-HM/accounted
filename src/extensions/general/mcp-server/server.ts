@@ -9871,9 +9871,9 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_get_income_statement',
-    keywords: ['resultaträkning', 'resultatrapport'],
+    keywords: ['resultaträkning', 'resultatrapport', 'kostnadsställe', 'projekt'],
     title: 'Income Statement (Resultaträkning)',
-    description: 'Income statement (resultaträkning) for a fiscal period or a from_date/to_date range inside it: revenue, expenses, net result. Optional dimensions filter (kostnadsställe/projekt).',
+    description: 'Resultaträkning for a period or a from_date/to_date range. Revenue = nettoomsattning (3000-3799), not total_revenue; definitions gives each figure\'s accounts.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9886,7 +9886,10 @@ export const tools: McpTool[] = [
     },
     outputSchema: {
       type: 'object',
-      properties: { ...DIMENSION_FILTER_OUTPUT_PROPS },
+      properties: {
+        nettoomsattning: { type: 'number' },
+        ...DIMENSION_FILTER_OUTPUT_PROPS,
+      },
     },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, userId, supabase) {
