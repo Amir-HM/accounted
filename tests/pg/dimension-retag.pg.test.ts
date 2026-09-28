@@ -22,7 +22,8 @@ import {
 // the untag path.
 //
 // 20260928200000 pins the logged actor for JWT callers and closes the
-// carve-out flag after the UPDATE.
+// carve-out flag after the UPDATE; 20260928200200 adds the line bag CHECK
+// that stands behind the registry lookup.
 
 async function insertPostedTaggedEntry(params: {
   companyId: string
@@ -519,5 +520,32 @@ describe('retag actor attribution and carve-out scope (20260928200000)', () => {
       await client.query('ROLLBACK').catch(() => {})
       client.release()
     }
+  })
+})
+
+describe('line bag CHECK behind the registry lookup (20260928200200)', () => {
+  it('refuses a non-string value at the UPDATE even when the registry lookup passes', async () => {
+    const { companyId, userId, fiscalPeriodId } = await seedCompany()
+    await insertRegistryValue({ companyId, sieDimNo: 1, code: '5' })
+    const { lineId } = await insertPostedTaggedEntry({
+      companyId, userId, fiscalPeriodId,
+      dimensions: { '6': 'GAMMAL' },
+    })
+
+    // jsonb_each_text turns the JSON number 5 into the registered code '5',
+    // so only the line CHECK stands between this bag and the ledger.
+    await expect(
+      getPool().query(
+        `SELECT public.retag_line_dimensions($1::uuid, $2::uuid, '{"1":5}'::jsonb, 'Numeriskt värde', $3::uuid)`,
+        [companyId, lineId, userId],
+      ),
+    ).rejects.toThrow(/jel_dimensions_well_formed/)
+
+    expect((await lineState(lineId)).dimensions).toEqual({ '6': 'GAMMAL' })
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM public.dimension_retag_log WHERE line_id = $1`,
+      [lineId],
+    )
+    expect(rows).toHaveLength(0)
   })
 })
