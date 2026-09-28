@@ -17,8 +17,11 @@
  *
  * This module turns the request into each line's final bag and runs the
  * RPC, one transaction per line: a line refused (its period was locked in
- * between, say) never rolls back the lines already retagged. The
- * approval of gnubok_tag_journal_lines runs it.
+ * between, say) never rolls back the lines already retagged. One
+ * implementation behind the approval of gnubok_tag_journal_lines, the v1
+ * retag operation (lib/operations/dimension-retag.ts) and the dashboard
+ * workbench (POST /api/dimensions/tagging/apply, which sends each line's
+ * resulting bag as a replace).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { LineDimensions } from '@/lib/bookkeeping/dimension-resolver'

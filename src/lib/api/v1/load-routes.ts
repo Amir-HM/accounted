@@ -201,6 +201,7 @@ import '@/app/api/v1/companies/[companyId]/dimensions/route'
 import '@/app/api/v1/companies/[companyId]/dimensions/[id]/route'
 import '@/app/api/v1/companies/[companyId]/dimensions/rules/route'
 import '@/app/api/v1/companies/[companyId]/dimensions/rules/[id]/route'
+import '@/app/api/v1/companies/[companyId]/dimensions/retag/route'
 // Operation registry, wave 4: Peppol, årsredovisning, IB, AP actions.
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/peppol/route'
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/peppol/deliveries/route'

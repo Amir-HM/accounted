@@ -8,7 +8,7 @@ description: >-
   transactions and reconciliation, payroll (lön), VAT/moms and financial
   reports, SIE import/export, documents, webhooks. Covers auth with
   gnubok_sk_ API keys, conventions (dry-run, idempotency, cursor
-  pagination, scopes), and all 289 endpoints.
+  pagination, scopes), and all 290 endpoints.
 ---
 
 <!-- GENERATED FILE, do not edit. Source: lib/api/v1 registry + scripts/api-skill/overlays. Regenerate with `npm run apiskill:generate`. -->
@@ -142,7 +142,7 @@ call can undo it, e.g. invoice credit).
 
 ## Endpoint index
 
-API version `2026-05-12`, 289 operations. Paths are shown without
+API version `2026-05-12`, 290 operations. Paths are shown without
 their `/api/v1` prefix (full base URL: `https://app.gnubok.se/api/v1`).
 
 ### Core (11)
@@ -188,7 +188,7 @@ POST /companies/{companyId}/journal-entries/no-document-required : Mark many pos
 POST /companies/{companyId}/voucher-gap-explanations : Document a gap in the verifikationsserie (BFL 5 kap 6-7 §§) [scope:bookkeeping:write risk:low idempotent dry-run]
 ```
 
-### Periods and registers (45)
+### Periods and registers (46)
 
 Full detail: [references/periods.md](references/periods.md)
 
@@ -207,6 +207,7 @@ DELETE /companies/{companyId}/dimensions/{id} : Delete a custom dimension nobody
 POST /companies/{companyId}/dimensions/{id}/values : Create a dimension value (kostnadsställe/projekt code) [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 PATCH /companies/{companyId}/dimensions/{id}/values/{valueId} : Update a dimension value (rename, archive, set start/end date) [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 DELETE /companies/{companyId}/dimensions/{id}/values/{valueId} : Delete an unreferenced dimension value [scope:bookkeeping:write risk:medium idempotent]
+POST /companies/{companyId}/dimensions/retag : Change the dimension tags (kostnadsställe, projekt) on posted journal lines [scope:bookkeeping:write risk:medium idempotent dry-run reversible]
 GET /companies/{companyId}/dimensions/rules : List the account dimension rules (required, default or fixed dimension per account) [scope:reports:read risk:low idempotent]
 POST /companies/{companyId}/dimensions/rules : Require, pre-fill or pin a dimension value on an account [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 PATCH /companies/{companyId}/dimensions/rules/{id} : Change, pause or resume an account dimension rule [scope:bookkeeping:write risk:low idempotent dry-run reversible]

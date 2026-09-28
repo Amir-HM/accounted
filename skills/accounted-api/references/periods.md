@@ -1111,6 +1111,92 @@ Example response `200`:
 
 ---
 
+### `POST /api/v1/companies/{companyId}/dimensions/retag`
+
+**Change the dimension tags (kostnadsställe, projekt) on posted journal lines.**
+`scope:bookkeeping:write · risk:medium · idempotent · dry-run · reversible`
+
+Sets dimension tags on lines of posted verifikat, the one thing about a posted line that may change: amounts, accounts and texts never do. mode merge (default) sets the pairs in `dimensions` and keeps every other dimension the line carries; replace makes the line's tags exactly `dimensions`. Each line is its own transaction through the audited retag path, which writes an immutable before/after row with the reason (dimension_retag_log) and refuses a line in a closed or locked period, on or before the bookkeeping lock date, on a draft, or with a code that is not an active registry value. Partial success is success: refused lines are listed in failed. Idempotent. Dry-runnable: the dry run shows each line's tags before and after.
+
+**Use when:** Posted lines lack a project or cost centre, or carry the wrong one, and you know the line ids (lines[].id of GET /journal-entries/{id}).
+**Do not use for:** Changing amounts, accounts or dates (a rättelse: POST /journal-entries/{id}/correct), tagging lines of a draft (edit the draft), or clearing every tag of a line (the dashboard only).
+
+**Pitfalls:**
+- Codes are STRINGS keyed by sie_dim_no: {"6": "P001"}, and each must be an active value in the registry (GET /dimensions).
+- merge keeps the line's other tags, and those must still be active registry values too: a line carrying an archived code is refused until the code is reactivated or replace is used.
+- At most 500 line ids per call; the reason (3-500 characters) is stored per line.
+- When every line is refused the call answers 400 DIMENSION_RETAG_FAILED with details.failed; otherwise it answers 200 with the refused lines in failed.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{
+  line_ids: string[],
+  dimensions: Record<string, string>,
+  reason: string,
+  mode?: "merge" | "replace"
+}
+```
+
+Example request:
+```json
+{
+  "line_ids": [
+    "9f1c…",
+    "9f1d…"
+  ],
+  "dimensions": {
+    "6": "P001"
+  },
+  "reason": "Projektet saknades på fakturan"
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    retagged: number,
+    unchanged: number,
+    failed_count: number,
+    failed: { line_id: string, error: string }[],
+    mode: "merge" | "replace"
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "retagged": 2,
+    "unchanged": 0,
+    "failed_count": 0,
+    "failed": [],
+    "mode": "merge"
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
 ### `GET /api/v1/companies/{companyId}/dimensions/rules`
 
 **List the account dimension rules (required, default or fixed dimension per account).**
