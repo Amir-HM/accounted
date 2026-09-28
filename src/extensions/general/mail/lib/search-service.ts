@@ -127,9 +127,15 @@ export class GmailSearchService implements MailSearchService {
     limit?: number,
   ): Promise<MailCandidate[]> {
     // A dead grant shrinks the hunt rather than aborting it; getAccessToken has
-    // already parked it as needs_reconsent for the UI to surface.
+    // already parked it as needs_reconsent for the UI to surface. It still
+    // counts as a mailbox this run could not read: so does a token endpoint
+    // that timed out, or a grant whose encryption key is missing, and none
+    // of those may be reported as "nothing there".
     const accessToken = await getAccessToken(supabase, connection, canonicalOrigin())
-    if (!accessToken) return []
+    if (!accessToken) {
+      this.failures += 1
+      return []
+    }
 
     try {
       const ids = await searchMessageIds(accessToken, q, limit)

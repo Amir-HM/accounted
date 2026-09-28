@@ -7,7 +7,7 @@
  */
 import { createLogger } from '@/lib/logger'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { decryptToken, encryptToken } from './crypto'
+import { MailTokenKeyError, decryptToken, encryptToken, shouldReseal } from './crypto'
 import {
   MailTokenRefreshError,
   getGoogleOAuthEnv,
@@ -238,12 +238,50 @@ export async function getAccessToken(
         access_token_expires_at: refreshed.expiresAt.toISOString(),
       })
       .eq('id', connection.id)
+    await resealRefreshToken(supabase, connection, refreshToken)
     return refreshed.accessToken
   } catch (error) {
     if (error instanceof MailTokenRefreshError && error.permanent) {
       await markNeedsReconsent(supabase, connection.id, 'invalid_grant')
     }
+    if (error instanceof MailTokenKeyError) {
+      // A configuration error, not a dead grant: the row is left as it is so
+      // restoring the key brings it back, and it is loud because every
+      // search of this mailbox fails until then.
+      log.error('a mailbox grant cannot be read: its encryption key is missing or malformed', {
+        connectionId: connection.id,
+        error: error.message,
+      })
+    }
     return null
+  }
+}
+
+/**
+ * Re-seal a legacy refresh token with the dedicated key, once, when reading
+ * it anyway: the stored grants move to MAIL_TOKEN_ENCRYPTION_KEY as they are
+ * used, without a migration that would need both keys in one place. Only the
+ * ciphertext as it was read is replaced, so a reconnect in between wins. Best
+ * effort: a failed write leaves a legacy token that still reads.
+ */
+async function resealRefreshToken(
+  supabase: SupabaseClient,
+  connection: MailConnectionRow,
+  refreshToken: string,
+): Promise<void> {
+  if (!shouldReseal(connection.encrypted_refresh_token)) return
+  try {
+    const { error } = await supabase
+      .from('mail_connections')
+      .update({ encrypted_refresh_token: encryptToken(refreshToken) })
+      .eq('id', connection.id)
+      .eq('encrypted_refresh_token', connection.encrypted_refresh_token)
+    if (error) log.warn('could not re-seal a mailbox grant', { connectionId: connection.id, error: error.message })
+  } catch (error) {
+    log.warn('could not re-seal a mailbox grant', {
+      connectionId: connection.id,
+      error: error instanceof Error ? error.name : 'unknown',
+    })
   }
 }
 

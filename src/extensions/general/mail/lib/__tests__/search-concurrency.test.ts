@@ -106,6 +106,22 @@ describe('GmailSearchService.search', () => {
     expect(svc.searchFailureCount()).toBe(1)
   })
 
+  it('counts a mailbox it could not get a token for as unread, not as empty', async () => {
+    // A dead grant, a token endpoint that timed out, or a grant whose
+    // encryption key is missing: in each case nobody looked in the mailbox.
+    listActiveConnections.mockResolvedValue([connection('c1'), connection('c2')])
+    getAccessToken.mockResolvedValueOnce(null).mockResolvedValueOnce('token')
+    searchMessageIds.mockResolvedValue([])
+
+    const svc = new GmailSearchService()
+    const out = await svc.search('company-1', { merchant: 'x', amount: 1, currency: 'SEK', date: '2026-08-01' })
+
+    expect(out).toEqual([])
+    expect(svc.searchFailureCount()).toBe(1)
+    // The mailbox that could be read was still searched.
+    expect(searchMessageIds).toHaveBeenCalledTimes(1)
+  })
+
   it('starts each search from zero failures', async () => {
     searchMessageIds.mockRejectedValueOnce(new Error('Gmail 429')).mockResolvedValue([])
     const svc = new GmailSearchService()

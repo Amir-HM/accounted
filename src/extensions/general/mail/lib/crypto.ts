@@ -9,30 +9,55 @@ import crypto from 'crypto'
  * without touching the database password, following the Skatteverket
  * token-store rather than cloud-backup's service-role derivation.
  *
- * The derived fallback exists so local development and self-hosted deployments
- * work before anyone sets the variable; it is the same trust boundary as the
- * database itself, and the purpose string keeps it distinct from every other
- * derivation in the codebase.
+ * Two formats, told apart by a prefix rather than by trying keys:
+ *
+ *   v2.<base64url>   sealed with MAIL_TOKEN_ENCRYPTION_KEY. Read only with that
+ *                    key: without it the token is unusable, never retried with
+ *                    another key.
+ *   <base64url>      legacy, sealed with a key derived from
+ *                    SUPABASE_SERVICE_ROLE_KEY (the only format until the
+ *                    dedicated key existed). Always read with the derived key,
+ *                    so setting the dedicated key never strands a stored grant;
+ *                    the connection re-seals it in the new format the next time
+ *                    it reads it (getAccessToken).
+ *
+ * Without MAIL_TOKEN_ENCRYPTION_KEY everything is sealed the legacy way, so
+ * local development and self-hosted deployments work before anyone sets it;
+ * that is the same trust boundary as the database itself, and the purpose
+ * string keeps the derivation distinct from every other one in the codebase.
+ * base64url has no '.', so no legacy ciphertext can ever start with the prefix.
  */
 
 const ALGORITHM = 'aes-256-gcm'
+const DEDICATED_PREFIX = 'v2.'
 
-function getKey(): Buffer {
-  const dedicated = process.env.MAIL_TOKEN_ENCRYPTION_KEY
-  if (dedicated && dedicated.trim().length > 0) {
-    const buf = Buffer.from(dedicated.trim(), 'hex')
-    if (buf.length !== 32) {
-      throw new Error('MAIL_TOKEN_ENCRYPTION_KEY must be 32 bytes of hex (openssl rand -hex 32)')
-    }
-    return buf
+/** A token that cannot be read or sealed because a key is missing or malformed. */
+export class MailTokenKeyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MailTokenKeyError'
   }
+}
+
+/** The dedicated key, or null when MAIL_TOKEN_ENCRYPTION_KEY is unset. */
+function dedicatedKey(): Buffer | null {
+  const raw = process.env.MAIL_TOKEN_ENCRYPTION_KEY?.trim()
+  if (!raw) return null
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    throw new MailTokenKeyError(
+      "MAIL_TOKEN_ENCRYPTION_KEY must be 32 bytes of hex: openssl rand -hex 32 | tr -d '\\n'",
+    )
+  }
+  return Buffer.from(raw, 'hex')
+}
+
+function derivedKey(): Buffer {
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!secret) throw new Error('MAIL_TOKEN_ENCRYPTION_KEY or SUPABASE_SERVICE_ROLE_KEY is required')
+  if (!secret) throw new MailTokenKeyError('SUPABASE_SERVICE_ROLE_KEY is required for legacy mail tokens')
   return crypto.createHash('sha256').update('mail-connections:v1:' + secret).digest()
 }
 
-export function encryptToken(plaintext: string): string {
-  const key = getKey()
+function seal(key: Buffer, plaintext: string): string {
   const iv = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv)
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
@@ -40,15 +65,47 @@ export function encryptToken(plaintext: string): string {
   return Buffer.concat([iv, tag, encrypted]).toString('base64url')
 }
 
-export function decryptToken(ciphertext: string): string {
-  const key = getKey()
-  const combined = Buffer.from(ciphertext, 'base64url')
+function open(key: Buffer, sealed: string): string {
+  const combined = Buffer.from(sealed, 'base64url')
   const iv = combined.subarray(0, 12)
   const tag = combined.subarray(12, 28)
   const encrypted = combined.subarray(28)
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv)
   decipher.setAuthTag(tag)
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8')
+}
+
+export function encryptToken(plaintext: string): string {
+  const key = dedicatedKey()
+  return key ? DEDICATED_PREFIX + seal(key, plaintext) : seal(derivedKey(), plaintext)
+}
+
+export function decryptToken(ciphertext: string): string {
+  if (ciphertext.startsWith(DEDICATED_PREFIX)) {
+    const key = dedicatedKey()
+    // Fail closed: a token sealed with the dedicated key is never tried with
+    // the derived one, which would only turn a configuration error into a
+    // confusing authentication failure.
+    if (!key) {
+      throw new MailTokenKeyError('This mail token needs MAIL_TOKEN_ENCRYPTION_KEY, which is not set')
+    }
+    return open(key, ciphertext.slice(DEDICATED_PREFIX.length))
+  }
+  return open(derivedKey(), ciphertext)
+}
+
+/**
+ * Whether a stored ciphertext is in the legacy format while the dedicated key
+ * is available, so reading it is the moment to re-seal it. False when the key
+ * is unset or malformed: then there is nothing better to seal it with.
+ */
+export function shouldReseal(ciphertext: string): boolean {
+  if (ciphertext.startsWith(DEDICATED_PREFIX)) return false
+  try {
+    return dedicatedKey() !== null
+  } catch {
+    return false
+  }
 }
 
 /**
