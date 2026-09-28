@@ -2880,23 +2880,30 @@ export const CreateDeadlineSchema = z.object({
 })
 
 // ============================================================
-// VAT filing record (issue #2746)
+// VAT filing record (issues #2746, #2786)
 // ============================================================
 
 /**
- * A calendar VAT period: the two cadences whose deadline rows carry the
- * filing record (lib/vat/filing-record.ts). Helårsmoms is deliberately not
- * accepted: its deadline is labelled per räkenskapsår and is completed from
- * the calendar instead.
+ * A VAT period of any cadence, the key of the filing record
+ * (lib/vat/filing-record.ts). Yearly (helårsmoms) is the räkenskapsår, named
+ * like every yearly VAT period: the year it ends in, period 1. Shared by the
+ * dashboard routes and the vat-filings operations (v1 and MCP).
  */
 const vatFilingPeriodShape = {
-  period_type: z.enum(['monthly', 'quarterly']),
-  year: z.coerce.number().int().min(2000).max(2100),
-  period: z.coerce.number().int().min(1).max(12),
+  period_type: z
+    .enum(['monthly', 'quarterly', 'yearly'])
+    .describe('The momsperiod length; yearly is helårsmoms, one period per räkenskapsår.'),
+  year: z.coerce
+    .number()
+    .int()
+    .min(2000)
+    .max(2100)
+    .describe('Calendar year of the period; for yearly, the year the räkenskapsår ends.'),
+  period: z.coerce.number().int().min(1).max(12).describe('1-12 monthly, 1-4 quarterly, 1 yearly.'),
 }
 
 function refineVatFilingPeriod(
-  data: { period_type: 'monthly' | 'quarterly'; period: number },
+  data: { period_type: 'monthly' | 'quarterly' | 'yearly'; period: number },
   ctx: z.RefinementCtx,
 ) {
   if (data.period_type === 'quarterly' && data.period > 4) {
@@ -2904,6 +2911,13 @@ function refineVatFilingPeriod(
       code: 'custom',
       path: ['period'],
       message: 'For quarterly period_type, period must be 1-4.',
+    })
+  }
+  if (data.period_type === 'yearly' && data.period !== 1) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['period'],
+      message: 'For yearly period_type, period must be 1.',
     })
   }
 }
@@ -2914,9 +2928,17 @@ export const MarkVatFilingSchema = z
   .object({
     ...vatFilingPeriodShape,
     /** Swedish calendar date the declaration was filed. */
-    filed_on: saneIsoDate,
+    filed_on: saneIsoDate.describe(
+      'Swedish calendar date the declaration was filed (YYYY-MM-DD): after the period ended, not in the future.',
+    ),
     /** Skatteverket's reference (kvittensnummer); null clears a stored one. */
-    reference: z.string().trim().max(200).nullable().optional(),
+    reference: z
+      .string()
+      .trim()
+      .max(200)
+      .nullable()
+      .optional()
+      .describe("Skatteverket's reference (kvittensnummer). Omit to keep a stored one, null to clear it."),
   })
   .superRefine(refineVatFilingPeriod)
 

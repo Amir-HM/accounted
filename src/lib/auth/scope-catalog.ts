@@ -280,6 +280,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_get_vat_report:                  'reports:read',
   gnubok_vat_review_widget:               'reports:read',
   gnubok_vat_close_check:                 'reports:read',
+  gnubok_list_vat_filings:                'reports:read',
   gnubok_get_kpi_report:                  'reports:read',
   gnubok_get_income_statement:            'reports:read',
   gnubok_list_accounts:                   'reports:read',
@@ -338,6 +339,8 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_get_bokslutsbilagor: 'reports:read',
   gnubok_get_vat_settlement_proposal: 'reports:read',
   gnubok_book_vat_settlement: 'bookkeeping:write',
+  gnubok_mark_vat_period_filed: 'bookkeeping:write',
+  gnubok_unmark_vat_period_filed: 'bookkeeping:write',
   // Operation registry, wave 2: booking, payment files, utlägg, payroll.
   gnubok_send_payslips: 'payroll:write',
   gnubok_revert_salary_run: 'payroll:write',

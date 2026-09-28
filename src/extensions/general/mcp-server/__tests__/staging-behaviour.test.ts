@@ -543,6 +543,29 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
       fiscal_periods: { ...FISCAL_YEAR_2026, locked_at: null },
     },
   },
+  // Momsdeklaration filing record (#2785): Q2 2026 filed by hand in August,
+  // its deadline row still pending; and a helårsmoms mark (räkenskapsår
+  // 2025) that a person recorded and can undo.
+  gnubok_mark_vat_period_filed: {
+    args: { period_type: 'quarterly', year: 2026, period: 2, filed_on: '2026-08-10' },
+    rows: {
+      company_settings: { entity_type: 'aktiebolag', fiscal_year_start_month: 1 },
+      deadlines: { tax_deadline_type: 'moms_quarterly', tax_period: '2026-Q2', is_completed: false, status: 'upcoming' },
+    },
+  },
+  gnubok_unmark_vat_period_filed: {
+    args: { period_type: 'yearly', year: 2025, period: 1 },
+    rows: {
+      company_settings: { entity_type: 'aktiebolag', fiscal_year_start_month: 1 },
+      deadlines: {
+        tax_deadline_type: 'moms_yearly',
+        tax_period: '2025',
+        is_completed: true,
+        completed_at: '2026-05-04T12:00:00.000Z',
+        status: 'submitted',
+      },
+    },
+  },
   // Utlägg (expense claims): an aktiebolag owner's open claim on 2893, nothing
   // on a payslip, both payout accounts in the chart, an unbooked SEK outflow
   // equal to the claim for the bank match.

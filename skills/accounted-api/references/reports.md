@@ -1680,17 +1680,17 @@ Response `200` (`application/xml`).
 
 ### `GET /api/v1/companies/{companyId}/reports/vat-declaration/filings`
 
-**List the calendar VAT periods the company has recorded as filed.**
+**List the VAT periods the company has recorded as filed.**
 `scope:reports:read · risk:low · idempotent`
 
-Returns every monthly or quarterly momsdeklaration period the company has on record as filed, newest first. `source` is `skatteverket` when the filing was confirmed by a Skatteverket kvittens through the connection, `manual` when a person or an API caller recorded it (POST on this path, or completing the period's moms deadline). `reference` is the Skatteverket reference typed at manual marking, if any. Local state: not a Skatteverket read.
+Returns every monthly, quarterly or yearly momsdeklaration period the company has on record as filed, newest first, with the dates each period covers (`period_start`, `period_end`). `source` is `skatteverket` when the filing was confirmed by a Skatteverket kvittens through the connection, `manual` when a person or an API caller recorded it (POST on this path, or completing the period's moms deadline). `reference` is the Skatteverket reference typed at manual marking, if any. Local state: not a Skatteverket read.
 
 **Use when:** Deciding which VAT period is next to prepare, checking whether a period was already filed before recomputing it, or reconciling a filing calendar against the books.
 **Do not use for:** Reading what Skatteverket actually has on file (use /skatteverket/vat-declarations) or computing the declaration figures (use /reports/vat-declaration).
 
 **Pitfalls:**
-- Helårsmoms (yearly) periods are not listed: their deadline is labelled per räkenskapsår and is completed from the calendar.
 - An empty list means nothing is recorded, not that nothing was filed: companies that file on skatteverket.se by hand only get records when they mark the period (POST here or in the app).
+- Yearly (helårsmoms) is the räkenskapsår: `year` is the year it ends in, `period` is 1, and a broken fiscal year ends in its own month (tax_period `2025/2026`, period_end `2026-06-30`), placed from the company's fiscal-year settings.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1699,7 +1699,7 @@ Returns every monthly or quarterly momsdeklaration period the company has on rec
 Response `200`:
 ```ts
 {
-  data: { deadline_id: string, period_type: "monthly" | "quarterly", year: number, period: number, tax_period: string, filed_on: string, source: "skatteverket" | "manual", reference: string | null }[],
+  data: { deadline_id: string, period_type: "monthly" | "quarterly" | "yearly", year: number, period: number, tax_period: string, period_start: string, period_end: string, filed_on: string, source: "skatteverket" | "manual", reference: string | null }[],
   meta: {
     request_id: string,
     api_version: string,
@@ -1722,6 +1722,8 @@ Example response `200`:
       "year": 2026,
       "period": 2,
       "tax_period": "2026-Q2",
+      "period_start": "2026-04-01",
+      "period_end": "2026-06-30",
       "filed_on": "2026-08-10",
       "source": "manual",
       "reference": null
@@ -1741,13 +1743,14 @@ Example response `200`:
 **Record that a VAT period was filed outside the Skatteverket connection.**
 `scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
 
-Marks a monthly or quarterly momsdeklaration period as filed on `filed_on` (Swedish calendar date), optionally with Skatteverket's `reference` (kvittensnummer). Completes the period's moms deadline with status `submitted`, creating the deadline row when the company has none for the period. Nothing is sent to Skatteverket. Idempotent: marking an already-marked period updates its date and reference; a period already confirmed at Skatteverket is returned unchanged (`changed: false`). Dry-runnable.
+Marks a monthly, quarterly or yearly momsdeklaration period as filed on `filed_on` (Swedish calendar date), optionally with Skatteverket's `reference` (kvittensnummer). Completes the period's moms deadline with status `submitted`, creating the deadline row when the company has none for the period. Nothing is sent to Skatteverket. Idempotent: marking an already-marked period updates its date and reference; a period already confirmed at Skatteverket is returned unchanged (`changed: false`). Dry-runnable: the dry run applies the same rules and answers `would_mark`, `effect` (create, update or unchanged) and the `current` record.
 
 **Use when:** The declaration was filed on skatteverket.se by hand, by an ombud, or from another system, and the books should know the period is done so the next period opens by default.
-**Do not use for:** Filing the declaration itself: that is the BankID-signed flow (accounted_vat_declaration_submit / the Skatteverket panel). Yearly (helårsmoms) periods: complete the calendar deadline instead.
+**Do not use for:** Filing the declaration itself: that is the BankID-signed flow (accounted_vat_declaration_submit / the Skatteverket panel).
 
 **Pitfalls:**
 - The period must have ended and `filed_on` must fall after the period's last day and no later than today (Swedish date): otherwise 400 with VAT_FILING_PERIOD_NOT_ENDED, VAT_FILING_DATE_BEFORE_PERIOD_END or VAT_FILING_DATE_IN_FUTURE.
+- Yearly (helårsmoms) is the räkenskapsår: `year` is the year it ends in, `period` is 1, and a broken fiscal year ends in its own month (tax_period `2025/2026`, period_end `2026-06-30`), placed from the company's fiscal-year settings.
 - Omitting `reference` keeps a previously stored reference; pass null to clear it.
 - This records a fact about the books, it does not verify anything at Skatteverket. Use /skatteverket/vat-declarations to check what was actually received.
 - A 409 CONFLICT means the deadline row changed while it was being marked (for example a deadline regeneration ran at the same moment). Nothing was written; retry the same request.
@@ -1760,7 +1763,7 @@ Marks a monthly or quarterly momsdeklaration period as filed on `filed_on` (Swed
 Request body:
 ```ts
 {
-  period_type: "monthly" | "quarterly",
+  period_type: "monthly" | "quarterly" | "yearly",
   year: number,
   period: number,
   filed_on: string,
@@ -1784,10 +1787,12 @@ Response `200`:
 {
   data: {
     deadline_id: string,
-    period_type: "monthly" | "quarterly",
+    period_type: "monthly" | "quarterly" | "yearly",
     year: number,
     period: number,
     tax_period: string,
+    period_start: string,
+    period_end: string,
     filed_on: string,
     source: "skatteverket" | "manual",
     reference: string | null,
@@ -1815,6 +1820,8 @@ Example response `200`:
     "year": 2026,
     "period": 2,
     "tax_period": "2026-Q2",
+    "period_start": "2026-04-01",
+    "period_end": "2026-06-30",
     "filed_on": "2026-08-10",
     "source": "manual",
     "reference": "ABC123",
@@ -1835,20 +1842,21 @@ Example response `200`:
 **Undo a manual "filed" mark on a VAT period.**
 `scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
 
-Puts the period's moms deadline back to pending and removes the stored reference. Query params: period_type (monthly|quarterly), year, period. A period confirmed at Skatteverket through the connection is refused with 409 VAT_FILING_CONFIRMED_BY_SKATTEVERKET; a period with no filing record answers 404 VAT_FILING_NOT_FOUND. Dry-runnable.
+Puts the period's moms deadline back to pending and removes the stored reference. Query params: period_type (monthly|quarterly|yearly), year, period. A period confirmed at Skatteverket through the connection is refused with 409 VAT_FILING_CONFIRMED_BY_SKATTEVERKET; a period with no filing record answers 404 VAT_FILING_NOT_FOUND. Dry-runnable: the dry run gives the same refusals and otherwise answers `would_unmark` and the `current` record.
 
 **Use when:** A period was marked as filed by mistake.
 **Do not use for:** Withdrawing or correcting a declaration at Skatteverket: that is a new declaration for the same period, filed through the ordinary flow.
 
 **Pitfalls:**
 - Only manual marks can be undone; a Skatteverket kvittens is a fact this endpoint does not erase.
+- Yearly (helårsmoms) is the räkenskapsår: `year` is the year it ends in, `period` is 1, and a broken fiscal year ends in its own month (tax_period `2025/2026`, period_end `2026-06-30`), placed from the company's fiscal-year settings.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
 | `companyId` | path | `string` | yes |  |
-| `period_type` | query | `"monthly" \| "quarterly"` | yes |  |
-| `year` | query | `number` | yes |  |
-| `period` | query | `number` | yes |  |
+| `period_type` | query | `"monthly" \| "quarterly" \| "yearly"` | yes | The momsperiod length; yearly is helårsmoms, one period per räkenskapsår. |
+| `year` | query | `number` | yes | Calendar year of the period; for yearly, the year the räkenskapsår ends. |
+| `period` | query | `number` | yes | 1-12 monthly, 1-4 quarterly, 1 yearly. |
 | `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
 
 Response `200`:
