@@ -99,6 +99,8 @@ describe('GET /api/arkiv/documents', () => {
         { id: 'doc-loose', created_at: '2026-05-21T10:00:00Z', file_name: 'brev.pdf', doc_type: 'other', admission_state: 'admitted', journal_entry_id: null },
       ],
     })
+    // The booked untyped document is looked up on the classification first (locked-period fallback), then its verifikat.
+    enqueue({ data: [] })
     enqueue({ data: [{ id: 'je-2024', voucher_series: 'A', voucher_number: 17, entry_date: '2024-03-15' }] })
     const { body } = await parseJsonResponse(await call('?year=2024'))
     const rows = (body as { data: Array<{ document_id: string; document_date: string | null; linked: { voucher: string | null } }> }).data
