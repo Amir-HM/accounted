@@ -54,14 +54,14 @@ Ask them together, in one message, with what you already found:
 \`gnubok_create_salary_run({ period_year, period_month, payment_date })\` stages a draft run seeded with every active employee whose employment overlaps the month.
 
 - **Avvikelseperiod:** absence and worked days are read from a deviation window. Default is the company setting (same month, or the common "föregående månads avvikelser"). The staged preview shows the resolved window; tell the user which dates it covers. Override only on request, with both \`deviation_period_start\` and \`deviation_period_end\`. A window that overlaps another run is refused (the same sick day would be deducted twice).
-- **"Salary run already exists for this period":** one run per company and month. Do not create another. Ask whether the user means that run (under Löner in Accounted) and get its id from there or from the earlier approval result.
+- **"Salary run already exists for this period":** one run per company and month. Do not create another. The error names the existing run's id and status; or call \`gnubok_get_salary_run({ period_year, period_month })\`. Ask whether the user means that run.
 - After approval the run id is in the approved operation's result. Keep it for every later step.
 
 To change a draft's payment date, voucher series or note: \`gnubok_update_salary_run\` (search-only write: stage it through \`gnubok_stage_tool\` if it is not in your tool list). Changing the payment date clears the calculation.
 
 ### Step 2: Register this month's changes (before calculating)
 
-- **Owner salary or other variable base pay:** \`gnubok_set_run_salary({ salary_run_id, employee_id, monthly_salary })\`. Per-run value; the employee's fixed salary is untouched. \`0\` is a nollkörning. Never edit the base salary payslip line instead: recalculation rebuilds it from this value.
+- **Owner salary or other variable base pay:** \`gnubok_set_run_salary({ salary_run_id, employee_id, monthly_salary })\` (hourly-paid: \`hours_worked\` instead, only when the period has no calendar days). Per-run value; the employee's fixed salary is untouched. \`0\` is a nollkörning. Never edit the base salary payslip line instead: recalculation rebuilds it from this value.
 - **Sick leave, VAB, parental leave, unpaid leave:** \`gnubok_register_absence({ employee_id, from, to, absence_type, hours_per_day })\` with type \`sick\`, \`vab\`, \`parental\`, \`pregnancy\`, \`care_relative\`, \`study\`, \`unpaid_leave\` or \`other_leave\`. Max 92 days per call; weekends are skipped unless \`include_weekends\`. Use \`hours_per_day: 4\` for half days. The dates must be inside the run's avvikelseperiod to count this month. Check what is already registered with \`gnubok_list_absence\` (search-only read) and remove a wrong range with \`gnubok_delete_absence\`. Accounted derives karensavdrag and sjuklön (80 % for day 2 to 14) from these rows. Läkarintyg applies from day 8; from day 15 Försäkringskassan pays, not the employer: tell the user when a sick period passes day 14.
 - **Vacation days taken:** \`gnubok_register_absence\` has no vacation type. Vacation lines are added to the employee's payslip in the salary run in Accounted. Check the balance first with \`gnubok_get_vacation_balance({ employee_id })\` (search-only read) and tell the user if more days are taken than remain.
 - **Förmåner, overtime, OB, bonus, traktamente:** benefits are registered per employee in Accounted (the employee's förmåner), and the calculation adds a taxable, avgift-bearing line for each active benefit. Overtime, bonus and other extra lines are added to the run in the web UI. Over MCP you can only edit an existing line on a draft run: \`gnubok_update_payslip_line({ salary_run_id, salary_line_item_id, amount | quantity | unit_price | description })\`. Guide the user to the web UI for new lines and wait until they say it is done. A benefit is taxable even though no cash is paid: never drop a benefit the user mentions.
@@ -80,7 +80,7 @@ After any approved change (salary, absence, payslip line, payment date) calculat
 
 ### Step 5: Review with the user
 
-\`gnubok_get_salary_run({ salary_run_id })\` for totals and per-employee figures; \`gnubok_get_payslip({ salary_run_id, employee_id })\` (search-only read) for one employee's lines and calculation breakdown.
+\`gnubok_get_salary_run({ salary_run_id })\` (or \`{ period_year, period_month }\`) for totals and per-employee figures; \`gnubok_get_payslip({ salary_run_id, employee_id })\` (search-only read) for one employee's lines and calculation breakdown.
 
 Present per employee: gross, skatteavdrag, net, arbetsgivaravgifter; then run totals. Point out what a consultant would notice: a net much higher than usual without a reason, tax of 0 on a normal salary, a reduced avgift rate, 0 gross that is not a planned nollkörning, a sick deduction that looks too large or too small.
 
