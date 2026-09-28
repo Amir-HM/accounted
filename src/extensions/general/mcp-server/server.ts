@@ -88,6 +88,13 @@ import {
 import { adjustDeadlineToNextBankingDay } from '@/lib/tax/swedish-holidays'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
+import {
+  DEFAULT_REVERSE_CHARGE_KIND,
+  REVERSE_CHARGE_TREATMENT_KINDS,
+  isReverseChargeBasisAccount,
+  reverseChargeKindRuta,
+  type ReverseChargeKind,
+} from '@/lib/bookkeeping/vat-entries'
 import { applyAccountOverride } from '@/lib/bookkeeping/account-override'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 import { hasSIEFileExtension, SIE_FILE_EXTENSIONS_EN } from '@/lib/import/sie-file-extensions'
@@ -804,6 +811,65 @@ const VALID_VAT_TREATMENTS = [
   'standard_25', 'reduced_12', 'reduced_6', 'reverse_charge', 'export', 'exempt',
 ] as const
 
+/**
+ * gnubok_categorize_transaction also takes reverse charge with its basis box
+ * named (reverse_charge_eu_services etc., the chart's own vocabulary). Each
+ * resolves at the boundary to vat_treatment 'reverse_charge' plus a
+ * ReverseChargeKind, so everything behind the tool keeps one VatTreatment.
+ */
+const CATEGORIZE_VAT_TREATMENTS = [
+  ...VALID_VAT_TREATMENTS,
+  ...(Object.keys(REVERSE_CHARGE_TREATMENT_KINDS) as Array<keyof typeof REVERSE_CHARGE_TREATMENT_KINDS>),
+]
+
+/** Split a categorize vat_treatment into the booking treatment and the reverse-charge kind it names. */
+function splitCategorizeVatTreatment(value: unknown): {
+  vatTreatment: VatTreatment | undefined
+  reverseChargeKind: ReverseChargeKind | undefined
+} {
+  if (typeof value !== 'string' || value === '') return { vatTreatment: undefined, reverseChargeKind: undefined }
+  const kind = (REVERSE_CHARGE_TREATMENT_KINDS as Record<string, ReverseChargeKind>)[value]
+  return kind
+    ? { vatTreatment: 'reverse_charge', reverseChargeKind: kind }
+    : { vatTreatment: value as VatTreatment, reverseChargeKind: undefined }
+}
+
+/**
+ * Where a categorize preview's reverse-charge basis lands, read off the lines
+ * the approval will post: the box, and whether the caller chose it or the
+ * EU-services default did. Undefined when the lines carry no fiktiv moms.
+ */
+function reverseChargeBasisSummary(
+  vatLines: Array<{ account_number: string; debit_amount: number }>,
+  reverseChargeKind: ReverseChargeKind | undefined,
+  costAccount: string,
+): Record<string, unknown> | undefined {
+  if (!vatLines.some((l) => ['2614', '2624', '2634'].includes(l.account_number))) return undefined
+  const kind = reverseChargeKind ?? DEFAULT_REVERSE_CHARGE_KIND
+  const kindSource = reverseChargeKind ? 'vat_treatment' : 'default'
+  const basisLine = vatLines.find((l) => l.debit_amount > 0 && isReverseChargeBasisAccount(l.account_number))
+  if (!basisLine) {
+    return {
+      kind,
+      kind_source: kindSource,
+      basis_account: null,
+      ruta: null,
+      note: `No 45xx/4598 basis pair: cost account ${costAccount} reports rutor 20-24 itself, a pair would count the purchase twice.`,
+    }
+  }
+  const ruta = reverseChargeKindRuta(kind)
+  return {
+    kind,
+    kind_source: kindSource,
+    basis_account: basisLine.account_number,
+    ruta,
+    note: reverseChargeKind
+      ? `Basis ${basisLine.account_number} D / 4598 K reports the purchase in ${ruta}.`
+      : `Seller country not stated, so the basis defaults to EU services (${basisLine.account_number}, ${ruta}). ` +
+        'Re-stage with vat_treatment reverse_charge_non_eu_services (ruta 22) or reverse_charge_eu_goods (ruta 20) if the underlag says otherwise.',
+  }
+}
+
 const MCP_DOCUMENT_MIME_TYPES = [
   'application/pdf',
   'image/jpeg',
@@ -1463,6 +1529,9 @@ async function categorizeTransactionCore(
   txId: string,
   category: TransactionCategory,
   vatTreatment: VatTreatment | undefined,
+  // Basis box of a reverse-charge purchase (ruta 20/21/22); undefined = the
+  // EU-services default, stated in the preview's reverse_charge summary.
+  reverseChargeKind: ReverseChargeKind | undefined,
   // Underlag's actual VAT when it differs from rate × belopp (e.g. dricks on
   // a restaurant receipt carries no moms). Replaces the computed VAT line.
   vatAmount: number | undefined,
@@ -1489,6 +1558,7 @@ async function categorizeTransactionCore(
   // VAT line, gross bank line) — always in SEK, matching the booked entry.
   lines?: Array<{ account_number: string; debit_amount: number; credit_amount: number; description: string }>
   message?: string
+  reverse_charge?: Record<string, unknown>
   transaction?: Transaction
   underlag?: {
     document_id: string
@@ -1603,7 +1673,8 @@ async function categorizeTransactionCore(
     entityType,
     vatTreatment,
     vatAmount,
-    settings?.vat_registered ?? null
+    settings?.vat_registered ?? null,
+    reverseChargeKind,
   )
   const settlementAccount = await resolveSettlementAccount(
     supabase,
@@ -1645,6 +1716,9 @@ async function categorizeTransactionCore(
     // as an unbalanced "gross on cost account + VAT debit" entry and misled
     // both users and agents into rejecting correct proposals.
     const entryLines = buildTransactionEntryLines(transaction as Transaction, mappingResult)
+    const reverseCharge = transaction.amount < 0
+      ? reverseChargeBasisSummary(mappingResult.vat_lines, reverseChargeKind, mappingResult.debit_account)
+      : undefined
     return {
       preview: true,
       category,
@@ -1665,6 +1739,7 @@ async function categorizeTransactionCore(
         description: v.description,
       })),
       message: 'Preview only: no changes made. Call again with confirm: true to create the journal entry.',
+      ...(reverseCharge ? { reverse_charge: reverseCharge } : {}),
       underlag: underlagSummary,
     }
   }
@@ -2129,26 +2204,31 @@ const VAT_REPORT_OUTPUT_SCHEMA = {
     period_label: { type: 'string', description: 'Human-readable period label (e.g. "Q1 2026")' },
     rutor: {
       type: 'object',
-      description: 'SKV 4700 momsdeklaration boxes: absolute values, signs implied by box semantics',
+      description: 'SKV 4700 momsdeklaration boxes: absolute values, signs implied by box semantics. RC = reverse charge; ruta20-24: RC purchase basis (44xx/45xx)',
       properties: {
-        ruta05: { type: 'number', description: 'Total domestic taxable sales (all rates)' },
-        ruta10: { type: 'number', description: 'Output VAT 25 % (account 2611)' },
-        ruta11: { type: 'number', description: 'Output VAT 12 % (account 2621)' },
-        ruta12: { type: 'number', description: 'Output VAT 6 % (account 2631)' },
-        ruta30: { type: 'number', description: 'Reverse-charge output VAT 25 % (account 2614)' },
-        ruta31: { type: 'number', description: 'Reverse-charge output VAT 12 % (account 2624)' },
-        ruta32: { type: 'number', description: 'Reverse-charge output VAT 6 % (account 2634)' },
-        ruta35: { type: 'number', description: 'EU intra-community goods supplies, momsfri (account 3108)' },
-        ruta39: { type: 'number', description: 'EU services sold (account 3308)' },
-        ruta40: { type: 'number', description: 'Export outside EU (account 3305)' },
+        ruta05: { type: 'number', description: 'Domestic taxable sales (all rates)' },
+        ruta10: { type: 'number', description: 'Output VAT 25 % (2611)' },
+        ruta11: { type: 'number', description: 'Output VAT 12 % (2621)' },
+        ruta12: { type: 'number', description: 'Output VAT 6 % (2631)' },
+        ruta20: { type: 'number' },
+        ruta21: { type: 'number' },
+        ruta22: { type: 'number' },
+        ruta23: { type: 'number' },
+        ruta24: { type: 'number' },
+        ruta30: { type: 'number', description: 'RC output VAT 25 % (2614)' },
+        ruta31: { type: 'number', description: 'RC output VAT 12 % (2624)' },
+        ruta32: { type: 'number', description: 'RC output VAT 6 % (2634)' },
+        ruta35: { type: 'number', description: 'EU goods sold, momsfri (3108)' },
+        ruta39: { type: 'number', description: 'EU services sold (3308)' },
+        ruta40: { type: 'number', description: 'Export outside EU (3305)' },
         ruta48: { type: 'number', description: 'Total input VAT (2641 + 2645 + 2647)' },
         ruta49: {
           type: 'number',
-          description: 'VAT to pay (positive) or refund (negative) = (10+11+12+30+31+32+60+61+62) − 48',
+          description: '(10+11+12+30+31+32+60+61+62) − 48: positive = pay, negative = refund',
         },
-        ruta60: { type: 'number', description: 'Import VAT 25 % (account 2615): non-EU import declared via momsdeklaration' },
-        ruta61: { type: 'number', description: 'Import VAT 12 % (account 2625)' },
-        ruta62: { type: 'number', description: 'Import VAT 6 % (account 2635)' },
+        ruta60: { type: 'number', description: 'Import VAT 25 % (2615)' },
+        ruta61: { type: 'number', description: 'Import VAT 12 % (2625)' },
+        ruta62: { type: 'number', description: 'Import VAT 6 % (2635)' },
       },
       required: ['ruta05', 'ruta10', 'ruta11', 'ruta12', 'ruta30', 'ruta31', 'ruta32', 'ruta35', 'ruta39', 'ruta40', 'ruta48', 'ruta49', 'ruta60', 'ruta61', 'ruta62'],
     },
@@ -2281,6 +2361,9 @@ interface VatReportResult {
   period_label: string
   rutor: {
     ruta05: number; ruta10: number; ruta11: number; ruta12: number
+    // Beskattningsunderlag vid omvänd skattskyldighet (44xx/45xx): without
+    // them an agent could see ruta 30 but not the basis FK004 pairs it with.
+    ruta20: number; ruta21: number; ruta22: number; ruta23: number; ruta24: number
     ruta30: number; ruta31: number; ruta32: number
     ruta35: number; ruta39: number; ruta40: number
     ruta48: number; ruta49: number
@@ -2501,7 +2584,7 @@ async function computeVatReportWithRutor(
   const dynamicVatAccounts = await fetchDynamicVatAccounts(supabase, companyId)
   const declarationRutor = rutorFromTotals(accountTotals, dynamicVatAccounts)
   const {
-    ruta10, ruta11, ruta12, ruta30, ruta31, ruta32,
+    ruta10, ruta11, ruta12, ruta20, ruta21, ruta22, ruta23, ruta24, ruta30, ruta31, ruta32,
     ruta35, ruta39, ruta40, ruta48, ruta49, ruta60, ruta61, ruta62,
   } = declarationRutor
   const reportRuta05Accounts = new Set<string>(
@@ -2553,6 +2636,11 @@ async function computeVatReportWithRutor(
       ruta10: Math.abs(ruta10),
       ruta11: Math.abs(ruta11),
       ruta12: Math.abs(ruta12),
+      ruta20: Math.abs(ruta20),
+      ruta21: Math.abs(ruta21),
+      ruta22: Math.abs(ruta22),
+      ruta23: Math.abs(ruta23),
+      ruta24: Math.abs(ruta24),
       ruta30: Math.abs(ruta30),
       ruta31: Math.abs(ruta31),
       ruta32: Math.abs(ruta32),
@@ -2713,6 +2801,19 @@ export const UNCATEGORIZED_TRANSACTIONS_HINT =
   'Kategorisera via gnubok_categorize_transaction eller kör gnubok_auto_match_period. ' +
   'Är affärshändelsen redan bokförd på ett befintligt verifikat: koppla i stället med ' +
   'gnubok_link_transaction_to_journal_entry (ingen ny bokföring skapas).'
+
+/**
+ * Hint for a blocking (ERROR) RC_BASIS_MISSING: names the repair, not only the
+ * rutor. The finding means verifikat carry fiktiv moms without the basis pair, which
+ * gnubok_correct_entry adds (the same storno + corrected entry the web
+ * momsvy's Korrigera books). New reverse-charge categorizations carry the
+ * pair themselves (#2919), so this is the path for history. Exported so the
+ * test can pin the contract.
+ */
+export const RC_BASIS_MISSING_HINT =
+  'Verifikat med fiktiv moms (2614/2624/2634) saknar basbelopp: hitta dem i huvudboken för 2614/2624/2634 ' +
+  '(gnubok_get_general_ledger) och lägg till 45xx D / 4598 K med inköpets belopp via gnubok_correct_entry ' +
+  '(4535 EU-tjänster ruta 21, 4531 tjänster utanför EU ruta 22, 4515 EU-varor ruta 20), eller Korrigera i momsvyn.'
 
 /**
  * Hint for the bank_unreconciled blocker when every bank row in the period is
@@ -3419,9 +3520,14 @@ export async function computeVatCloseCheck(
       severity: escalated ? 'high' : 'medium',
       count: 1,
       message: check.message,
-      hint: check.rutor?.length
-        ? `Granska ${check.rutor.join(', ')} i huvudboken innan inlämning (gnubok_get_general_ledger).`
-        : 'Granska underlaget i huvudboken innan inlämning (gnubok_get_general_ledger).',
+      // Only the blocking variant: the advisory RC_BASIS_MISSING (period
+      // consistent per rate) and the scan-unavailable one must not be told to
+      // add basis pairs, that would double-count rutor 20-24.
+      hint: check.code === 'RC_BASIS_MISSING' && check.status === 'ERROR'
+        ? RC_BASIS_MISSING_HINT
+        : check.rutor?.length
+          ? `Granska ${check.rutor.join(', ')} i huvudboken innan inlämning (gnubok_get_general_ledger).`
+          : 'Granska underlaget i huvudboken innan inlämning (gnubok_get_general_ledger).',
       check_code: check.code,
     })
   }
@@ -6380,7 +6486,7 @@ export const tools: McpTool[] = [
       properties: {
         transaction_id: { type: 'string', description: 'UUID of the transaction to categorize' },
         category: { type: 'string', description: 'Transaction category', enum: [...VALID_CATEGORIES] },
-        vat_treatment: { type: 'string', description: 'VAT treatment override. Defaults to standard_25 for business expenses. Set reverse_charge ONLY when the underlag confirms the seller did NOT charge VAT (omvänd skattskyldighet). An invoice with foreign VAT already debited is NOT reverse charge.', enum: [...VALID_VAT_TREATMENTS] },
+        vat_treatment: { type: 'string', description: 'Default standard_25. reverse_charge ONLY when the underlag shows the seller charged NO VAT (foreign VAT debited is not). It books the basis too: _eu_services ruta 21, _non_eu_services 22, _eu_goods 20; plain = EU services.', enum: [...CATEGORIZE_VAT_TREATMENTS] },
         vat_amount: { type: 'number', exclusiveMinimum: 0, description: 'The underlag\'s exact moms (> 0) when it differs from rate × belopp: e.g. dricks carries no VAT. In the transaction\'s currency, like belopp; booked in SEK at its exchange rate. Requires a rate-based vat_treatment. Swedish moms only: foreign VAT is never deductible. For a 0-moms document use vat_treatment="exempt".' },
         account_override: { type: 'string', pattern: '^\\d{4}$', description: 'Books the business side (debit when money goes out, credit when money comes in) on this kontoplan account instead of the category default: the ONLY way to reach company-custom accounts (e.g. VMB). category is still required: it decides direction and VAT; the override only replaces its default account. Must exist and be active (gnubok_list_accounts; create via gnubok_create_account). VMB purchases/sales carry no deductible moms: use vat_treatment "exempt". Without an explicit vat_treatment (or vat_amount) the override books GROSS with no auto-VAT line: a moms leg is never guessed onto a custom account. Class-2 overrides outside 2610-2649 always drop auto-VAT. Not valid with category "private". State the actual affärshändelse in notes (BFL 5 kap).' },
         notes: { type: 'string', description: 'Audit-trail context appended to the verifikation description. For category=representation use this to record deltagare + syfte ("Anna Andersson (Acme AB), kundmöte om Y"). For project work, include the project ref. Keep under 200 chars; pure metadata, not a re-description of the transaction.' },
@@ -6438,11 +6544,15 @@ export const tools: McpTool[] = [
         )
       }
 
+      // reverse_charge_eu_services & co. resolve to 'reverse_charge' + kind.
+      const { vatTreatment, reverseChargeKind } = splitCategorizeVatTreatment(args.vat_treatment)
+
       // Compute the preview (accounts, amounts, VAT lines)
       const result = await categorizeTransactionCore(
         args.transaction_id as string,
         category as TransactionCategory,
-        args.vat_treatment as VatTreatment | undefined,
+        vatTreatment,
+        reverseChargeKind,
         vatAmount,
         accountOverride,
         userId,
@@ -6533,7 +6643,8 @@ export const tools: McpTool[] = [
         {
           transaction_id: args.transaction_id,
           category,
-          vat_treatment: args.vat_treatment || null,
+          vat_treatment: vatTreatment ?? null,
+          ...(reverseChargeKind ? { reverse_charge_kind: reverseChargeKind } : {}),
           vat_amount: vatAmount ?? null,
           account_override: accountOverride ?? null,
           notes: typeof args.notes === 'string' && args.notes.trim().length > 0
@@ -6558,6 +6669,9 @@ export const tools: McpTool[] = [
           // users and agents into seeing an unbalanced entry.
           lines: result.lines ?? [],
           vat_lines: result.vat_lines || [],
+          // Which ruta the reverse-charge basis lands in, and whether that was
+          // chosen or the EU-services default (#2919).
+          ...(result.reverse_charge ? { reverse_charge: result.reverse_charge } : {}),
           category: result.category,
           underlag: result.underlag ?? null,
           ...(hasDimensions ? { dimensions: resolvedDimensions } : {}),

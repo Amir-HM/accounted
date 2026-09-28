@@ -18,6 +18,7 @@ import {
   populateTemplatesFromSieVouchers,
 } from '../counterparty-templates'
 import { buildTransactionEntryLines } from '../transaction-entries'
+import { buildMappingResultFromCategory } from '../category-mapping'
 import { roundOre } from '@/lib/money'
 import type { TemplateUpsertParams } from '../counterparty-templates'
 import type { LinePatternEntry } from '@/types'
@@ -536,8 +537,103 @@ describe('counterparty-templates', () => {
 
       const result = buildMappingResultFromCounterpartyTemplate(match, tx, 'aktiebolag')
 
-      expect(result.vat_lines.length).toBe(2)
-      expect(result.vat_lines.some(l => l.account_number === '2645')).toBe(true)
+      // #2919: the replay books the complete set, basis pair included, so a
+      // learned reverse-charge counterparty no longer repeats the ruta 20-24
+      // gap on every purchase.
+      expect(result.vat_lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+        ['2645', 1250, 0],
+        ['2614', 0, 1250],
+        ['4535', 5000, 0],
+        ['4598', 0, 5000],
+      ])
+      const lines = buildTransactionEntryLines(tx, result)
+      const debits = roundOre(lines.reduce((s, l) => s + l.debit_amount, 0))
+      const credits = roundOre(lines.reduce((s, l) => s + l.credit_amount, 0))
+      expect(debits).toBe(credits)
+      expect(lines.find((l) => l.account_number === '6540')?.debit_amount).toBe(5000)
+    })
+
+    it('replays a reverse-charge template learned on a basis account without a second basis pair', () => {
+      const template = makeCategorizationTemplate({
+        debit_account: '4531',
+        credit_account: '1930',
+        vat_treatment: 'reverse_charge',
+      })
+      const match = { template, matchMethod: 'exact_alias' as const, confidence: 0.8 }
+      const result = buildMappingResultFromCounterpartyTemplate(match, makeTransaction({ amount: -5000 }), 'aktiebolag')
+      expect(result.vat_lines.map((l) => l.account_number)).toEqual(['2645', '2614'])
+    })
+
+    it('learns the categorize shape and replays it with the basis pair (round trip)', async () => {
+      // What gnubok_categorize_transaction books for reverse_charge ...
+      const tx = makeTransaction({ merchant_name: 'Google Play', amount: -250, date: '2026-09-01' })
+      const booked = buildMappingResultFromCategory(
+        'expense_software', tx, true, 'aktiebolag', 'reverse_charge', null, null, 'non_eu_services',
+      )
+      booked.debit_account = '6540' // account_override
+      const inserted: Record<string, unknown>[] = []
+      const chain = {
+        select: () => chain,
+        eq: () => chain,
+        contains: () => chain,
+        order: () => chain,
+        limit: () => chain,
+        maybeSingle: async () => ({ data: null, error: null }),
+        insert: async (payload: Record<string, unknown>) => {
+          inserted.push(payload)
+          return { error: null }
+        },
+      }
+      await upsertCounterpartyTemplate({ from: () => chain } as never, 'company-1', tx, booked, 'user_approved')
+
+      // ... is learned as a reverse-charge pair on the cost account ...
+      expect(inserted).toHaveLength(1)
+      expect(inserted[0]).toMatchObject({
+        debit_account: '6540',
+        credit_account: '1930',
+        vat_treatment: 'reverse_charge',
+        vat_account: '2645',
+      })
+
+      // ... and the next purchase replays fiktiv moms AND the basis pair. The
+      // template stores no seller country, so the basis is EU services.
+      const template = makeCategorizationTemplate({
+        debit_account: inserted[0].debit_account as string,
+        credit_account: inserted[0].credit_account as string,
+        vat_treatment: 'reverse_charge',
+        vat_account: '2645',
+      })
+      const next = buildMappingResultFromCounterpartyTemplate(
+        { template, matchMethod: 'exact_alias', confidence: 0.8 },
+        makeTransaction({ merchant_name: 'Google Play', amount: -250 }),
+        'aktiebolag',
+      )
+      expect(next.vat_lines.map((l) => l.account_number)).toEqual(['2645', '2614', '4535', '4598'])
+    })
+
+    it('mirrors the basis pair too for a refund against a reverse-charge template on a cost account', () => {
+      const template = makeCategorizationTemplate({
+        debit_account: '6540',
+        credit_account: '1930',
+        vat_treatment: 'reverse_charge',
+      })
+      const match = { template, matchMethod: 'exact_alias' as const, confidence: 0.8 }
+      const tx = makeTransaction({ amount: 1000 })
+
+      const result = buildMappingResultFromCounterpartyTemplate(match, tx, 'aktiebolag')
+
+      expect(result.direction_mismatch).toBe(true)
+      expect(result.vat_lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+        ['2645', 0, 250],
+        ['2614', 250, 0],
+        ['4535', 0, 1000],
+        ['4598', 1000, 0],
+      ])
+      const lines = buildTransactionEntryLines(tx, result)
+      const debits = roundOre(lines.reduce((s, l) => s + l.debit_amount, 0))
+      const credits = roundOre(lines.reduce((s, l) => s + l.credit_amount, 0))
+      expect(debits).toBe(credits)
+      expect(lines.find((l) => l.account_number === '6540')?.credit_amount).toBe(1000)
     })
 
     it('a non-registered company books a learned 25 % template gross with no ingående moms', () => {
