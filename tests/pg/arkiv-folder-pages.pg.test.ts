@@ -10,7 +10,8 @@ import { insertAuthUser, insertFiscalPeriod, insertPostedJournalEntry, seedCompa
  * off a receipt or invoice, the upload day otherwise). A booked document with
  * no type is a verifikat's underlag, apart from a loose one that awaits its
  * type, and a type set on a document in a closed period counts under that type
- * although the period lock keeps it off the row. A member sees their own
+ * although the period lock keeps it off the row. A booked document is dated
+ * by its verifikat, not by the upload day. A member sees their own
  * company only.
  */
 async function insertDocument(p: { userId: string; companyId: string; docType: string | null; mime?: string; createdAt: string; invoiceDate?: string; admission?: string; journalEntryId?: string }): Promise<string> {
@@ -109,8 +110,16 @@ describe('arkiv_document_type_counts and arkiv_document_page', () => {
       [companyId, ids.locked],
     )
 
-    expect(await counts(null)).toEqual({ receipt: 4, 'agreement.loan': 1, untyped: 1, something_new: 1, booked: 1 })
-    expect((await page('booked', null, null)).map((r) => r.id)).toEqual([ids.booked])
+    // Uploaded in 2026 as the underlag for a 2024 verifikat: it belongs to 2024, not to the upload year.
+    const period2024 = await insertFiscalPeriod({ userId, companyId, name: '2024', periodStart: '2024-01-01', periodEnd: '2024-12-31' })
+    const entry2024 = await insertPostedJournalEntry({ userId, companyId, fiscalPeriodId: period2024, entryDate: '2024-03-15' })
+    ids.booked2024 = await insertDocument({ ...c, docType: null, createdAt: '2026-05-20T10:00:00Z', journalEntryId: entry2024 })
+
+    expect(await counts(null)).toEqual({ receipt: 4, 'agreement.loan': 1, untyped: 1, something_new: 1, booked: 2 })
+    expect(await counts(2024)).toEqual({ booked: 1 })
+    const bookedPage = await page('booked', null, null)
+    expect(bookedPage.map((r) => r.id)).toEqual([ids.booked, ids.booked2024])
+    expect(bookedPage.map((r) => r.doc_day)).toEqual(['2026-06-01', '2024-03-15'])
     expect((await page('untyped', null, null)).map((r) => r.id)).toEqual([ids.untyped])
     expect((await page('in', ['receipt'], 2025)).map((r) => r.id)).toEqual([ids.receipt2025, ids.locked])
   })

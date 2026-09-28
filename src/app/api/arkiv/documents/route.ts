@@ -131,7 +131,7 @@ export const GET = withRouteContext('arkiv.documents', async (request, ctx) => {
   const [extractions, agreements, entries] = await Promise.all([
     brain ? ctx.supabase.from('document_extractions').select('document_id, payload').in('document_id', ids).eq('is_current', true) : none,
     brain ? ctx.supabase.from('agreements').select('id, source_document_id, title, counterparty_name, amount, currency, period').in('source_document_id', ids) : none,
-    entryIds.length ? ctx.supabase.from('journal_entries').select('id, voucher_series, voucher_number').in('id', entryIds) : none,
+    entryIds.length ? ctx.supabase.from('journal_entries').select('id, voucher_series, voucher_number, entry_date').in('id', entryIds) : none,
   ])
   for (const r of [extractions, agreements, entries]) if (r.error) return NextResponse.json({ error: getErrorMessage(r.error) }, { status: 500 })
   const payloadByDoc = new Map(((extractions.data ?? []) as Array<{ document_id: string; payload: Payload }>).map((e) => [e.document_id, e.payload]))
@@ -145,8 +145,12 @@ export const GET = withRouteContext('arkiv.documents', async (request, ctx) => {
     period: string | null
   }>
   const agreementByDoc = new Map(agreementRows.map((a) => [a.source_document_id, a]))
+  const entryRows = (entries.data ?? []) as Array<{ id: string; voucher_series: string | null; voucher_number: number | null; entry_date?: string | null }>
+  // A booked document is dated by its verifikat when the document itself carries no date: the underlag for
+  // earlier years sat under the upload year otherwise (customer report 2026-09-28).
+  const entryDateOf = new Map(entryRows.filter((e) => e.entry_date).map((e) => [e.id, (e.entry_date as string).slice(0, 10)]))
   const voucherOf = new Map(
-    ((entries.data ?? []) as Array<{ id: string; voucher_series: string | null; voucher_number: number | null }>).map((e) => [
+    entryRows.map((e) => [
       e.id,
       `${e.voucher_series ?? ''}${e.voucher_number ?? ''}`,
     ]),
@@ -209,7 +213,7 @@ export const GET = withRouteContext('arkiv.documents', async (request, ctx) => {
       created_at: d.created_at,
       file_name: d.file_name,
       title: documentTitle({ docType: d.doc_type, fileName: d.file_name, payload, agreementTitle: agreement?.title ?? null }),
-      document_date: documentDate(d.doc_type, payload),
+      document_date: documentDate(d.doc_type, payload) ?? (d.journal_entry_id ? (entryDateOf.get(d.journal_entry_id) ?? null) : null),
       doc_type: d.doc_type,
       page_count: d.page_count ?? null,
       counterparty,
