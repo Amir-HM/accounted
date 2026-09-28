@@ -788,9 +788,12 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
 
   // Counting rows would not answer whether anything is searched: a mailbox
   // waiting for a new consent is still a row, and the hunt skips it. Only
-  // the ones it reads are sources; the others surface on the chip.
+  // the ones it reads are sources; the others surface on the chip, but only
+  // when this company may start a consent. Outside the connect allowlist the
+  // reconnect would be refused, so the chip would nag about something nobody
+  // here can fix; the mailbox still shows its state inside the panel.
   const sourceCount = (whatsapp?.linked ? 1 : 0) + (inboxAddress ? 1 : 0) + mailboxes.active.length
-  const mailboxNeedsReconnect = mailboxes.needsReconnect.length > 0
+  const mailboxNeedsReconnect = mailboxes.needsReconnect.length > 0 && mailboxes.canConnect
 
   const selectedPurchase = useMemo(
     () => purchases.find((p) => p.id === selectedPurchaseId) ?? null,
