@@ -2610,6 +2610,14 @@ export const CreateCashAccountSchema = z.object({
   payee: InvoicePaymentAccountSchema.optional(),
 }).strict()
 
+/**
+ * DELETE /api/cash-accounts/[id]: dry_run=true answers the same checks and
+ * what would go, without writing (the confirmation dialog's preview).
+ */
+export const RemoveCashAccountQuerySchema = z.object({
+  dry_run: z.enum(['true', 'false']).optional(),
+}).strict()
+
 /** PUT /api/cash-accounts/payee-defaults: which account invoices in a currency pay to. */
 export const SetInvoicePayeeDefaultSchema = z.object({
   currency: CurrencySchema,

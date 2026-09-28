@@ -1308,6 +1308,19 @@ export function auditRowToEvent(
         objectKeys: ['name'],
       })
     case 'cash_accounts':
+      // A user removing an unbooked account (remove_cash_account,
+      // 20260927212000): the account is old_state, what went with it
+      // new_state. Removing one moves the bank leg resolveSettlementAccount
+      // picks, like turning it off does.
+      if (row.action === 'DELETE' && row.new_state?.deleted_transactions !== undefined) {
+        return auditEvent(row, {
+          category: 'installningar',
+          code: 'cash_account.deleted',
+          event: 'Bankkonto borttaget',
+          object: [str(row.old_state?.name), str(row.old_state?.ledger_account)].filter(Boolean).join(' ') || null,
+          details: [`Obokförda transaktioner borttagna: ${fmtValue(row.new_state.deleted_transactions)}`],
+        })
+      }
       return genericAuditEvent(row, {
         category: 'installningar',
         codePrefix: 'cash_account',
