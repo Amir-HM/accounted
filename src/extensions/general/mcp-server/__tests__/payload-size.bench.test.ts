@@ -571,6 +571,15 @@ describe('tools/list payload size guard', () => {
     //     Paid for by one shared RC note instead of per-box prose, account
     //     numbers without the word "account", and a shorter vat_treatment
     //     text. Measured 63 496. Ceiling unchanged.
+    //   * Clearable employee fields (#3008): gnubok_update_employee's eleven
+    //     nullable columns declare type [.., 'null'] and its description says
+    //     null clears a field. Paid for inside the same tool: employee_id's
+    //     note restated its name, jamkning_percentage's "null clears" is now
+    //     that one sentence, and default_dimensions' "omit to keep" is true of
+    //     every field of a sparse update, and the tool description drops
+    //     "payroll" and "a field" (the parenthesis names the payroll parts),
+    //     so it fits beside #2919 and #2980 (-6) without a bump. Measured
+    //     63 497 on top of both. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(63_500)
   })
 

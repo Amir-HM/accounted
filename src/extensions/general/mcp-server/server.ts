@@ -17222,46 +17222,46 @@ export const tools: McpTool[] = [
     name: 'gnubok_update_employee',
     keywords: ['anställd', 'ändra anställd', 'personal'],
     title: 'Update Employee',
-    description: 'Stage an employee payroll update (salary, tax, bank, vacation, jamkning, vaxa-stod); personnummer is immutable. gnubok_get_employee first; commit via gnubok_approve_pending_operation.',
+    description: 'Stage an employee update (salary, tax, bank, vacation, jamkning, vaxa-stod); null clears; personnummer immutable. gnubok_get_employee first; commit via gnubok_approve_pending_operation.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        employee_id: { type: 'string', description: 'UUID of the employee' },
+        employee_id: { type: 'string' },
         first_name: { type: 'string' },
         last_name: { type: 'string' },
         employment_type: { type: 'string', enum: ['employee', 'company_owner', 'board_member'] },
         employment_start: { type: 'string' },
-        employment_end: { type: 'string' },
+        employment_end: { type: ['string', 'null'] },
         employment_degree: { type: 'number' },
         hours_per_week: { type: 'number' },
         workdays_per_week: { type: 'number' },
         salary_type: { type: 'string', enum: ['monthly', 'hourly'] },
-        monthly_salary: { type: 'number' },
-        hourly_rate: { type: 'number' },
-        tax_table_number: { type: 'number' },
+        monthly_salary: { type: ['number', 'null'] },
+        hourly_rate: { type: ['number', 'null'] },
+        tax_table_number: { type: ['number', 'null'] },
         tax_column: { type: 'number' },
-        tax_municipality: { type: 'string' },
+        tax_municipality: { type: ['string', 'null'] },
         is_sidoinkomst: { type: 'boolean' },
         f_skatt_status: { type: 'string', enum: ['a_skatt', 'f_skatt', 'fa_skatt', 'not_verified'] },
-        clearing_number: { type: 'string' },
-        bank_account_number: { type: 'string' },
+        clearing_number: { type: ['string', 'null'] },
+        bank_account_number: { type: ['string', 'null'] },
         vacation_rule: { type: 'string', enum: ['procentregeln', 'sammaloneregeln', 'semesterersattning', 'none'] },
         vacation_days_per_year: { type: 'number' },
         vacation_pay_rate: { type: ['number', 'null'] },
-        email: { type: 'string' },
-        phone: { type: 'string' },
+        email: { type: ['string', 'null'] },
+        phone: { type: ['string', 'null'] },
         is_active: { type: 'boolean', description: 'false soft-deactivates; row kept (BFL)' },
         vaxa_stod_eligible: { type: 'boolean' },
-        vaxa_stod_start: { type: 'string' },
-        vaxa_stod_end: { type: 'string' },
-        jamkning_percentage: { type: ['number', 'null'], description: 'null clears; else requires both dates' },
+        vaxa_stod_start: { type: ['string', 'null'] },
+        vaxa_stod_end: { type: ['string', 'null'] },
+        jamkning_percentage: { type: ['number', 'null'], description: 'Requires both dates' },
         jamkning_valid_from: { type: ['string', 'null'] },
         jamkning_valid_to: { type: ['string', 'null'] },
         default_dimensions: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Dims bag {sie_dim_no: kod eller namn} on salary cost lines; replaces the bag, {} clears, omit to keep',
+          description: 'Dims bag {sie_dim_no: kod eller namn} on salary cost lines; replaces the bag, {} clears',
         },
       },
       required: ['employee_id'],
@@ -17294,6 +17294,17 @@ export const tools: McpTool[] = [
         throw new Error('At least one field to update is required')
       }
 
+      // The update contract the dashboard and v1 PATCH enforce, from the same
+      // schema (#3008): null clears a nullable field, a NOT NULL field refuses
+      // null, an omitted key is unchanged. Validated at staging so a bad value
+      // never waits for approval to fail on the database.
+      const { UpdateEmployeeSchema } = await import('@/lib/api/schemas')
+      const parsedPatch = UpdateEmployeeSchema.safeParse(patch)
+      if (!parsedPatch.success) {
+        const first = parsedPatch.error.issues[0]
+        throw new Error(`Invalid employee update: ${first ? `${first.path.join('.')}: ${first.message}` : 'validation failed'}`)
+      }
+
       const { data: existing, error } = await supabase
         .from('employees')
         .select('*')
@@ -17303,14 +17314,13 @@ export const tools: McpTool[] = [
       if (error) throw dbError(error)
       if (!existing) throw new Error('Employee not found')
 
-      // Preflight the jämkning contract on the merged row so the agent gets
-      // the error at staging time instead of at approval (#2058). The
-      // executor (updateEmployee) runs the same shared validator again.
-      const { touchesJamkning, validateJamkning } = await import('@/lib/salary/jamkning-rules')
-      if (touchesJamkning(patch)) {
-        const [issue] = validateJamkning({ ...(existing as Record<string, unknown>), ...patch })
-        if (issue) throw new Error(`${issue.field}: ${issue.message}`)
-      }
+      // Preflight the merged row with the rules every update door runs
+      // (salary amount, tax table, Växa-stöd, jämkning #2058, bank details),
+      // so the agent gets the error at staging time instead of at approval.
+      // The executor (updateEmployee) runs the same validator again. #3008
+      const { validateEmployeeUpdate } = await import('@/lib/salary/employee-update-rules')
+      const [issue] = validateEmployeeUpdate(existing as Record<string, unknown>, patch)
+      if (issue) throw new Error(`${issue.field}: ${issue.message}`)
 
       const changes = Object.entries(patch).map(([field, to]) => ({
         field,
