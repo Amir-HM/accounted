@@ -230,9 +230,9 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'POST /api/dimensions/:id/values': covered([`POST ${V}/dimensions/:id/values`, 'gnubok_create_dimension_value']),
   'PATCH /api/dimensions/:id/values/:valueId': covered([`PATCH ${V}/dimensions/:id/values/:valueId`]),
   'DELETE /api/dimensions/:id/values/:valueId': covered([`DELETE ${V}/dimensions/:id/values/:valueId`]),
-  'POST /api/dimensions/rules': gap('P3', 'per-account dimension policy'),
-  'PATCH /api/dimensions/rules/:id': gap('P3'),
-  'DELETE /api/dimensions/rules/:id': gap('P3'),
+  'POST /api/dimensions/rules': covered([`POST ${V}/dimensions/rules`, 'gnubok_create_dimension_rule']),
+  'PATCH /api/dimensions/rules/:id': covered([`PATCH ${V}/dimensions/rules/:id`, 'gnubok_update_dimension_rule']),
+  'DELETE /api/dimensions/rules/:id': covered([`DELETE ${V}/dimensions/rules/:id`, 'gnubok_delete_dimension_rule']),
   'POST /api/dimensions/import-existing': gap('P3', 'backfill dimension values from existing journal lines'),
   'POST /api/dimensions/tagging/apply': covered(['gnubok_tag_journal_lines']),
 
@@ -671,4 +671,4 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
  * The exact number of 'gap' entries today. Covering a gap means lowering
  * this; adding one means raising it in the same diff, visibly.
  */
-export const GAP_CEILING = 136
+export const GAP_CEILING = 133

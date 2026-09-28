@@ -13,6 +13,12 @@ import {
   dimensionsUpdate,
 } from './dimensions'
 import {
+  dimensionRulesCreate,
+  dimensionRulesDelete,
+  dimensionRulesList,
+  dimensionRulesUpdate,
+} from './dimension-rules'
+import {
   accountsActivate,
   accountsCreate,
   accountsDeactivate,
@@ -196,6 +202,11 @@ export const OPERATIONS: readonly AnyOperation[] = [
   dimensionsCreate,
   dimensionsUpdate,
   dimensionsDelete,
+  // dimension-rules
+  dimensionRulesList,
+  dimensionRulesCreate,
+  dimensionRulesUpdate,
+  dimensionRulesDelete,
   // accounts
   accountsCreate,
   accountsUpdate,

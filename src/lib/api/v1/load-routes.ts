@@ -199,6 +199,8 @@ import '@/app/api/v1/companies/[companyId]/reconciliation/accounts/[accountKey]/
 // Dimensions PR2: registry list + value creation (kostnadsställe/projekt).
 import '@/app/api/v1/companies/[companyId]/dimensions/route'
 import '@/app/api/v1/companies/[companyId]/dimensions/[id]/route'
+import '@/app/api/v1/companies/[companyId]/dimensions/rules/route'
+import '@/app/api/v1/companies/[companyId]/dimensions/rules/[id]/route'
 // Operation registry, wave 4: Peppol, årsredovisning, IB, AP actions.
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/peppol/route'
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/peppol/deliveries/route'

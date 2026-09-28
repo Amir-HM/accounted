@@ -426,6 +426,12 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   // succeeds for unreferenced values (BFL retention trigger guards the rest).
   'PATCH /api/v1/companies/:companyId/dimensions/:id/values/:valueId': 'bookkeeping:write',
   'DELETE /api/v1/companies/:companyId/dimensions/:id/values/:valueId': 'bookkeeping:write',
+  // Account dimension rules (operations dimension-rules.*): the policy is
+  // read next to the registry, written like it.
+  'GET /api/v1/companies/:companyId/dimensions/rules': 'reports:read',
+  'POST /api/v1/companies/:companyId/dimensions/rules': 'bookkeeping:write',
+  'PATCH /api/v1/companies/:companyId/dimensions/rules/:id': 'bookkeeping:write',
+  'DELETE /api/v1/companies/:companyId/dimensions/rules/:id': 'bookkeeping:write',
 
   // Articles (artikelregister, #895): read-only list so invoice items can
   // link article_id / copy housework_type + revenue_account. Rides

@@ -1111,6 +1111,283 @@ Example response `200`:
 
 ---
 
+### `GET /api/v1/companies/{companyId}/dimensions/rules`
+
+**List the account dimension rules (required, default or fixed dimension per account).**
+`scope:reports:read · risk:low · idempotent`
+
+Returns the company's per-account dimension policy, by account number: required (the account cannot be posted without a value for the dimension; the booking answers MANDATORY_DIMENSION_MISSING), default (the value is filled in on a line that has none) and fixed (the value always applies, over what the line says). Paused rules (is_active false) are listed too; they are not enforced.
+
+**Use when:** A booking was refused with MANDATORY_DIMENSION_MISSING, or before posting to an account, to know which dimensions its lines need.
+**Do not use for:** The dimensions and their values themselves (GET /dimensions).
+
+**Pitfalls:**
+- account_number filters on one exact account: a STRING of 4 digits, "4010".
+- A company without rules gets an empty list: dimensions are then never required.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `account_number` | query | `string` | no | Only the rules of this account. |
+
+Response `200`:
+```ts
+{
+  data: {
+    rules: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }[]
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rules": [
+      {
+        "account_dimension_rule_id": "5b7e…",
+        "account_number": "4010",
+        "dimension_id": "0e9c…",
+        "sie_dim_no": 6,
+        "dimension_name": "Projekt",
+        "rule_type": "required",
+        "value_id": null,
+        "value_code": null,
+        "value_name": null,
+        "is_active": true
+      }
+    ]
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `POST /api/v1/companies/{companyId}/dimensions/rules`
+
+**Require, pre-fill or pin a dimension value on an account.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Adds a rule for one account and one dimension. required: posting the account without a value for the dimension is refused (MANDATORY_DIMENSION_MISSING), drafts may still be incomplete. default: value_id is filled in on a line of the account that carries no value for the dimension. fixed: value_id always applies, over what the line says. Takes effect for bookings from now on; posted verifikat are never changed. Idempotent. Dry-runnable.
+
+**Use when:** Every booking on an account should carry a project or cost centre, or an account always belongs to the same one.
+**Do not use for:** Tagging lines that are already posted: a rule only acts on bookings made after it.
+
+**Pitfalls:**
+- required takes no value_id; default and fixed must name one (400 VALIDATION_ERROR otherwise).
+- value_id must be an active value of that same dimension: 404 DIMENSION_VALUE_NOT_FOUND or 400 DIMENSION_VALUE_ARCHIVED.
+- The account must be an active account in the chart: 404 ACCOUNT_NOT_FOUND.
+- One rule per account and dimension: a second answers 409 DIMENSION_RULE_EXISTS; change the existing rule with PATCH instead.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{
+  account_number: string,
+  dimension_id: string,
+  rule_type: "required" | "default" | "fixed",
+  value_id?: string,
+  is_active?: boolean
+}
+```
+
+Example request:
+```json
+{
+  "account_number": "4010",
+  "dimension_id": "0e9c…",
+  "rule_type": "required"
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    rule: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rule": {
+      "account_dimension_rule_id": "5b7e…",
+      "account_number": "4010",
+      "dimension_id": "0e9c…",
+      "sie_dim_no": 6,
+      "dimension_name": "Projekt",
+      "rule_type": "required",
+      "value_id": null,
+      "value_code": null,
+      "value_name": null,
+      "is_active": true
+    }
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `PATCH /api/v1/companies/{companyId}/dimensions/rules/{id}`
+
+**Change, pause or resume an account dimension rule.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Sparse update of a rule: rule_type, value_id and is_active (false pauses the rule without losing it). The value rule holds for the rule as it will be: switching to required needs value_id null in the same call, switching to default or fixed needs a value. The account and the dimension of a rule are fixed: delete it and create another to move it. Idempotent. Dry-runnable.
+
+**Use when:** A rule should apply another value, change type, or stop being enforced for a while.
+**Do not use for:** Removing a rule for good (DELETE /dimensions/rules/{id}).
+
+**Pitfalls:**
+- At least one of rule_type, value_id, is_active must be sent.
+- A rule of another company answers 404 DIMENSION_RULE_NOT_FOUND.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `id` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{ rule_type?: "required" | "default" | "fixed", value_id?: string | null, is_active?: boolean }
+```
+
+Example request:
+```json
+{
+  "is_active": false
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    rule: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rule": {
+      "account_dimension_rule_id": "5b7e…",
+      "account_number": "4010",
+      "dimension_id": "0e9c…",
+      "sie_dim_no": 6,
+      "dimension_name": "Projekt",
+      "rule_type": "required",
+      "value_id": null,
+      "value_code": null,
+      "value_name": null,
+      "is_active": false
+    }
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `DELETE /api/v1/companies/{companyId}/dimensions/rules/{id}`
+
+**Delete an account dimension rule.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Removes the rule: from then on the account neither requires nor fills in that dimension. Nothing booked changes. Pausing it instead keeps the configuration (PATCH is_active=false). Idempotent. Dry-runnable.
+
+**Use when:** A rule no longer applies.
+**Do not use for:** A short pause (PATCH is_active=false).
+
+**Pitfalls:**
+- A rule of another company, or one already deleted, answers 404 DIMENSION_RULE_NOT_FOUND.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `id` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Response `200`:
+```ts
+{
+  data: { deleted: true, account_dimension_rule_id: string },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "deleted": true,
+    "account_dimension_rule_id": "5b7e…"
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
 ### `GET /api/v1/companies/{companyId}/fiscal-periods`
 
 **List fiscal periods (räkenskapsår).**
