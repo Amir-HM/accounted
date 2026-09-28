@@ -39,10 +39,10 @@ import type {
 } from '@/types'
 import { getRevenueAccount } from '@/lib/bookkeeping/invoice-entries'
 import {
-  generateReverseChargeBasisLines,
-  generateReverseChargeLines,
+  generateReverseChargePurchaseLines,
   isReverseChargeBasisAccount,
   resolveReverseChargeRate,
+  reverseChargeKindForSupplierType,
 } from '@/lib/bookkeeping/vat-entries'
 import { createJournalEntry, reverseEntry } from '@/lib/bookkeeping/engine'
 import { invoiceCustomerOutstanding, invoiceCustomerShare } from '@/lib/invoices/customer-share'
@@ -425,15 +425,12 @@ export function buildCutoffLines(
       const base = toKronor(Math.abs(group.baseOre))
       const nonBasisBase = toKronor(Math.abs(group.nonBasisBaseOre))
       appendReverseChargeLines(
-        generateReverseChargeLines(
+        generateReverseChargePurchaseLines({
           base,
-          group.rate,
-          group.supplierType === 'swedish_business',
-        ),
-        sign,
-      )
-      appendReverseChargeLines(
-        generateReverseChargeBasisLines(nonBasisBase, group.rate, group.supplierType),
+          rate: group.rate,
+          kind: reverseChargeKindForSupplierType(group.supplierType),
+          basisBase: nonBasisBase,
+        }),
         sign,
       )
     }

@@ -634,7 +634,7 @@ Example response `200`:
 **Correct fields of an inbox item's reading (supplier, invoice, totals).**
 `scope:documents:write · risk:low · idempotent · dry-run · reversible`
 
-Merges the given fields into the item's extracted_data: supplier (name, orgNumber, vatNumber, address, bankgiro, plusgiro), invoice (invoiceNumber, invoiceDate, dueDate, paymentReference, currency) and totals (subtotal, vatAmount, total). Fields not named are kept, line items and the VAT breakdown included; null clears a field. A hand-set total becomes a verified total. Answers the merged reading. Idempotent. Dry-runnable.
+Merges the given fields into the item's extracted_data: documentKind (what the document is), supplier (name, orgNumber, vatNumber, address, bankgiro, plusgiro), invoice (invoiceNumber, invoiceDate, dueDate, paymentReference, currency, creditedInvoiceNumber) and totals (subtotal, vatAmount, total). Fields not named are kept, line items and the VAT breakdown included; null clears a field. A hand-set total becomes a verified total. Answers the merged reading. Idempotent. Dry-runnable.
 
 **Use when:** The reading got a field wrong (total, date, invoice number) before the item is converted or matched.
 **Do not use for:** Replacing the whole reading from your own extraction pipeline (MCP gnubok_set_inbox_extracted_data), or changing a registered supplier invoice.
@@ -643,6 +643,7 @@ Merges the given fields into the item's extracted_data: supplier (name, orgNumbe
 - An item already converted to a supplier invoice returns 409 INBOX_ITEM_EDIT_LOCKED.
 - A concurrent edit returns 409 INBOX_ITEM_EDIT_CONFLICT: read the item again and retry.
 - Dates are YYYY-MM-DD; currency is a 3-letter ISO 4217 code.
+- A supplier_invoice whose subtotal or vatAmount is negative still counts as a credit note: correct the totals, not only documentKind.
 - An enskild firma's orgNumber is a personnummer: only send it when it is on the document.
 
 | Parameter | In | Type | Required | Notes |
@@ -654,6 +655,7 @@ Merges the given fields into the item's extracted_data: supplier (name, orgNumbe
 Request body:
 ```ts
 {
+  documentKind?: "receipt" | "supplier_invoice" | "credit_note" | "government_letter" | "other" | null,
   supplier?: {
     name?: string | null,
     orgNumber?: string | null,
@@ -667,6 +669,7 @@ Request body:
     invoiceDate?: string | null,
     dueDate?: string | null,
     paymentReference?: string | null,
+    creditedInvoiceNumber?: string | null,
     currency?: string
   },
   totals?: { subtotal?: number | null, vatAmount?: number | null, total?: number | null }
@@ -784,10 +787,11 @@ Example response `200`:
 Registers a supplier invoice (status registered, next ankomstnummer) from the given lines, attaches the item's document as underlag and marks the item converted. A company that books on registration gets the registration verifikat at once (cost and 2641 against 2440, with periodisering and särskild löneskatt where the lines ask); a company that defers booking gets none until the invoice is booked. A non-SEK invoice without exchange_rate gets Riksbanken's rate for invoice_date. Idempotent. Dry-runnable: the preview computes the invoice without an ankomstnummer.
 
 **Use when:** An inbox item is a supplier invoice the company will pay later (leverantörsskuld).
-**Do not use for:** A receipt the company already paid (book it against the bank transaction), a purchase paid privately (POST /expense-claims), or registering an invoice without an inbox item (POST /supplier-invoices).
+**Do not use for:** A receipt the company already paid (book it against the bank transaction), a purchase paid privately (POST /expense-claims), a supplier credit note (credit the invoice it references: POST /supplier-invoices/{id}/credit with inbox_item_id), or registering an invoice without an inbox item (POST /supplier-invoices).
 
 **Pitfalls:**
 - An item already converted returns 409 INBOX_ITEM_ALREADY_CONVERTED; a supplier invoice number the supplier already has returns 409 SI_CREATE_DUPLICATE_INVOICE_NUMBER with details.existing.
+- A credit note (read as one, or with a negative net or VAT) returns 409 INBOX_ITEM_IS_CREDIT_NOTE with details.credit_target: the invoice it credits, or the candidates to choose from.
 - amount is per line EXCLUDING VAT; VAT is computed from vat_rate. Per-line vat_amount, dimensions and private-payment fields are not accepted here.
 - No fiscal year for invoice_date returns SI_CREATE_NO_FISCAL_PERIOD and registers nothing.
 - account_number is a STRING ("6110"), never a number.

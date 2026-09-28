@@ -556,3 +556,64 @@ describe('VAT registration (lib/bookkeeping/vat-registration.ts)', () => {
     },
   )
 })
+
+describe('reverse-charge basis pair (#2919)', () => {
+  // The real category builder runs: a reverse-charge purchase posts the
+  // 45xx/4598 basis pair next to the fiktiv moms, and an account_override onto
+  // an account that reports ruta 20-24 itself drops that pair again.
+  function rcSupabase(chartRow?: Record<string, unknown>) {
+    return makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      transactions: [
+        {
+          data: {
+            id: TX_ID,
+            company_id: COMPANY_ID,
+            date: '2026-09-10',
+            amount: -250,
+            currency: 'SEK',
+            merchant_name: 'Google Play',
+            cash_account_id: null,
+            journal_entry_id: null,
+          },
+          error: null,
+        },
+        { data: [{ id: TX_ID }], error: null },
+      ],
+      company_settings: { data: { entity_type: 'aktiebolag' }, error: null },
+      fiscal_periods: { data: { id: 'period-1', is_closed: false, locked_at: null }, error: null },
+      ...(chartRow ? { chart_of_accounts: { data: chartRow, error: null } } : {}),
+    })
+  }
+
+  it.each([
+    { account_override: undefined, chartRow: undefined, expected: ['2645', '2614', '4535', '4598'] },
+    {
+      account_override: '4531',
+      chartRow: { account_number: '4531', account_class: 4, is_active: true, default_vat_treatment: null },
+      expected: ['2645', '2614'],
+    },
+    {
+      account_override: '6541',
+      chartRow: { account_number: '6541', account_class: 6, is_active: true, default_vat_treatment: 'reverse_charge_eu_services' },
+      expected: ['2645', '2614'],
+    },
+  ])('posts $expected with account_override $account_override', async ({ account_override, chartRow, expected }) => {
+    const { supabase } = rcSupabase(chartRow)
+    mockServiceClient.mockReturnValue(supabase)
+
+    const res = await POST(
+      makeRequest({
+        is_business: true,
+        category: 'expense_software',
+        vat_treatment: 'reverse_charge',
+        ...(account_override ? { account_override } : {}),
+      }),
+      routeParams(),
+    )
+
+    expect(res.status).toBe(200)
+    const mapping = createTxJE.mock.calls[0][4] as { vat_lines: Array<{ account_number: string }> }
+    expect(mapping.vat_lines.map((l) => l.account_number)).toEqual(expected)
+  })
+})

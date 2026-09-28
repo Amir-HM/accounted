@@ -64,6 +64,25 @@ describe('routeClassifiedDocument', () => {
     })
   })
 
+  it('queues a credit note as a supplier document whose reading says credit note (issue #2980)', async () => {
+    enqueue({ data: { ...doc, extracted_data: { documentKind: 'supplier_invoice', lineItems: [] } } })
+    enqueue({ data: [] })
+    enqueue({})
+    expect(await classified('credit_note')).toBe('queued')
+    expect(findCall('invoice_inbox_items', 'insert')?.[0]).toMatchObject({
+      kind_hint: 'supplier_invoice',
+      extracted_data: { documentKind: 'credit_note', lineItems: [] },
+    })
+  })
+
+  it('queues a credit note the inbox never read without inventing a reading', async () => {
+    enqueue({ data: { ...doc, extracted_data: null } })
+    enqueue({ data: [] })
+    enqueue({})
+    expect(await classified('credit_note')).toBe('queued')
+    expect(findCall('invoice_inbox_items', 'insert')?.[0]).toMatchObject({ extracted_data: null, extraction_skipped: true })
+  })
+
   it('leaves a receipt alone when it is already queued, booked, or attached to a voucher', async () => {
     enqueue({ data: doc })
     enqueue({ data: [item()] })
@@ -204,6 +223,7 @@ describe('inboxSawABill: where the readers disagree, the item stays in Underlag'
   it('keeps what the inbox read as a receipt or supplier invoice, whatever Arkiv typed it', () => {
     expect(inboxSawABill({ documentKind: 'supplier_invoice' }, 'customer_invoice')).toBe(true)
     expect(inboxSawABill({ documentKind: 'receipt' }, 'other')).toBe(true)
+    expect(inboxSawABill({ documentKind: 'credit_note' }, 'other')).toBe(true)
   })
 
   it('keeps an amount on a government letter (a congestion-tax bill) or on a document Arkiv could only call other (a credit note)', () => {
