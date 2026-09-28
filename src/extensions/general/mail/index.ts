@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import type { Extension } from '@/lib/extensions/types'
 import { registerMailSearchService } from '@/lib/mail-search/service'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
+import { createLogger } from '@/lib/logger'
 import { GmailSearchService } from './lib/search-service'
 import { getMailboxAddress } from './lib/gmail-client'
 import { createOAuthState, verifyOAuthState } from './lib/crypto'
@@ -10,8 +11,10 @@ import {
   exchangeCodeForTokens,
   getGoogleOAuthEnv,
   isGoogleMailConfigured,
+  lacksGmailScope,
+  revokeGoogleToken,
 } from './lib/google-oauth'
-import { disconnect, listConnections, saveConnection } from './lib/connections'
+import { SCOPE_MISSING, disconnect, listConnections, saveConnection } from './lib/connections'
 import { resolveCallbackOrigin } from './lib/callback-origin'
 import { isMailConnectEnabled } from './lib/connect-gate'
 import { requireFlowInitiator } from '@/lib/auth/oauth-flow-binding'
@@ -19,6 +22,8 @@ import { requireFlowInitiator } from '@/lib/auth/oauth-flow-binding'
 // Registered as soon as the extension loads, so the receipt hunt can search
 // mail without core ever importing from @/extensions.
 registerMailSearchService(new GmailSearchService())
+
+const log = createLogger('mail-extension')
 
 function jsonError(message: string, status = 500): Response {
   return NextResponse.json({ error: message }, { status })
@@ -104,6 +109,21 @@ export const mailExtension: Extension = {
           const origin = resolveCallbackOrigin(url.origin)
           const env = getGoogleOAuthEnv(origin)
           const tokens = await exchangeCodeForTokens(env, code)
+          // What Google granted decides, not what was asked for. Its consent
+          // screen lets a person untick Gmail and still approve, and such a
+          // grant used to be saved as an active mailbox that failed every
+          // search, while this callback reported something unrelated because
+          // the profile call below needs the scope too. Nothing is saved, and
+          // the unused grant is revoked so it does not linger in the person's
+          // Google account.
+          if (lacksGmailScope(tokens.scopes)) {
+            const revocation = await revokeGoogleToken(tokens.refreshToken ?? tokens.accessToken)
+            log.info('refused a mail grant without the gmail scope', {
+              revocation: revocation.outcome,
+              status: revocation.status,
+            })
+            return NextResponse.redirect(`${settingsUrl}?mail=${SCOPE_MISSING}`)
+          }
           if (!tokens.refreshToken) {
             return NextResponse.redirect(`${settingsUrl}?mail=no_refresh_token`)
           }

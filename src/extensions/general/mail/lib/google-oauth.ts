@@ -19,6 +19,21 @@
  */
 export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 
+/**
+ * Whether Google's own answer shows that a grant cannot read Gmail.
+ *
+ * Google's consent screen lets a person untick a scope and still approve, so
+ * a grant can come back without the one scope that makes it useful. Only a
+ * stated list that leaves gmail.readonly out counts as that. An empty list
+ * means Google did not state the scopes at all, which RFC 6749 (5.1) defines
+ * as "identical to the scope requested", and the request is gmail.readonly
+ * alone. Treating empty as missing would park a working mailbox on a guess,
+ * while a grant that truly lacks the scope still shows up as a failed search.
+ */
+export function lacksGmailScope(scopes: readonly string[] | null | undefined): boolean {
+  return Array.isArray(scopes) && scopes.length > 0 && !scopes.includes(GMAIL_READONLY_SCOPE)
+}
+
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 /**
  * Deadline on the token endpoint.
@@ -30,6 +45,8 @@ const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const TOKEN_TIMEOUT_MS = 15_000
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
+
+const REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke'
 
 export interface GoogleOAuthEnv {
   clientId: string
@@ -127,17 +144,14 @@ export async function exchangeCodeForTokens(
   if (!response.ok || !body.access_token) {
     throw new Error(body.error_description || body.error || 'Token exchange failed')
   }
-  if (!body.refresh_token) {
-    // Google withholds it when the user has an older grant for this client.
-    // Say so plainly: the fix is to revoke at myaccount.google.com and retry,
-    // and a connection without one is useless the moment the hour is up.
-    throw new Error(
-      'Google returned no refresh token. Remove the previous access for this app at myaccount.google.com/permissions and connect again.',
-    )
-  }
   return {
     accessToken: body.access_token,
-    refreshToken: body.refresh_token,
+    // Null rather than a throw, so the callback can check the granted scopes
+    // first and then say which of the two went wrong. Google withholds a
+    // refresh token when the account already holds a grant for this client;
+    // the callback answers `no_refresh_token`, whose fix is removing the old
+    // access at myaccount.google.com/permissions and connecting again.
+    refreshToken: body.refresh_token ?? null,
     expiresAt: new Date(Date.now() + (body.expires_in ?? 3600) * 1000),
     scopes: (body.scope ?? '').split(' ').filter(Boolean),
   }
@@ -177,5 +191,62 @@ export async function refreshAccessToken(
   return {
     accessToken: body.access_token,
     expiresAt: new Date(Date.now() + (body.expires_in ?? 3600) * 1000),
+  }
+}
+
+/**
+ * What Google answered when asked to revoke a grant.
+ *
+ *   revoked          Google confirmed it (200).
+ *   already_invalid  Google no longer knows the token (400 invalid_token):
+ *                    the person removed the app at myaccount.google.com, or
+ *                    the grant was revoked or expired before. Nothing is left.
+ *   failed           no confirmation: a timeout, a network error, any other
+ *                    answer.
+ */
+export type GoogleRevocationOutcome = 'revoked' | 'already_invalid' | 'failed'
+
+export interface GoogleRevocationResult {
+  outcome: GoogleRevocationOutcome
+  /** HTTP status, or null when no answer arrived. */
+  status: number | null
+  /** Google's error code or the local error's name. Never the token. */
+  error: string | null
+}
+
+/**
+ * Revoke a grant at Google, so deleting our copy of a token is not the only
+ * thing that ends the access.
+ *
+ * Revoking a refresh token also revokes the access tokens issued from it, and
+ * the app leaves the account's list of third-party access, so this is treated
+ * as ending the app's access to that Google account rather than to one token.
+ * Callers that may hold the same mailbox under several connections check that
+ * first (revokeStoredGrant in connections.ts).
+ *
+ * The token goes in a form-encoded body, never in the URL, where proxies and
+ * request logs keep it. Best effort by contract: it never throws, so a slow
+ * or broken Google can never block the deletion that follows it.
+ */
+export async function revokeGoogleToken(token: string): Promise<GoogleRevocationResult> {
+  try {
+    const response = await fetch(REVOKE_ENDPOINT, {
+      method: 'POST',
+      signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token }),
+    })
+    if (response.ok) return { outcome: 'revoked', status: response.status, error: null }
+    const body = (await response.json().catch(() => ({}))) as { error?: unknown }
+    const error = typeof body.error === 'string' ? body.error.slice(0, 64) : null
+    return {
+      outcome: response.status === 400 && error === 'invalid_token' ? 'already_invalid' : 'failed',
+      status: response.status,
+      error,
+    }
+  } catch (err) {
+    // A TimeoutError or a network failure. The name only: nothing that could
+    // echo the request body into a log line.
+    return { outcome: 'failed', status: null, error: err instanceof Error ? err.name : 'unknown' }
   }
 }

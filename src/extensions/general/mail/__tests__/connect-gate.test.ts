@@ -7,13 +7,16 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vite
 vi.mock('@/lib/mail-search/service', () => ({ registerMailSearchService: vi.fn() }))
 vi.mock('../lib/search-service', () => ({ GmailSearchService: class GmailSearchService {} }))
 vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: vi.fn(() => ({})) }))
-vi.mock('../lib/google-oauth', () => ({
+vi.mock('../lib/google-oauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/google-oauth')>()),
   buildAuthorizationUrl: vi.fn(() => 'https://accounts.google.com/o/oauth2/v2/auth?x=1'),
   exchangeCodeForTokens: vi.fn(),
   getGoogleOAuthEnv: vi.fn(() => ({})),
   isGoogleMailConfigured: vi.fn(() => true),
+  revokeGoogleToken: vi.fn(),
 }))
 vi.mock('../lib/connections', () => ({
+  SCOPE_MISSING: 'scope_missing',
   disconnect: vi.fn(),
   listConnections: vi.fn(),
   saveConnection: vi.fn(),

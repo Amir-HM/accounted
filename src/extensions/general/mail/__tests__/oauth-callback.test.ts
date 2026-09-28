@@ -17,14 +17,19 @@ vi.mock('@/lib/mail-search/service', () => ({ registerMailSearchService: vi.fn()
 vi.mock('../lib/search-service', () => ({ GmailSearchService: class GmailSearchService {} }))
 vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: vi.fn(() => ({})) }))
 
-vi.mock('../lib/google-oauth', () => ({
+// The scope check (lacksGmailScope) is the real one; only the network calls
+// are faked.
+vi.mock('../lib/google-oauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/google-oauth')>()),
   buildAuthorizationUrl: vi.fn(),
   exchangeCodeForTokens: vi.fn(),
   getGoogleOAuthEnv: vi.fn(() => ({})),
   isGoogleMailConfigured: vi.fn(() => true),
+  revokeGoogleToken: vi.fn(),
 }))
 
 vi.mock('../lib/connections', () => ({
+  SCOPE_MISSING: 'scope_missing',
   disconnect: vi.fn(),
   listConnections: vi.fn(),
   saveConnection: vi.fn(),
@@ -44,7 +49,7 @@ vi.mock('@/lib/supabase/server', () => ({
 
 import { mailExtension } from '../index'
 import { createOAuthState } from '../lib/crypto'
-import { exchangeCodeForTokens } from '../lib/google-oauth'
+import { GMAIL_READONLY_SCOPE, exchangeCodeForTokens, revokeGoogleToken } from '../lib/google-oauth'
 import { getMailboxAddress } from '../lib/gmail-client'
 import { saveConnection } from '../lib/connections'
 
@@ -168,6 +173,139 @@ describe('mail GET /oauth/callback: the completing session must be the initiator
 
     expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=expired`)
     expect(mockCreateClient).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+})
+
+describe('mail GET /oauth/callback: what Google returned decides what is saved', () => {
+  let state: string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL)
+    vi.stubEnv('MAIL_TOKEN_ENCRYPTION_KEY', '00'.repeat(32))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    state = createOAuthState('user-1', 'company-1')
+    useSession('user-1')
+    ;(getMailboxAddress as Mock).mockResolvedValue('ekonomi@example.se')
+    ;(saveConnection as Mock).mockResolvedValue(undefined)
+    ;(revokeGoogleToken as Mock).mockResolvedValue({ outcome: 'revoked', status: 200, error: null })
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+  })
+
+  function grant(scopes: string[], refreshToken: string | null = 'refresh-1') {
+    ;(exchangeCodeForTokens as Mock).mockResolvedValue({
+      refreshToken,
+      accessToken: 'access-1',
+      expiresAt: new Date('2030-01-01T00:00:00Z'),
+      scopes,
+    })
+  }
+
+  it('refuses a grant whose Gmail box was unticked: saves nothing and revokes it', async () => {
+    // Google's consent screen lets a person untick a scope and still approve.
+    // Such a grant used to be saved as an active mailbox that failed every
+    // search.
+    grant(['openid', 'https://www.googleapis.com/auth/userinfo.email'])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=scope_missing`)
+    expect(saveConnection).not.toHaveBeenCalled()
+    // Not even asked for the address: the profile call needs the scope too.
+    expect(getMailboxAddress).not.toHaveBeenCalled()
+    // The unused grant does not linger in the person's Google account.
+    expect(revokeGoogleToken).toHaveBeenCalledWith('refresh-1')
+  })
+
+  it('revokes with the access token when the scope-less grant carried no refresh token', async () => {
+    grant(['openid'], null)
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=scope_missing`)
+    expect(revokeGoogleToken).toHaveBeenCalledWith('access-1')
+  })
+
+  it('still answers scope_missing when Google does not confirm the revocation', async () => {
+    grant(['openid'])
+    ;(revokeGoogleToken as Mock).mockResolvedValue({ outcome: 'failed', status: null, error: 'TimeoutError' })
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=scope_missing`)
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('keeps a grant that carries gmail.readonly next to other scopes', async () => {
+    grant(['openid', GMAIL_READONLY_SCOPE, 'https://www.googleapis.com/auth/userinfo.email'])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=connected`)
+    expect(revokeGoogleToken).not.toHaveBeenCalled()
+  })
+
+  it('reads an unstated scope list as the scope requested (RFC 6749 5.1)', async () => {
+    grant([])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=connected`)
+    expect(revokeGoogleToken).not.toHaveBeenCalled()
+  })
+
+  it('answers no_refresh_token, and leaves the existing grant alone', async () => {
+    // Google withholds a refresh token when the account already holds a
+    // grant for this client, which another company may be using: revoking
+    // it here would disconnect that one.
+    grant([GMAIL_READONLY_SCOPE], null)
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=no_refresh_token`)
+    expect(saveConnection).not.toHaveBeenCalled()
+    expect(revokeGoogleToken).not.toHaveBeenCalled()
+  })
+
+  it('answers denied when the person declined on Google, before anything else runs', async () => {
+    const url = new URL(`${APP_URL}${CALLBACK_PATH}`)
+    url.searchParams.set('error', 'access_denied')
+    url.searchParams.set('state', state)
+
+    const res = await callbackRoute().handler(new Request(url.toString()))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=denied`)
+    expect(mockCreateClient).not.toHaveBeenCalled()
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+  })
+
+  it('answers invalid for a callback missing its code or state', async () => {
+    const noCode = new URL(`${APP_URL}${CALLBACK_PATH}`)
+    noCode.searchParams.set('state', state)
+    const noState = new URL(`${APP_URL}${CALLBACK_PATH}`)
+    noState.searchParams.set('code', 'google-code')
+
+    for (const url of [noCode, noState]) {
+      const res = await callbackRoute().handler(new Request(url.toString()))
+      expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=invalid`)
+    }
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('answers failed when the code exchange itself fails, saving nothing', async () => {
+    ;(exchangeCodeForTokens as Mock).mockRejectedValue(new Error('invalid_grant'))
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=failed`)
     expect(saveConnection).not.toHaveBeenCalled()
   })
 })

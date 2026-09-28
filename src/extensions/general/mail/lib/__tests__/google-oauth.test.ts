@@ -9,7 +9,13 @@
  * profile" cannot silently reopen that.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { GMAIL_READONLY_SCOPE, buildAuthorizationUrl, exchangeCodeForTokens } from '../google-oauth'
+import {
+  GMAIL_READONLY_SCOPE,
+  buildAuthorizationUrl,
+  exchangeCodeForTokens,
+  lacksGmailScope,
+  revokeGoogleToken,
+} from '../google-oauth'
 
 const env = {
   clientId: 'client-id',
@@ -61,11 +67,86 @@ describe('exchangeCodeForTokens', () => {
     expect(tokens).not.toHaveProperty('email')
   })
 
-  it('refuses a grant that came back without a refresh token', async () => {
+  it('reports a grant without a refresh token as null, so the callback can say why', async () => {
+    // Throwing here made the callback's no_refresh_token answer unreachable:
+    // the person got a generic failure instead of the fix.
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ access_token: 'at', expires_in: 3600 }),
+      json: () => Promise.resolve({ access_token: 'at', expires_in: 3600, scope: GMAIL_READONLY_SCOPE }),
     })
-    await expect(exchangeCodeForTokens(env, 'auth-code')).rejects.toThrow(/refresh token/)
+    const tokens = await exchangeCodeForTokens(env, 'auth-code')
+    expect(tokens.refreshToken).toBeNull()
+    expect(tokens.accessToken).toBe('at')
+  })
+
+  it('still throws when Google refuses the code', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'invalid_grant', error_description: 'Bad Request' }),
+    })
+    await expect(exchangeCodeForTokens(env, 'auth-code')).rejects.toThrow('Bad Request')
+  })
+})
+
+describe('lacksGmailScope', () => {
+  it('is true only for a stated scope list that leaves Gmail out', () => {
+    // The shape of the three production rows saved before the consent
+    // request was cut to one scope: Gmail unticked, sign-in approved.
+    expect(lacksGmailScope(['openid', 'https://www.googleapis.com/auth/userinfo.email'])).toBe(true)
+  })
+
+  it('keeps a grant that carries gmail.readonly, alone or with others', () => {
+    // The reviewer's demo row carries exactly this.
+    expect(lacksGmailScope([GMAIL_READONLY_SCOPE])).toBe(false)
+    expect(
+      lacksGmailScope(['openid', GMAIL_READONLY_SCOPE, 'https://www.googleapis.com/auth/userinfo.email']),
+    ).toBe(false)
+  })
+
+  it('never reads an unstated scope list as a missing scope', () => {
+    // RFC 6749 5.1: an omitted scope is the scope requested.
+    expect(lacksGmailScope([])).toBe(false)
+    expect(lacksGmailScope(null)).toBe(false)
+    expect(lacksGmailScope(undefined)).toBe(false)
+  })
+})
+
+describe('revokeGoogleToken', () => {
+  it('posts the token form-encoded to the revoke endpoint, never in the URL', async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) })
+
+    const result = await revokeGoogleToken('refresh-secret')
+
+    expect(result).toEqual({ outcome: 'revoked', status: 200, error: null })
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://oauth2.googleapis.com/revoke')
+    expect(url).not.toContain('refresh-secret')
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/x-www-form-urlencoded')
+    expect(String(init.body)).toBe('token=refresh-secret')
+    // Bounded like the token calls, so a stalled Google cannot hold a
+    // disconnect open.
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('reads invalid_token as a grant Google no longer has', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ error: 'invalid_token', error_description: 'Token expired or revoked' }),
+    })
+    expect(await revokeGoogleToken('t')).toEqual({ outcome: 'already_invalid', status: 400, error: 'invalid_token' })
+  })
+
+  it('reports any other answer as not confirmed', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 503, json: () => Promise.reject(new Error('not json')) })
+    expect(await revokeGoogleToken('t')).toEqual({ outcome: 'failed', status: 503, error: null })
+  })
+
+  it('never throws on a timeout, and never carries the token into the error', async () => {
+    mockFetch.mockRejectedValue(Object.assign(new Error('aborted refresh-secret'), { name: 'TimeoutError' }))
+    const result = await revokeGoogleToken('refresh-secret')
+    expect(result).toEqual({ outcome: 'failed', status: null, error: 'TimeoutError' })
+    expect(JSON.stringify(result)).not.toContain('refresh-secret')
   })
 })
