@@ -8,7 +8,7 @@ description: >-
   transactions and reconciliation, payroll (lön), VAT/moms and financial
   reports, SIE import/export, documents, webhooks. Covers auth with
   gnubok_sk_ API keys, conventions (dry-run, idempotency, cursor
-  pagination, scopes), and all 284 endpoints.
+  pagination, scopes), and all 285 endpoints.
 ---
 
 <!-- GENERATED FILE, do not edit. Source: lib/api/v1 registry + scripts/api-skill/overlays. Regenerate with `npm run apiskill:generate`. -->
@@ -142,7 +142,7 @@ call can undo it, e.g. invoice credit).
 
 ## Endpoint index
 
-API version `2026-05-12`, 284 operations. Paths are shown without
+API version `2026-05-12`, 285 operations. Paths are shown without
 their `/api/v1` prefix (full base URL: `https://app.gnubok.se/api/v1`).
 
 ### Core (11)
@@ -484,7 +484,7 @@ GET /companies/{companyId}/reports/trial-balance : Trial balance (huvudboksrappo
 GET /companies/{companyId}/reports/vacation-liability : Vacation liability (semesterlöneskuld) per employee at year-end [scope:payroll:read risk:low idempotent]
 GET /companies/{companyId}/reports/vat-declaration : Swedish VAT declaration (momsdeklaration) for a period [scope:reports:read risk:low idempotent]
 GET /companies/{companyId}/reports/vat-declaration/eskd : Momsdeklaration as an eSKD XML file, for "Deklarera via fil" at skatteverket.se [scope:reports:read risk:low idempotent]
-GET /companies/{companyId}/reports/vat-declaration/filings : List the calendar VAT periods the company has recorded as filed [scope:reports:read risk:low idempotent]
+GET /companies/{companyId}/reports/vat-declaration/filings : List the VAT periods the company has recorded as filed [scope:reports:read risk:low idempotent]
 POST /companies/{companyId}/reports/vat-declaration/filings : Record that a VAT period was filed outside the Skatteverket connection [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 DELETE /companies/{companyId}/reports/vat-declaration/filings : Undo a manual "filed" mark on a VAT period [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 GET /companies/{companyId}/reports/vat-declaration/settlement-proposal : The proposed momsredovisning verifikat for a VAT period: clear 26xx to 2650 or 1650 [scope:reports:read risk:low idempotent]
@@ -518,6 +518,14 @@ GET /companies/{companyId}/webhooks/{id}/deliveries : List deliveries for a webh
 POST /companies/{companyId}/webhooks/{id}/rotate-secret : Rotate the HMAC signing secret on a webhook [scope:webhooks:manage risk:medium]
 POST /companies/{companyId}/webhooks/{id}/test : Send a synthetic test event to a webhook [scope:webhooks:manage risk:low]
 POST /webhook-deliveries/{id}/retry : Retry a webhook delivery [scope:webhooks:manage risk:medium]
+```
+
+### Portfolio (1)
+
+Full detail: [references/portfolio.md](references/portfolio.md)
+
+```text
+GET /portfolio/overview : Cross-company overview: unbooked, inbox and next deadline per company the key can reach [scope:companies:read risk:low idempotent]
 ```
 
 ## Gotchas (Swedish accounting domain)

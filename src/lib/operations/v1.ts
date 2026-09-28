@@ -16,12 +16,13 @@
  * withApiV1's job, exactly as for a hand-written route.
  */
 import { z } from 'zod'
+import type { NextResponse } from 'next/server'
 import { created, ok } from '@/lib/api/v1/response'
 import { dryRunPreview } from '@/lib/api/v1/dry-run'
 import { registerEndpoint, dataEnvelope } from '@/lib/api/v1/registry'
-import { withApiV1 } from '@/lib/api/v1/with-api-v1'
+import { withApiV1, type ApiV1Context } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode, v1ValidationError } from '@/lib/api/v1/errors'
-import type { AnyOperation } from './types'
+import type { AnyOperation, OperationOutcome } from './types'
 
 type RouteParams = { params: Promise<Record<string, string>> }
 
@@ -119,30 +120,42 @@ export function v1OperationHandler(op: AnyOperation) {
         parsed.data,
         { dryRun: isWrite && ctx.dryRun },
       )
-
-      if (!outcome.ok) {
-        if (outcome.error) return v1ErrorResponse(outcome.error, ctx.log, { requestId: ctx.requestId })
-        return v1ErrorResponseFromCode(outcome.code, ctx.log, {
-          requestId: ctx.requestId,
-          details: outcome.messageSv
-            ? { ...(outcome.details ?? {}), reason: outcome.messageSv }
-            : outcome.details,
-        })
-      }
-      if (outcome.dryRun) {
-        return dryRunPreview(outcome.preview, { requestId: ctx.requestId, log: ctx.log })
-      }
-      const respond = outcome.created ? created : ok
-      return respond(outcome.data, {
-        requestId: ctx.requestId,
-        ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
-      })
+      return v1OutcomeResponse(outcome, ctx)
     },
     {
       requireScope: op.scope,
       ...(isWrite ? { requireIdempotencyKey: http.requireIdempotencyKey ?? true } : {}),
     },
   )
+}
+
+/**
+ * A service outcome in the v1 envelope: the structured error for a failure,
+ * the dry-run envelope for a preview, 201 for a created row, 200 otherwise.
+ * Exported for the hand-written v1 routes that call a registry service
+ * directly, so they answer exactly what an operation door answers.
+ */
+export async function v1OutcomeResponse(
+  outcome: OperationOutcome<unknown>,
+  ctx: Pick<ApiV1Context, 'requestId' | 'log'>,
+): Promise<NextResponse> {
+  if (!outcome.ok) {
+    if (outcome.error) return v1ErrorResponse(outcome.error, ctx.log, { requestId: ctx.requestId })
+    return v1ErrorResponseFromCode(outcome.code, ctx.log, {
+      requestId: ctx.requestId,
+      details: outcome.messageSv
+        ? { ...(outcome.details ?? {}), reason: outcome.messageSv }
+        : outcome.details,
+    })
+  }
+  if (outcome.dryRun) {
+    return dryRunPreview(outcome.preview, { requestId: ctx.requestId, log: ctx.log })
+  }
+  const respond = outcome.created ? created : ok
+  return respond(outcome.data, {
+    requestId: ctx.requestId,
+    ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+  })
 }
 
 /** True when every input field is supplied by the path (a bare DELETE). */

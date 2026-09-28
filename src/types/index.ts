@@ -1403,6 +1403,14 @@ export interface Invoice {
   vat_treatment: VatTreatment
   vat_rate: number
   moms_ruta: string | null  // For Swedish VAT reporting (05, 39, 40, etc.)
+  // Per-invoice treatment (#2906, migration 20260927223000): what the invoice
+  // itself states about its supply, validated by resolveInvoiceVatRules. Null
+  // = the customer decides. delivery_country is where the GOODS were
+  // transported (ISO alpha-2); under an export / reverse_charge header it
+  // books the goods accounts 3105 / 3108 instead of the services ones
+  // 3305 / 3308. Optional in TS for pre-migration fixtures.
+  vat_treatment_override?: 'standard' | 'export' | 'reverse_charge' | null
+  delivery_country?: string | null
 
   // Reference
   your_reference: string | null
@@ -2700,6 +2708,12 @@ export type PendingOperationType =
   | 'create_asset'
   | 'update_asset'
   | 'dispose_asset'
+  // Momsdeklaration filing record (gnubok_mark_vat_period_filed /
+  // gnubok_unmark_vat_period_filed, lib/operations/vat-filings.ts): record a
+  // declaration filed outside the Skatteverket connection, or undo that mark.
+  // Completes / reopens the period's moms deadline; no ledger impact.
+  | 'mark_vat_period_filed'
+  | 'unmark_vat_period_filed'
 // 'failed_partial' (issue #842, DB CHECK widened in 20260722134114): terminal
 // state for ops whose executor posted an irreversible side-effect (voucher,
 // credit note) and then failed a later step. Not re-committable, not pending
@@ -2751,6 +2765,9 @@ export interface PendingOperation {
   // Stream 2 Phase 4: structured rejection so the agent can learn from "no"
   rejection_category: PendingOperationRejectionCategory | null
   rejection_reason: string | null
+  // Set by accounted_stage_across_companies: every operation staged in one
+  // cross-company call shares the id. NULL for every other staging path.
+  batch_id?: string | null
   created_at: string
   resolved_at: string | null
   updated_at: string
@@ -4111,6 +4128,7 @@ export interface WebshopStoreSettings {
 export type ExtractedDocumentKind =
   | 'receipt'
   | 'supplier_invoice'
+  | 'credit_note'
   | 'government_letter'
   | 'other'
 export type ExtractedPaymentMethod = 'card' | 'swish' | 'cash' | 'invoice' | 'other'
@@ -4156,6 +4174,9 @@ export interface InvoiceExtractionResult {
     // existed lack it.
     servicePeriodStart?: string | null
     servicePeriodEnd?: string | null
+    // On a credit note: the number of the invoice it credits (ML 17 kap
+    // 22 § requires the reference). Optional: older readings lack it.
+    creditedInvoiceNumber?: string | null
   }
   lineItems: ExtractedInvoiceLineItem[]
   totals: {

@@ -704,6 +704,74 @@ describe('gnubok_update_employee', () => {
       ),
     ).rejects.toThrow(/not found/i)
   })
+
+  // The update contract shared with the dashboard and v1 PATCH (#3008):
+  // null clears a nullable field, an omitted key is unchanged.
+  it('stages a cleared slutdatum as an explicit null in the patch', async () => {
+    const supabaseMock = makeCapturingSupabase({
+      employees: { data: { ...EXISTING, employment_end: '2026-06-30' } },
+      fiscal_periods: { data: null },
+      company_settings: { data: null },
+      pending_operations: { data: { id: 'op-clear-end' }, error: null },
+    })
+
+    const result = (await updateEmployee.execute(
+      { employee_id: 'emp-1', employment_end: null },
+      'company-1', 'user-1', supabaseMock as never, { type: 'user' },
+    )) as { staged: boolean; preview: { changes: Array<{ field: string; from: unknown; to: unknown }> } }
+
+    expect(result.staged).toBe(true)
+    expect(result.preview.changes).toEqual([{ field: 'employment_end', from: '2026-06-30', to: null }])
+    const inserted = supabaseMock.inserts.pending_operations?.[0] as {
+      params: { patch: Record<string, unknown> }
+    }
+    expect(inserted.params.patch).toEqual({ employment_end: null })
+  })
+
+  it('rejects null on a NOT NULL column at staging, with the same schema as the PATCH routes', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    await expect(
+      updateEmployee.execute(
+        { employee_id: 'emp-1', employment_start: null },
+        'company-1', 'user-1', supabase as never, { type: 'user' },
+      ),
+    ).rejects.toThrow(/Invalid employee update: employment_start/)
+  })
+
+  it('rejects a malformed date at staging instead of at approval', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    await expect(
+      updateEmployee.execute(
+        { employee_id: 'emp-1', employment_end: '30-06-2026' },
+        'company-1', 'user-1', supabase as never, { type: 'user' },
+      ),
+    ).rejects.toThrow(/Invalid employee update: employment_end/)
+  })
+
+  it('rejects clearing the monthly salary of a monthly employee at staging (merged row)', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { ...EXISTING, salary_type: 'monthly' } })
+    await expect(
+      updateEmployee.execute(
+        { employee_id: 'emp-1', monthly_salary: null },
+        'company-1', 'user-1', supabase as never, { type: 'user' },
+      ),
+    ).rejects.toThrow(/monthly_salary: Månadslön krävs/)
+  })
+
+  it('advertises null in the inputSchema exactly where UpdateEmployeeSchema accepts it (door parity)', async () => {
+    const { UpdateEmployeeSchema } = await import('@/lib/api/schemas')
+    const properties = (updateEmployee.inputSchema as { properties: Record<string, { type?: unknown }> }).properties
+    const mismatches: string[] = []
+    for (const [field, prop] of Object.entries(properties)) {
+      const zodField = UpdateEmployeeSchema.shape[field as keyof typeof UpdateEmployeeSchema.shape]
+      // employee_id is the target, is_active is not part of the update schema.
+      if (!zodField) continue
+      const advertisesNull = Array.isArray(prop.type) && prop.type.includes('null')
+      if (advertisesNull !== zodField.safeParse(null).success) mismatches.push(field)
+    }
+    expect(mismatches).toEqual([])
+  })
 })
 
 describe('gnubok_set_employee_opening_balances', () => {

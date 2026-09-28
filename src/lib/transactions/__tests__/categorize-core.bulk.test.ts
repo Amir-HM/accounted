@@ -259,6 +259,8 @@ describe('bulkBookMatchedInboxItems: booking', () => {
       undefined,
       // company_settings.vat_registered as loaded: this settings row has none.
       null,
+      // No reverse-charge kind in bulk: the EU-services basis default applies.
+      undefined,
     )
   })
 

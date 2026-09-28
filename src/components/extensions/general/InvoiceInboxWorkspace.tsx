@@ -78,6 +78,7 @@ import BulkBookInboxDialog from '@/components/extensions/general/BulkBookInboxDi
 // InboxCustomDomainDialog (egen domän) is built but gated off: see
 // INBOX_CUSTOM_DOMAINS_ENABLED in extensions/general/invoice-inbox/index.ts.
 import TransactionMatchPicker from '@/components/inbox/TransactionMatchPicker'
+import { InboxCreditNotePanel } from './InboxCreditNotePanel'
 import { useAgentSheet } from '@/components/agent/AgentSheetProvider'
 import {
   getErrorMessage as getUserErrorMessage,
@@ -3339,6 +3340,27 @@ function FieldsRail({
               className="w-full text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
             >
               {isUnmatchingTx ? 'Avbryter…' : 'Avbryt matchning'}
+            </button>
+          </>
+        ) : resolvedKind === 'credit_note' ? (
+          <>
+            {/* A supplier's credit note credits the invoice it references
+                (issue #2980): never a payable of its own. The verifikat
+                editor stays below for a partial credit note. */}
+            <InboxCreditNotePanel
+              itemId={item.id}
+              extracted={(data ?? null) as Record<string, unknown> | null}
+              onCredited={async () => {
+                await onBookedLocally?.()
+              }}
+              onFieldsUpdated={(next) => onFieldsUpdated(next as unknown as InvoiceExtractionResult)}
+            />
+            <button
+              type="button"
+              onClick={onBookDirect}
+              className="w-full text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+            >
+              {t('payer_open_editor')}
             </button>
           </>
         ) : (

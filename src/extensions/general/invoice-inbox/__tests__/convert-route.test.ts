@@ -109,6 +109,54 @@ describe('POST /items/:id/convert', () => {
     expect(status).toBe(409)
   })
 
+  it('refuses a credit note with 409 INBOX_ITEM_IS_CREDIT_NOTE and the invoice it credits (issue #2980)', async () => {
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({
+      data: makeInvoiceInboxItem({
+        status: 'received',
+        matched_supplier_id: SUPPLIER_UUID,
+        extracted_data: {
+          documentKind: 'credit_note',
+          supplier: { name: 'Konsult AB' },
+          invoice: { invoiceNumber: 'K-1', invoiceDate: '2024-06-20', currency: 'SEK', creditedInvoiceNumber: 'F-2024-001' },
+          totals: { subtotal: -10000, vatAmount: -2500, total: -12500 },
+          lineItems: [],
+        },
+      }),
+    })
+    // The credit target pool: the supplier's invoices.
+    enqueue({
+      data: [
+        {
+          id: 'si-1',
+          supplier_id: SUPPLIER_UUID,
+          supplier_invoice_number: 'F-2024-001',
+          arrival_number: 3,
+          invoice_date: '2024-06-15',
+          status: 'approved',
+          currency: 'SEK',
+          total: 12500,
+          supplier: { name: 'Konsult AB' },
+        },
+      ],
+    })
+
+    const ctx = buildCtx(supabase)
+    const request = createMockRequest('/items/item-1/convert', {
+      method: 'POST',
+      body: VALID_CONVERT_BODY,
+      searchParams: { _id: 'item-1' },
+    })
+    const res = await route.handler(request, ctx)
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details: { credit_target: { status: string; invoice: { supplier_invoice_id: string } } } }
+    }>(res)
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('INBOX_ITEM_IS_CREDIT_NOTE')
+    expect(body.error.details.credit_target).toMatchObject({ status: 'matched', invoice: { supplier_invoice_id: 'si-1' } })
+    expect(findCall('supplier_invoices', 'insert')).toBeUndefined()
+  })
+
   it('returns 400 when required fields missing', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
@@ -637,5 +685,79 @@ describe('POST /items/:id/convert honours defer_invoice_booking (#967)', () => {
     expect(status).toBe(200)
     expect(body.data.registration_journal_entry_id).toBeNull()
     expect(createSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
+  })
+})
+
+// ── GET /items/:id/credit-target ─────────────────────────────
+
+describe('GET /items/:id/credit-target', () => {
+  const route = findRoute('GET', '/items/:id/credit-target')
+
+  it('returns 401 without a context and 404 for an unknown item', async () => {
+    const request = createMockRequest('/items/item-1/credit-target', { searchParams: { _id: 'item-1' } })
+    expect((await route.handler(request, undefined)).status).toBe(401)
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: null })
+    expect((await route.handler(request, buildCtx(supabase))).status).toBe(404)
+  })
+
+  it('answers is_credit_note false for a supplier invoice, without looking for a target', async () => {
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'item-1',
+        kind_hint: null,
+        matched_supplier_id: null,
+        document_id: null,
+        extracted_data: { documentKind: 'supplier_invoice', totals: { total: 100, subtotal: 80, vatAmount: 20 } },
+      },
+    })
+    const request = createMockRequest('/items/item-1/credit-target', { searchParams: { _id: 'item-1' } })
+    const { status, body } = await parseJsonResponse<{ data: { is_credit_note: boolean; credit_target: null } }>(
+      await route.handler(request, buildCtx(supabase)),
+    )
+    expect(status).toBe(200)
+    expect(body.data).toEqual({ is_credit_note: false, credit_target: null })
+    expect(findCall('supplier_invoices', 'select')).toBeUndefined()
+  })
+
+  it('names the invoice a credit note credits, and flags a partial one', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'item-1',
+        kind_hint: null,
+        matched_supplier_id: SUPPLIER_UUID,
+        document_id: null,
+        extracted_data: {
+          documentKind: 'credit_note',
+          invoice: { currency: 'SEK', creditedInvoiceNumber: 'F-2024-001' },
+          totals: { total: -2500 },
+        },
+      },
+    })
+    enqueue({
+      data: [
+        {
+          id: 'si-1',
+          supplier_id: SUPPLIER_UUID,
+          supplier_invoice_number: 'F-2024-001',
+          arrival_number: 3,
+          invoice_date: '2024-06-15',
+          status: 'approved',
+          currency: 'SEK',
+          total: 12500,
+          supplier: { name: 'Konsult AB' },
+        },
+      ],
+    })
+    const request = createMockRequest('/items/item-1/credit-target', { searchParams: { _id: 'item-1' } })
+    const { status, body } = await parseJsonResponse<{
+      data: { is_credit_note: boolean; credit_target: { status: string; credit_total: number } }
+    }>(await route.handler(request, buildCtx(supabase)))
+    expect(status).toBe(200)
+    expect(body.data.is_credit_note).toBe(true)
+    expect(body.data.credit_target).toMatchObject({ status: 'partial', credit_total: 2500 })
   })
 })
