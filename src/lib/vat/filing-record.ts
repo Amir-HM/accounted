@@ -25,6 +25,7 @@
  * tax_period label and its dates) also take the company's fiscal-year end
  * month (vatFilingFiscalYearEndMonth). Monthly and quarterly ignore it.
  */
+import { FISCAL_YEAR_RE } from '@/lib/invariants'
 import { fiscalYearEndMonthFor, getFiscalYearLabel } from '@/lib/tax/deadline-config'
 import type { EntityType } from '@/types'
 
@@ -134,7 +135,7 @@ export function vatFilingLabelFiscalYearEndMonth(
   taxPeriod: string,
   fiscalYearEndMonth: number,
 ): number {
-  return /^\d{4}$/.test(taxPeriod) ? 12 : fiscalYearEndMonth
+  return FISCAL_YEAR_RE.test(taxPeriod) ? 12 : fiscalYearEndMonth
 }
 
 /** Map key for a period: `${periodType}:${year}:${period}`. */
