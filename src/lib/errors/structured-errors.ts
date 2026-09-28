@@ -1787,6 +1787,19 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'E-postleverantören kunde inte skicka meddelandet.',
     message_en: 'The email provider could not deliver the message.',
   },
+  // POST /api/invoices/[id]/send issues the invoice (status sent + verifikat)
+  // before the email leaves, so a verifikat refusal can stop the send. When
+  // the email itself then fails after a verifikat was posted, the invoice
+  // stays issued (a posted verifikat is never undone) and is delivered by
+  // hand; with nothing booked the draft is put back instead.
+  INVOICE_SEND_ISSUED_NOT_DELIVERED: {
+    httpStatus: 502,
+    message_sv:
+      'Fakturan är utfärdad men e-postmeddelandet kunde inte skickas. Ladda ned fakturan och skicka den till kunden.',
+    message_en:
+      'The invoice is issued (marked sent, and booked where the company books at issue) but the email could not be sent. Download the invoice and deliver it to the customer.',
+    retryable: false,
+  },
   INVOICE_SEND_SNAPSHOT_FAILED: {
     httpStatus: 500,
     message_sv: 'Utskicksinformationen kunde inte sparas. Ingen e-post skickades.',
