@@ -2949,6 +2949,7 @@ export const YEAR_END_BLOCKER_KIND: Record<YearEndBlockerCode, string> = {
   KONTANTMETOD_CUTOFF_CHECK_FAILED: 'kontantmetod_cutoff_required',
   UNBOOKED_TRANSACTIONS: 'unbooked_transactions',
   UNBOOKED_CHECK_FAILED: 'unbooked_transactions',
+  PRIOR_RESULT_NOT_DISPOSED: 'prior_result_left',
 }
 
 /**
@@ -19866,7 +19867,7 @@ export const tools: McpTool[] = [
     // there, the period either is closable or is not. Open items in foreign
     // currency are warnings, never blockers, because executeYearEndClosing
     // revalues them in step 2 (lib/core/bookkeeping/year-end-service.ts).
-    description: 'Year-end check. Blockers: kontantmetod_cutoff_required, unbooked_transactions (most common), draft_entries, unexplained_voucher_gap, sequence_mismatch, trial_balance_unbalanced, opening_balance_continuity, next_period_ib_posted, period-state. FX = warning, never blocker.',
+    description: 'Blockers: kontantmetod_cutoff_required, unbooked_transactions (most common), draft_entries, unexplained_voucher_gap, sequence_mismatch, trial_balance_unbalanced, opening_balance_continuity, next_period_ib_posted, prior_result_left, period-state. FX = warning, never blocker.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

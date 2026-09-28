@@ -27,7 +27,10 @@ import {
 } from '@/lib/bookkeeping/currency-revaluation'
 import { validateBalanceContinuity } from '@/lib/reports/continuity-check'
 import { assessKontantmetodCutoff } from './kontantmetod-cutoff'
-import { resolveCompanyEntityType, resultClosingAccounts } from '@/lib/company/entity-type'
+import { ENTITY_TYPES, resolveCompanyEntityType, resultClosingAccounts } from '@/lib/company/entity-type'
+import { formatCurrency } from '@/lib/utils'
+import { resultAccountLeftover } from './prior-result-guard'
+import { priorResultCarry } from './prior-result-carry'
 import type {
   YearEndValidation,
   YearEndBlocker,
@@ -256,6 +259,58 @@ export async function validateYearEndReadiness(
       code: 'TRIAL_BALANCE_UNBALANCED',
       message: `Råbalansen balanserar inte: debet=${trialBalance.totalDebit}, kredit=${trialBalance.totalCredit}`,
     })
+  }
+
+  // Check: the "årets resultat" account holds only this year's result. A prior
+  // year's result still sitting there (typically carried in by imported opening
+  // balances that no Accounted year-end ever moved) would be added to this
+  // year's by the closing entry, and the balance sheet's Årets resultat would
+  // no longer match the income statement (PostHog PH 120). Only before the
+  // close: once a closing entry exists, CLOSING_ENTRY_EXISTS already blocks.
+  // Fails open (logged): a lookup error must not block every close. The free
+  // pre-check on the trial balance keeps the form lookup off the common path:
+  // only a leftover on one of the forms' result accounts is worth resolving.
+  const resultAccountCandidates = [
+    ...new Set(
+      ENTITY_TYPES.map((t) => resultClosingAccounts(t))
+        .filter((a) => a.priorYearCarry)
+        .map((a) => a.closing),
+    ),
+  ]
+  if (
+    !period.closing_entry_id &&
+    resultAccountCandidates.some((account) => resultAccountLeftover(trialBalance.rows, account) !== 0)
+  ) {
+    try {
+      const { data: formSettings } = await supabase
+        .from('company_settings')
+        .select('entity_type')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      const entityType = await resolveCompanyEntityType(supabase, companyId, formSettings?.entity_type)
+      // Null for forms that close straight into equity (enskild firma, 2010).
+      // A balance that is this year's result, already booked by hand, is not
+      // a carry and does not block (PostHog PH 108's re-run): only what is
+      // left of the ingående balans after the omföring and hand-booked
+      // dispositions counts.
+      const carry = await priorResultCarry(supabase, companyId, period, entityType)
+      if (carry && carry.remaining !== 0) {
+        blockers.push({
+          code: 'PRIOR_RESULT_NOT_DISPOSED',
+          message:
+            `Konto ${carry.resultAccount} ${carry.resultAccountName} bär fortfarande ${formatCurrency(Math.abs(carry.remaining))} från föregående års resultat. ` +
+            `Flytta det till ${carry.priorResultAccount} eller ${carry.retainedAccount} (resultatdisposition) innan bokslutet, annars räknas det in i årets resultat.`,
+        })
+      }
+    } catch (err) {
+      log.warn('year-end: prior-result check skipped', {
+        operation: 'year_end.prior_result_check',
+        companyId,
+        entityType: 'fiscal_period',
+        entityId: fiscalPeriodId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   // Check: at least some entries exist

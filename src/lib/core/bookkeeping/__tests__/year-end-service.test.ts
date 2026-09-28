@@ -236,8 +236,14 @@ vi.mock('../period-service', () => ({
   findNextPeriod: vi.fn().mockResolvedValue(null),
 }))
 
+// Default: nothing carried. Guard tests override (PostHog PH 120 / PH 108).
+vi.mock('../prior-result-carry', () => ({
+  priorResultCarry: vi.fn().mockResolvedValue(null),
+}))
+
 import { validateYearEndReadiness, previewYearEndClosing } from '../year-end-service'
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
+import { priorResultCarry } from '../prior-result-carry'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import { countUnbookedInPeriod, findNextPeriod } from '../period-service'
 import {
@@ -401,6 +407,99 @@ describe('validateYearEndReadiness', () => {
     expect(result.trialBalanceBalanced).toBe(false)
     expect(result.errors.some((e: string) => e.includes('Råbalansen balanserar inte'))).toBe(true)
     expect(result.blockers.some((b) => b.code === 'TRIAL_BALANCE_UNBALANCED')).toBe(true)
+  })
+
+  // PostHog PH 120: a prior year's result still on the result account.
+  // The form lookup only runs when the trial balance shows a leftover, and it
+  // takes one queued result right after the trial balance.
+  function withFormLookup(items: Array<Record<string, unknown>>, entityType: string) {
+    return [...items.slice(0, 6), { data: { entity_type: entityType }, error: null }, ...items.slice(6)]
+  }
+
+  it('blocks with PRIOR_RESULT_NOT_DISPOSED when 2099 still carries a prior result (AB)', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'aktiebolag')
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      resultAccount: '2099', resultAccountName: 'Årets resultat', priorResultAccount: '2098',
+      retainedAccount: '2091', ibNet: 20000, remaining: 20000, movedBy: [],
+    })
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [
+        { account_number: '2099', closing_debit: 0, closing_credit: 20000 },
+        { account_number: '1930', closing_debit: 20000, closing_credit: 0 },
+      ],
+      isBalanced: true,
+      totalDebit: 20000,
+      totalCredit: 20000,
+    } as never)
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.ready).toBe(false)
+    const blocker = result.blockers.find((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')
+    expect(blocker).toBeDefined()
+    expect(blocker?.message).toContain('2099')
+    expect(blocker?.message).toContain('2098')
+    expect(blocker?.message).toContain('2091')
+  })
+
+  it('names 2069, 2068 and 2067 for an ideell förening', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'ideell_forening')
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
+      retainedAccount: '2067', ibNet: 30000, remaining: 30000, movedBy: [],
+    })
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [{ account_number: '2069', closing_debit: 0, closing_credit: 30000 }],
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    const blocker = result.blockers.find((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')
+    expect(blocker?.message).toContain('2069')
+    expect(blocker?.message).toContain('2068')
+    expect(blocker?.message).toContain('2067')
+  })
+
+  it('does not block, or look up the form, when the result account is empty', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = noGapResults(period)
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [{ account_number: '2099', closing_debit: 20000, closing_credit: 20000 }],
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.blockers.some((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')).toBe(false)
+    expect(priorResultCarry).not.toHaveBeenCalled()
+  })
+
+  it('does not block when the balance is this year\'s result booked by hand (PostHog PH 108 re-run)', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'ideell_forening')
+    // 2069 holds 12 000: this year's result re-homed by hand; the carried
+    // 30 000 was moved off by the owner's own disposition.
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
+      retainedAccount: '2067', ibNet: 30000, remaining: 0, movedBy: ['A12'],
+    })
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [{ account_number: '2069', closing_debit: 0, closing_credit: 12000 }],
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.blockers.some((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')).toBe(false)
   })
 
   it('returns error when period has not yet ended', async () => {
