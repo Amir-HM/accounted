@@ -564,6 +564,22 @@ describe('tools/list payload size guard', () => {
     //     restated their property names, and get_task no longer saying "the
     //     skills to load" (agent runs and analyses arrive whole). Measured
     //     63 486. Ceiling unchanged.
+    //   * Reverse-charge basis on the MCP surface (#2919):
+    //     gnubok_categorize_transaction takes reverse_charge_eu_services /
+    //     _non_eu_services / _eu_goods, and the VAT report schema (counted
+    //     twice: get_vat_report and vat_review_widget) declares rutor 20-24.
+    //     Paid for by one shared RC note instead of per-box prose, account
+    //     numbers without the word "account", and a shorter vat_treatment
+    //     text. Measured 63 496. Ceiling unchanged.
+    //   * Clearable employee fields (#3008): gnubok_update_employee's eleven
+    //     nullable columns declare type [.., 'null'] and its description says
+    //     null clears a field. Paid for inside the same tool: employee_id's
+    //     note restated its name, jamkning_percentage's "null clears" is now
+    //     that one sentence, and default_dimensions' "omit to keep" is true of
+    //     every field of a sparse update, and the tool description drops
+    //     "payroll" and "a field" (the parenthesis names the payroll parts),
+    //     so it fits beside #2919 and #2980 (-6) without a bump. Measured
+    //     63 497 on top of both. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(63_500)
   })
 

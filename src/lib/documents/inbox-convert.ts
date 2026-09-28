@@ -8,6 +8,9 @@
  *
  *   - the item and the supplier must belong to the company; an item already
  *     converted is refused;
+ *   - a credit note is refused (issue #2980): it credits the invoice it
+ *     references (lib/supplier-invoices/credit.ts), it is never a payable of
+ *     its own, and the refusal says which invoice that is;
  *   - särskild löneskatt only on 741x pension lines and never with
  *     periodisering; periodisering never with reverse charge and only under
  *     faktureringsmetoden;
@@ -43,6 +46,8 @@ import { booksInvoicesOnIssue } from '@/lib/bookkeeping/booking-mode'
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createSchedulesForSupplierInvoice } from '@/lib/bookkeeping/accruals/from-invoices'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { resolveInboxKind } from '@/lib/documents/inbox-kind'
+import { resolveInboxCreditTarget } from '@/lib/supplier-invoices/credit-target'
 import type { InboxChannelContext, InvoiceInboxItem, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 export type ConvertInboxItemInput = z.infer<typeof CreateSupplierInvoiceSchema>
@@ -78,6 +83,10 @@ export async function convertInboxItemToSupplierInvoice(
   if (fetchError || !item) return { ok: false, code: 'INBOX_ITEM_NOT_FOUND' }
   if (item.created_supplier_invoice_id) {
     return { ok: false, code: 'INBOX_ITEM_ALREADY_CONVERTED', details: { supplier_invoice_id: item.created_supplier_invoice_id } }
+  }
+  if (resolveInboxKind(item) === 'credit_note') {
+    const creditTarget = await resolveInboxCreditTarget(supabase, companyId, item, { supplierId: body.supplier_id })
+    return { ok: false, code: 'INBOX_ITEM_IS_CREDIT_NOTE', details: { credit_target: creditTarget } }
   }
 
   const { data: supplier, error: supplierError } = await supabase

@@ -51,7 +51,6 @@ import {
 import { resolveDefaultPaymentTerms } from '@/lib/customers/default-payment-terms'
 import {
   normalizeVatRateToDecimal,
-  normalizeVatRateToFraction,
   treatmentDeductsInputVat,
 } from '@/lib/vat/supplier-invoice-line-checks'
 import {
@@ -63,18 +62,20 @@ import {
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry, supplierCreditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
+import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
 import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import {
   canApproveSupplierInvoice,
   resolveUnsettledStatus,
 } from '@/lib/supplier-invoices/lifecycle'
-import { buildSupplierCreditNoteRow } from '@/lib/supplier-invoices/credit-note'
+import { CreditSupplierInvoiceInputSchema, creditSupplierInvoice } from '@/lib/supplier-invoices/credit'
+import { resolveInboxKind } from '@/lib/documents/inbox-kind'
 import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 import { ISO_DATE_RE } from '@/lib/invariants/iso-date'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
+import { isReverseChargeKind } from '@/lib/bookkeeping/vat-entries'
 import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { runWithActor } from '@/lib/bookkeeping/actor-context-node'
 import type { CommitActor } from '@/lib/bookkeeping/actor-context'
@@ -108,10 +109,7 @@ import {
   checkCreateAssetGates,
   checkUpdateAssetGates,
 } from '@/lib/bokslut/assets/asset-api'
-import {
-  createSupplierCreditNoteEntry,
-  createSupplierInvoiceRegistrationEntry,
-} from '@/lib/bookkeeping/supplier-invoice-entries'
+import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { linkInvoiceToVoucher, type LinkInvoiceToVoucherResult } from '@/lib/invoices/voucher-matching'
 import { planInvoicePayment } from '@/lib/invoices/apply-invoice-payment'
 import { findDuplicatePaymentCandidatesForInvoice } from '@/lib/invoices/duplicate-payment-candidates'
@@ -144,6 +142,7 @@ import { matchTransactionToRotRutPayout } from '@/lib/invoices/rot-rut-match-tra
 import { linkRotRutPayoutVoucher } from '@/lib/invoices/rot-rut-link-voucher'
 import { attachDocumentToTransaction } from '@/lib/transactions/document-attach'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
+import { createDimensionValue } from '@/lib/dimensions/registry-service'
 import { submitSIEJob, requestSIEJobAction } from '@/lib/import/sie-jobs'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
@@ -624,9 +623,23 @@ async function commitCategorizeTransaction(
     }
   }
 
+  // Same tamper/drift gate for the reverse-charge basis box: the approver saw
+  // the ruta the staged kind puts the basis in, so a present but unknown kind
+  // must not silently fall back to the EU-services default.
+  const rawReverseChargeKind = params.reverse_charge_kind
+  if (rawReverseChargeKind != null && !isReverseChargeKind(rawReverseChargeKind)) {
+    return {
+      error:
+        'Ogiltig reverse_charge_kind i den stagade operationen. ' +
+        'Avvisa operationen och stagea om kategoriseringen.',
+      status: 400,
+    }
+  }
+
   return categorizeMatchedTransaction(supabase, userId, companyId, txId, {
     category,
     vatTreatment,
+    reverseChargeKind: rawReverseChargeKind ?? undefined,
     vatAmount,
     notes,
     allowDuplicate: params.allow_duplicate === true,
@@ -1672,7 +1685,7 @@ async function commitCreateSupplier(
  */
 async function commitCreateDimensionValue(
   supabase: SupabaseClient,
-  _userId: string,
+  userId: string,
   companyId: string,
   params: Record<string, unknown>
 ): Promise<ExecutorResult> {
@@ -1703,9 +1716,12 @@ async function commitCreateDimensionValue(
     }
   }
 
+  // The staged params address the dimension by its SIE number; the create
+  // itself (dates only on an accumulating dimension, the insert, a duplicate
+  // code) is createDimensionValue, the same rules the dashboard and v1 run.
   const { data: dimension, error: dimError } = await supabase
     .from('dimensions')
-    .select('id, sie_dim_no, name, resets_annually')
+    .select('id, sie_dim_no, name')
     .eq('company_id', companyId)
     .eq('sie_dim_no', validated.sie_dim_no)
     .maybeSingle()
@@ -1720,30 +1736,21 @@ async function commitCreateDimensionValue(
     }
   }
 
-  // Value dates only make sense on accumulating dimensions (projekt-style
-  // ranges): mirrors POST /api/dimensions/[id]/values.
-  if (dimension.resets_annually && (validated.start_date || validated.end_date)) {
-    return {
-      error: `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
-      status: 400,
-    }
-  }
-
-  const { data: created, error: insertError } = await supabase
-    .from('dimension_values')
-    .insert({
-      company_id: companyId,
-      dimension_id: dimension.id,
+  const outcome = await createDimensionValue(
+    { supabase, companyId, userId, log: log.child({ operation: 'create_dimension_value' }) },
+    dimension.id,
+    {
       code: validated.code,
       name: validated.name,
-      start_date: validated.start_date ?? null,
-      end_date: validated.end_date ?? null,
-    })
-    .select('id, code, name, is_active')
-    .single()
+      // optString's z.preprocess widens the inferred type; the inner schema
+      // is an ISO date string.
+      start_date: (validated.start_date as string | undefined) ?? null,
+      end_date: (validated.end_date as string | undefined) ?? null,
+    },
+  )
 
-  if (insertError) {
-    if (insertError.code === '23505') {
+  if (!outcome.ok) {
+    if (outcome.code === 'DIMENSION_VALUE_DUPLICATE_CODE') {
       // Duplicate code: treat the existing value as success (idempotency).
       const { data: existing, error: existingError } = await supabase
         .from('dimension_values')
@@ -1753,7 +1760,7 @@ async function commitCreateDimensionValue(
         .eq('code', validated.code)
         .maybeSingle()
       if (existingError || !existing) {
-        return { error: insertError.message, status: 500 }
+        return { error: getErrorEntry(outcome.code)?.message_sv ?? outcome.code, errorCode: outcome.code, status: 500 }
       }
       return {
         data: {
@@ -1767,17 +1774,32 @@ async function commitCreateDimensionValue(
         },
       }
     }
-    return { error: insertError.message, status: 500 }
+    if (outcome.code === 'DIMENSION_VALUE_DATES_NOT_ALLOWED') {
+      return {
+        error: `Start-/slutdatum är inte tillåtna på dimensionen "${dimension.name}" (nollställs årligen).`,
+        errorCode: outcome.code,
+        status: 400,
+      }
+    }
+    const entry = getErrorEntry(outcome.code)
+    const cause = (outcome.error as { message?: unknown } | undefined)?.message
+    return {
+      // Never an empty string: an empty error reads as success downstream.
+      error: outcome.messageSv || (typeof cause === 'string' ? cause : '') || entry?.message_sv || outcome.code,
+      errorCode: outcome.code,
+      status: entry?.httpStatus ?? 500,
+    }
   }
+  if (outcome.dryRun) return { data: outcome.preview }
 
   return {
     data: {
-      dimension_value_id: created.id,
+      dimension_value_id: outcome.data.id,
       sie_dim_no: dimension.sie_dim_no,
       dimension_name: dimension.name,
-      code: created.code,
-      name: created.name,
-      is_active: created.is_active,
+      code: outcome.data.code,
+      name: outcome.data.name,
+      is_active: outcome.data.is_active,
       already_existed: false,
     },
   }
@@ -4681,7 +4703,7 @@ async function commitCreateSupplierInvoiceFromInbox(
   // is the source of truth.
   const { data: inbox, error: inboxErr } = await supabase
     .from('invoice_inbox_items')
-    .select('id, created_supplier_invoice_id, status')
+    .select('id, created_supplier_invoice_id, status, kind_hint, extracted_data')
     .eq('id', inboxItemId)
     .eq('company_id', companyId)
     .single()
@@ -4694,6 +4716,18 @@ async function commitCreateSupplierInvoiceFromInbox(
         inbox_item_id: inboxItemId,
         idempotent: true,
       },
+    }
+  }
+
+  // A credit note is never a payable of its own (issue #2980): an operation
+  // staged before the item read as one, or with negative amounts, is refused
+  // here; the credit goes through gnubok_credit_supplier_invoice.
+  if (resolveInboxKind(inbox) === 'credit_note' || total < 0 || subtotal < 0) {
+    const entry = getErrorEntry('INBOX_ITEM_IS_CREDIT_NOTE')
+    return {
+      error: entry?.message_sv ?? 'Posten är en kreditfaktura.',
+      errorCode: 'INBOX_ITEM_IS_CREDIT_NOTE',
+      status: entry?.httpStatus ?? 409,
     }
   }
 
@@ -5078,97 +5112,40 @@ async function commitCreditSupplierInvoice(
   const id = params.supplier_invoice_id as string
   if (!id) return { error: 'supplier_invoice_id is required', status: 400 }
 
-  const { data: original, error: fetchError } = await supabase
-    .from('supplier_invoices')
-    .select('*, supplier:suppliers(*), items:supplier_invoice_items(*)')
-    .eq('id', id)
-    .eq('company_id', companyId)
-    .single()
-
-  if (fetchError || !original) return { error: 'Supplier invoice not found', status: 404 }
-  if (original.status === 'credited') return { error: 'Fakturan har redan krediterats', status: 409 }
-
-  const { data: arrivalNum } = await supabase.rpc('get_next_arrival_number', { p_company_id: companyId })
-
-  const { data: creditNote, error: creditError } = await supabase
-    .from('supplier_invoices')
-    .insert(
-      buildSupplierCreditNoteRow(original, {
-        userId,
-        companyId,
-        arrivalNumber: arrivalNum,
-        date: new Date().toISOString().split('T')[0],
-      }),
-    )
-    .select()
-    .single()
-
-  if (creditError || !creditNote) return { error: creditError?.message ?? 'Failed to create credit note', status: 500 }
-
-  const creditItems = (original.items ?? []).map((item: Record<string, unknown>) => ({
-    supplier_invoice_id: creditNote.id,
-    sort_order: item.sort_order,
-    description: item.description,
-    quantity: item.quantity,
-    unit: item.unit,
-    unit_price: item.unit_price,
-    line_total: item.line_total,
-    account_number: item.account_number,
-    vat_code: item.vat_code,
-    vat_rate: normalizeVatRateToFraction(item.vat_rate),
-    vat_amount: item.vat_amount,
-    dimensions: item.dimensions ?? {},
-  }))
-  await supabase.from('supplier_invoice_items').insert(creditItems)
-
-  const { data: settings } = await supabase
-    .from('company_settings').select('accounting_method').eq('company_id', companyId).single()
-  const accountingMethod = settings?.accounting_method || 'accrual'
-
-  let journalEntryId: string | null = null
-  // Kontantmetoden skips only while the original is still UNPAID: a paid one
-  // was already booked by its payment verifikat (expense + 2641 ingående
-  // moms), and leaving that un-reversed overstates cost and moms deduction.
-  if (supplierCreditNoteNeedsJournalEntry(accountingMethod, original)) {
-    try {
-      const je = await createSupplierCreditNoteEntry(
-        supabase,
-        companyId,
-        userId,
-        creditNote,
-        original.items as never,
-        original.supplier?.supplier_type || 'swedish_business',
-        original.supplier?.name
-      )
-      if (je) {
-        journalEntryId = je.id
-        await supabase
-          .from('supplier_invoices')
-          .update({ registration_journal_entry_id: je.id })
-          .eq('id', creditNote.id)
-      }
-    } catch (err) {
-      await supabase.from('supplier_invoices').delete().eq('id', creditNote.id).eq('company_id', companyId)
-      return failUnlessBookkeepingError(err, 'Failed to book credit note', 500)
+  // The same service as the dashboard and v1 routes (issue #2980): the MCP
+  // copy of this flow never stopped periodisering schedules or carried the
+  // reverse-charge rate and SLP flag onto the credit note. Only the inputs
+  // gnubok_credit_supplier_invoice stages are passed on.
+  const parsed = CreditSupplierInvoiceInputSchema.safeParse({
+    ...(typeof params.inbox_item_id === 'string' ? { inbox_item_id: params.inbox_item_id } : {}),
+  })
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Invalid params', errorCode: 'VALIDATION_ERROR', status: 400 }
+  }
+  const outcome = await creditSupplierInvoice(
+    { supabase, companyId, userId, log: log.child({ operation: 'credit_supplier_invoice' }) },
+    id,
+    parsed.data,
+  )
+  if (!outcome.ok) {
+    if (outcome.error) throw outcome.error
+    const entry = getErrorEntry(outcome.code)
+    return {
+      error: outcome.messageSv || entry?.message_sv || outcome.code,
+      errorCode: outcome.code,
+      status: entry?.httpStatus ?? 400,
     }
   }
-
-  const newRemaining = Math.max(0, original.remaining_amount - original.total)
-  const newStatus = newRemaining <= 0 ? 'credited' : original.status
-
-  await supabase
-    .from('supplier_invoices')
-    .update({ status: newStatus, remaining_amount: newRemaining })
-    .eq('id', id)
-
-  try {
-    await eventBus.emit({
-      type: 'supplier_invoice.credited',
-      payload: { supplierInvoice: original, creditNote, companyId, userId },
-    })
-  } catch { /* non-blocking */ }
-
-  return { data: { credit_note_id: creditNote.id, journal_entry_id: journalEntryId } }
+  if (outcome.dryRun) return { data: outcome.preview }
+  return {
+    data: {
+      credit_note_id: outcome.data.credit_note.id,
+      journal_entry_id: outcome.data.journal_entry_id,
+      document_id: outcome.data.document_id,
+      inbox_item_id: outcome.data.inbox_item_id,
+      ...(outcome.warnings && outcome.warnings.length > 0 ? { warnings: outcome.warnings } : {}),
+    },
+  }
 }
 
 async function commitCreditInvoice(

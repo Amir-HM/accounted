@@ -2708,6 +2708,12 @@ export type PendingOperationType =
   | 'create_asset'
   | 'update_asset'
   | 'dispose_asset'
+  // Momsdeklaration filing record (gnubok_mark_vat_period_filed /
+  // gnubok_unmark_vat_period_filed, lib/operations/vat-filings.ts): record a
+  // declaration filed outside the Skatteverket connection, or undo that mark.
+  // Completes / reopens the period's moms deadline; no ledger impact.
+  | 'mark_vat_period_filed'
+  | 'unmark_vat_period_filed'
 // 'failed_partial' (issue #842, DB CHECK widened in 20260722134114): terminal
 // state for ops whose executor posted an irreversible side-effect (voucher,
 // credit note) and then failed a later step. Not re-committable, not pending
@@ -4119,6 +4125,7 @@ export interface WebshopStoreSettings {
 export type ExtractedDocumentKind =
   | 'receipt'
   | 'supplier_invoice'
+  | 'credit_note'
   | 'government_letter'
   | 'other'
 export type ExtractedPaymentMethod = 'card' | 'swish' | 'cash' | 'invoice' | 'other'
@@ -4164,6 +4171,9 @@ export interface InvoiceExtractionResult {
     // existed lack it.
     servicePeriodStart?: string | null
     servicePeriodEnd?: string | null
+    // On a credit note: the number of the invoice it credits (ML 17 kap
+    // 22 § requires the reference). Optional: older readings lack it.
+    creditedInvoiceNumber?: string | null
   }
   lineItems: ExtractedInvoiceLineItem[]
   totals: {

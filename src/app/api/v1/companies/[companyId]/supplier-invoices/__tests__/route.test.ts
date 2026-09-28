@@ -2078,7 +2078,9 @@ describe('POST /api/v1/companies/:companyId/supplier-invoices/:id/credit', () =>
     expect(res.status).toBe(200)
     // The original fetch must project apply_slp: the Proxy returns the
     // fixture regardless, so the select string is the regression surface.
-    expect(siSelects[0]).toMatch(/items:supplier_invoice_items\([^)]*apply_slp/)
+    // (`*` also carries the periodisering fields, so a deferred line
+    // reverses against its 17xx interim account, issue #2980.)
+    expect(siSelects[0]).toMatch(/items:supplier_invoice_items\((\*|[^)]*apply_slp)/)
     // The ORIGINAL flagged items reach the engine so it can reverse the pair.
     expect(mockedCredit).toHaveBeenCalledTimes(1)
     const passedItems = mockedCredit.mock.calls[0]?.[4] as Array<{ apply_slp?: boolean }>
@@ -2146,6 +2148,132 @@ describe('POST /api/v1/companies/:companyId/supplier-invoices/:id/credit', () =>
     )
     expect(res.status).toBe(200)
     expect(res.headers.get('X-Dry-Run')).toBe('true')
+    expect(mockedCredit).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 VALIDATION_ERROR for a body with unknown fields', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        supplier_invoices: { data: registeredSI, error: null },
+        idempotency_keys: { data: null, error: null },
+      }),
+    )
+    const res = await creditSI(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/supplier-invoices/${SI_ID}/credit`, {
+        method: 'POST',
+        body: JSON.stringify({ amount: 100 }),
+      }),
+      detailParams(COMPANY_ID, SI_ID),
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('VALIDATION_ERROR')
+    expect(mockedCredit).not.toHaveBeenCalled()
+  })
+
+  // Issue #2980: a supplier's credit note in the inbox credits the invoice
+  // with its own date, number and document, and only when it covers all of it.
+  const INBOX_ITEM = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+  const DOC = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+  const inboxRow = (totals: Record<string, number>) => ({
+    id: INBOX_ITEM,
+    document_id: DOC,
+    matched_supplier_id: null,
+    created_supplier_invoice_id: null,
+    created_journal_entry_id: null,
+    extracted_data: {
+      documentKind: 'credit_note',
+      invoice: { invoiceNumber: 'KF-77', invoiceDate: '2026-05-20', currency: 'SEK', creditedInvoiceNumber: '2026-1234' },
+      totals,
+    },
+  })
+
+  it('credits from an inbox credit note on its date, with its number and document', async () => {
+    const inserts: InsertRecord[] = []
+    let siReadCount = 0
+    const flexible = makeFlexibleSupabase(
+      {
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        company_settings: { data: { accounting_method: 'accrual', bookkeeping_locked_through: null }, error: null },
+        fiscal_periods: { data: { id: 'fp-1', is_closed: false, locked_at: null }, error: null },
+        invoice_inbox_items: { data: inboxRow({ subtotal: -1000, vatAmount: -250, total: -1250 }), error: null },
+        document_attachments: { data: { id: DOC, journal_entry_id: null }, error: null },
+        idempotency_keys: { data: null, error: null },
+      },
+      inserts,
+    ) as { from: (table: string) => unknown }
+    const from = flexible.from
+    mockServiceClient.mockReturnValue({
+      ...flexible,
+      from: (table: string) => {
+        if (table !== 'supplier_invoices') return from(table)
+        const n = siReadCount++
+        return new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === 'then') {
+                return (resolve: (v: unknown) => void) =>
+                  resolve(
+                    n === 0
+                      ? { data: { ...registeredSI, invoice_date: '2026-05-10', total: 1250 }, error: null }
+                      : n === 1
+                        ? { data: { ...SAMPLE_SI, id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', arrival_number: 43, supplier_invoice_number: 'KF-77', invoice_date: '2026-05-20', is_credit_note: true }, error: null }
+                        : { data: { id: SI_ID }, error: null },
+                  )
+              }
+              return (...args: unknown[]) => {
+                if (prop === 'insert' && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) {
+                  inserts.push({ table, payload: args[0] as Record<string, unknown> })
+                }
+                return new Proxy({}, this!)
+              }
+            },
+          },
+        )
+      },
+      rpc: vi.fn(() => Promise.resolve({ data: 43, error: null })),
+    })
+
+    const res = await creditSI(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/supplier-invoices/${SI_ID}/credit`, {
+        method: 'POST',
+        body: JSON.stringify({ inbox_item_id: INBOX_ITEM }),
+      }),
+      detailParams(COMPANY_ID, SI_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toMatchObject({ supplier_invoice_number: 'KF-77', invoice_date: '2026-05-20', document_id: DOC, inbox_item_id: INBOX_ITEM })
+    const row = inserts.find((i) => i.table === 'supplier_invoices')?.payload
+    expect(row).toMatchObject({ supplier_invoice_number: 'KF-77', invoice_date: '2026-05-20', document_id: DOC })
+  })
+
+  it('refuses a partial credit note with 400 SI_CREDIT_PARTIAL and writes nothing', async () => {
+    const inserts: InsertRecord[] = []
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase(
+        {
+          company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+          supplier_invoices: { data: { ...registeredSI, total: 1250 }, error: null },
+          invoice_inbox_items: { data: inboxRow({ total: -500 }), error: null },
+          idempotency_keys: { data: null, error: null },
+        },
+        inserts,
+      ),
+    )
+    const res = await creditSI(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/supplier-invoices/${SI_ID}/credit`, {
+        method: 'POST',
+        body: JSON.stringify({ inbox_item_id: INBOX_ITEM }),
+      }),
+      detailParams(COMPANY_ID, SI_ID),
+    )
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('SI_CREDIT_PARTIAL')
+    expect(inserts.filter((i) => i.table === 'supplier_invoices')).toEqual([])
     expect(mockedCredit).not.toHaveBeenCalled()
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createMockSupabase, createQueuedMockSupabase } from '@/tests/helpers'
-import { resolveSettlementAccount } from '../settlement-account'
+import { resolvePrimaryBankAccount, resolveSettlementAccount } from '../settlement-account'
 import { BookkeepingDatabaseError } from '../errors'
 
 const noopLog = { warn: vi.fn() } as unknown as import('@/lib/logger').Logger
@@ -154,5 +154,92 @@ describe('resolveSettlementAccount', () => {
       'settlement-account lookup returned no ledger_account; defaulting to 1930',
       expect.objectContaining({ cashAccountId: 'ca-1' }),
     )
+  })
+})
+
+// Issue #3097: a payment with no bank row of its own (the net pay of a salary
+// run) lands on the company's primary cash account, never a hardcoded 1930.
+describe('resolvePrimaryBankAccount', () => {
+  const primary = (overrides: Record<string, unknown> = {}) => ({
+    ledger_account: '1931',
+    enabled: true,
+    currency: 'SEK',
+    ...overrides,
+  })
+
+  it("returns the primary's ledger account when it is an enabled SEK bank account", async () => {
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueue({ data: primary(), error: null })
+
+    expect(await resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).toBe('1931')
+    // One lookup: the primary, scoped to the company. No fallback listing.
+    expect(supabase.from).toHaveBeenCalledTimes(1)
+    expect(findCalls('cash_accounts', 'eq')).toEqual([
+      ['company_id', 'company-1'],
+      ['is_primary', true],
+    ])
+  })
+
+  it('keeps 1930 for a company whose primary IS 1930', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: primary({ ledger_account: '1930' }), error: null })
+
+    expect(await resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).toBe('1930')
+  })
+
+  it('never lands on a disabled primary: falls back to the only enabled SEK account', async () => {
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueue({ data: primary({ ledger_account: '1930', enabled: false }), error: null })
+    enqueue({ data: [{ ledger_account: '1931' }], error: null }) // enabled SEK candidates
+    const warn = vi.fn()
+
+    const result = await resolvePrimaryBankAccount(supabase as never, 'company-1', {
+      warn,
+    } as unknown as import('@/lib/logger').Logger)
+
+    expect(result).toBe('1931')
+    expect(findCalls('cash_accounts', 'eq')).toContainEqual(['enabled', true])
+    expect(findCalls('cash_accounts', 'eq')).toContainEqual(['currency', 'SEK'])
+    expect(warn).toHaveBeenCalledWith(
+      'primary cash account cannot carry a payment; resolving without it',
+      expect.objectContaining({ companyId: 'company-1', ledgerAccount: '1930', reason: 'disabled' }),
+    )
+  })
+
+  it('skips a foreign-currency primary and a non-bank primary', async () => {
+    for (const unusable of [primary({ ledger_account: '1932', currency: 'EUR' }), primary({ ledger_account: '1910' })]) {
+      const { supabase, enqueue } = createQueuedMockSupabase()
+      enqueue({ data: unusable, error: null })
+      enqueue({ data: [{ ledger_account: '1931' }], error: null })
+
+      expect(await resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).toBe('1931')
+    }
+  })
+
+  it('keeps the legacy 1930 when the company has no cash accounts at all', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: null, error: null }) // no primary
+    enqueue({ data: [], error: null }) // no enabled SEK account
+
+    expect(await resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).toBe('1930')
+  })
+
+  it('keeps 1930 when there is no usable primary and several enabled SEK accounts', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: null, error: null })
+    enqueue({ data: [{ ledger_account: '1931' }, { ledger_account: '1932' }], error: null })
+
+    expect(await resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).toBe('1930')
+  })
+
+  it('throws on a failed primary lookup instead of booking on 1930', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: null, error: { message: 'boom' } })
+
+    await expect(resolvePrimaryBankAccount(supabase as never, 'company-1', noopLog)).rejects.toMatchObject({
+      name: 'BookkeepingDatabaseError',
+      operation: 'resolve_settlement_account',
+      message: expect.stringContaining('boom'),
+    })
   })
 })

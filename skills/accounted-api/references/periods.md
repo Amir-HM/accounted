@@ -893,16 +893,17 @@ Example response `200`:
 **Create a dimension value (kostnadsställe/projekt code).**
 `scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
 
-Registers a new value (SIE #OBJEKT) under a dimension: e.g. a new project code under dimension 6. Requires Idempotency-Key (UUID). Supports ?dry_run=true to validate the code format without committing. The `:id` path segment is the dimension row id (from GET …/dimensions), not the sie_dim_no. Duplicate codes within the dimension return 409 DIMENSION_VALUE_DUPLICATE_CODE.
+Registers a new value (SIE #OBJEKT) under a dimension: e.g. a new project code under dimension 6. Requires Idempotency-Key (UUID). Supports ?dry_run=true to validate the code format without committing. The `:id` path segment is the dimension row id (from GET …/dimensions), not the sie_dim_no. Send is_active=false to create the value archived. start_date/end_date are only allowed on accumulating dimensions (resets_annually=false, e.g. dim 6 Projekt). Duplicate codes within the dimension return 409 DIMENSION_VALUE_DUPLICATE_CODE.
 
 **Use when:** A voucher or invoice references a cost centre / project code that does not exist yet and the user has confirmed it should be created.
-**Do not use for:** Renaming or archiving an existing value (dashboard register in v1). Tagging lines: pass the dimensions map on the journal-entry line instead.
+**Do not use for:** Renaming or archiving an existing value (PATCH …/dimensions/{id}/values/{valueId}). Tagging lines: pass the dimensions map on the journal-entry line instead.
 
 **Pitfalls:**
 - Idempotency-Key is mandatory: calls without it return 400 VALIDATION_ERROR.
 - The :id segment is the dimension UUID, not the SIE dimension number.
 - Codes are limited to the strict Fortnox charset (A-Ö, digits, _, +, -; max 20 chars) even though historical imported codes may be looser.
 - code is immutable after creation: there is no rename in v1; create the correct code and archive the wrong one.
+- start_date/end_date return 400 DIMENSION_VALUE_DATES_NOT_ALLOWED on resets_annually dimensions (dim 1 Kostnadsställe).
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|

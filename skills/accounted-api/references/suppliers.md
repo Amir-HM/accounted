@@ -1062,15 +1062,16 @@ Example response `200`:
 **Issue a credit note for a supplier invoice.**
 `scope:suppliers:write · risk:high · idempotent · dry-run`
 
-Creates a kreditfaktura that reverses the original supplier invoice. Under accrual the reversing JE is posted atomically (Debit 2440 / Credit expense + Credit 2641). The original status flips to `credited`. Strict-mode: any failure rolls back the credit-note row. Idempotent. Dry-runnable.
+Creates a kreditfaktura that reverses the whole original supplier invoice. When the original reached the ledger the reversing JE is posted on the credit note's date (Debit 2440 / Credit expense + Credit 2641). The original status flips to `credited`; periodisering schedules on it stop. With inbox_item_id (a supplier's credit note in the inbox) the credit note carries that document's date, number and file as underlag, and the item is marked handled. Idempotent. Dry-runnable.
 
-**Use when:** You need to nullify a registered, approved, partially_paid, or paid supplier invoice: for a returned shipment, an over-invoice, or a vendor dispute resolution. Use dry-run to confirm the totals first.
-**Do not use for:** Editing line items on an unchanged invoice (use PATCH on `registered` SIs). Crediting an already-credited SI (returns 409 SI_CREDIT_ALREADY_CREDITED). Reversing a v1-issued credit (no v1 endpoint today: use the dashboard).
+**Use when:** The supplier sent a credit note for a whole registered, approved, partially_paid or paid invoice (pass inbox_item_id when it is in the inbox), or you need to nullify such an invoice (a returned shipment, a vendor dispute resolution). Use dry-run to confirm the totals first.
+**Do not use for:** A credit note for PART of an invoice (400 SI_CREDIT_PARTIAL: this always reverses the whole invoice). Editing line items on an unchanged invoice (use PATCH on `registered` SIs). Crediting an already-credited SI (409 SI_CREDIT_ALREADY_CREDITED); undo a credit with POST /supplier-invoices/{id}/uncredit.
 
 **Pitfalls:**
 - Idempotency-Key is mandatory.
-- Today's date is used as the credit-note invoice_date. It must fall in an open fiscal period: locked period returns 400 SI_CREDIT_PERIOD_LOCKED.
-- Cash basis (kontantmetoden): no reversing JE is posted: recognition is deferred until a refund transaction is booked. The credit-note row is still created so the AP audit trail stays consistent.
+- The credit note is dated credit_date, else the inbox item's credit note date, else today (Stockholm). That date must fall in an open fiscal period: a locked one returns 400 SI_CREDIT_PERIOD_LOCKED and is never re-dated for you.
+- With inbox_item_id the credit note must be from the invoice's supplier and for its whole total in its currency: otherwise 400 SI_CREDIT_PARTIAL or SI_CREDIT_DOCUMENT_MISMATCH (details carry both totals). A credit_date or document date before the invoice date is a 400 VALIDATION_ERROR.
+- Cash basis (kontantmetoden): an unpaid original gets no reversing JE; recognition waits for the refund. The credit-note row is still created so the AP audit trail stays consistent.
 - The original SI is flipped to `credited` regardless of how much of it was already paid; reconcile the bank refund via the transactions endpoints.
 
 | Parameter | In | Type | Required | Notes |
@@ -1078,6 +1079,23 @@ Creates a kreditfaktura that reverses the original supplier invoice. Under accru
 | `companyId` | path | `string` | yes |  |
 | `id` | path | `string` | yes |  |
 | `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{
+  credit_date?: string,
+  supplier_credit_note_number?: string,
+  document_id?: string,
+  inbox_item_id?: string
+}
+```
+
+Example request:
+```json
+{
+  "inbox_item_id": "1b2c…"
+}
+```
 
 Response `200`:
 ```ts
@@ -1087,7 +1105,10 @@ Response `200`:
     original_id: string,
     arrival_number: number,
     supplier_invoice_number: string,
-    registration_journal_entry_id: string | null
+    invoice_date: string,
+    registration_journal_entry_id: string | null,
+    document_id: string | null,
+    inbox_item_id: string | null
   },
   meta: {
     request_id: string,
@@ -1108,8 +1129,11 @@ Example response `200`:
     "credit_note_id": "4d2a…",
     "original_id": "0e9c…",
     "arrival_number": 43,
-    "supplier_invoice_number": "KREDIT-2026-1234",
-    "registration_journal_entry_id": "9c2f…"
+    "supplier_invoice_number": "K-10045",
+    "invoice_date": "2026-09-18",
+    "registration_journal_entry_id": "9c2f…",
+    "document_id": "4f1c…",
+    "inbox_item_id": "1b2c…"
   },
   "meta": {
     "request_id": "req_…",
