@@ -354,6 +354,13 @@ export async function listGrantsConnectedBy(
   return (data ?? []) as StoredGrant[]
 }
 
+/** Every mailbox connection a company holds, in any state. */
+export async function listConnectionIds(supabase: SupabaseClient, companyId: string): Promise<string[]> {
+  const { data, error } = await supabase.from('mail_connections').select('id').eq('company_id', companyId)
+  if (error) throw new Error(`Failed to read mail connections: ${error.message}`)
+  return ((data ?? []) as Array<{ id: string }>).map((row) => row.id)
+}
+
 /**
  * Who connected a mailbox of this company, or null when the company has no
  * such connection. `connectedBy` is null once that person's account has been

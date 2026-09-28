@@ -25,8 +25,10 @@ import {
   searchMessageIds,
 } from './gmail-client'
 import {
+  disconnect,
   getAccessToken,
   listActiveConnections,
+  listConnectionIds,
   listGrantsConnectedBy,
   revokeStoredGrant,
   touchSearched,
@@ -162,6 +164,15 @@ export class GmailSearchService implements MailSearchService {
   /** How many connections refused the last search. */
   searchFailureCount(): number {
     return this.failures
+  }
+
+  async endCompanyGrants(companyId: string, userId: string): Promise<{ ended: number; failed: number }> {
+    const supabase = createServiceClientNoCookies()
+    const ids = await listConnectionIds(supabase, companyId)
+    const results = await Promise.allSettled(ids.map((id) => disconnect(supabase, companyId, id, userId)))
+    const failed = results.filter((result) => result.status === 'rejected').length
+    if (failed > 0) log.warn('some mailbox grants were not ended on company archive', { companyId, failed })
+    return { ended: ids.length - failed, failed }
   }
 
   async prepareGrantRevocation(userId: string): Promise<PreparedGrantRevocation | null> {

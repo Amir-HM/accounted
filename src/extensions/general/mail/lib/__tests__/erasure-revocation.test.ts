@@ -1,13 +1,17 @@
 /**
- * Account erasure through the core seam: the grants a person connected are
- * read while their tokens exist and revoked only when the route says the
- * erasure succeeded. The route side is in app/api/account/delete.
+ * The two core seams that end grants outside a disconnect. Account erasure:
+ * the grants a person connected are read while their tokens exist and revoked
+ * only when the route says the erasure succeeded (app/api/account/delete).
+ * Company archive: every mailbox of the company is disconnected
+ * (app/api/company/[id]/delete).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockListGrants, mockRevokeStored } = vi.hoisted(() => ({
+const { mockListGrants, mockRevokeStored, mockListIds, mockDisconnect } = vi.hoisted(() => ({
   mockListGrants: vi.fn(),
   mockRevokeStored: vi.fn(),
+  mockListIds: vi.fn(),
+  mockDisconnect: vi.fn(),
 }))
 
 vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: () => ({ service: true }) }))
@@ -24,6 +28,8 @@ vi.mock('../connections', () => ({
   touchSearched: vi.fn(),
   listGrantsConnectedBy: (...args: unknown[]) => mockListGrants(...args),
   revokeStoredGrant: (...args: unknown[]) => mockRevokeStored(...args),
+  listConnectionIds: (...args: unknown[]) => mockListIds(...args),
+  disconnect: (...args: unknown[]) => mockDisconnect(...args),
 }))
 
 import { GmailSearchService } from '../search-service'
@@ -70,5 +76,38 @@ describe('GmailSearchService.prepareGrantRevocation', () => {
 
     await expect(prepared!.revoke()).resolves.toBeUndefined()
     expect(mockRevokeStored).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('GmailSearchService.endCompanyGrants', () => {
+  it('disconnects every mailbox of the archived company, as the archiving user', async () => {
+    mockListIds.mockResolvedValue(['c1', 'c2'])
+    mockDisconnect.mockResolvedValue(undefined)
+
+    const result = await new GmailSearchService().endCompanyGrants('co-1', 'owner-1')
+
+    expect(mockListIds).toHaveBeenCalledWith({ service: true }, 'co-1')
+    expect(mockDisconnect).toHaveBeenCalledWith({ service: true }, 'co-1', 'c1', 'owner-1')
+    expect(mockDisconnect).toHaveBeenCalledWith({ service: true }, 'co-1', 'c2', 'owner-1')
+    expect(result).toEqual({ ended: 2, failed: 0 })
+  })
+
+  it('keeps going past a mailbox that fails, and counts it', async () => {
+    mockListIds.mockResolvedValue(['c1', 'c2'])
+    mockDisconnect.mockRejectedValueOnce(new Error('permission denied')).mockResolvedValueOnce(undefined)
+
+    const result = await new GmailSearchService().endCompanyGrants('co-1', 'owner-1')
+
+    expect(mockDisconnect).toHaveBeenCalledTimes(2)
+    expect(result).toEqual({ ended: 1, failed: 1 })
+  })
+
+  it('does nothing for a company without mailboxes', async () => {
+    mockListIds.mockResolvedValue([])
+    await expect(new GmailSearchService().endCompanyGrants('co-1', 'owner-1')).resolves.toEqual({
+      ended: 0,
+      failed: 0,
+    })
+    expect(mockDisconnect).not.toHaveBeenCalled()
   })
 })

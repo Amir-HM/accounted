@@ -135,6 +135,14 @@ export interface MailSearchService {
    * must revoke nothing, and the prepared value is simply dropped.
    */
   prepareGrantRevocation?(userId: string): Promise<PreparedGrantRevocation | null>
+  /**
+   * A company was archived: end every mailbox grant it holds, each exactly as
+   * a disconnect by `userId` would (revoked at the provider unless another
+   * company still reads that mailbox, row deleted, audited). An archived
+   * company is hidden from its members, so nobody could disconnect them
+   * afterwards. Best effort per mailbox: one failure never stops the rest.
+   */
+  endCompanyGrants?(companyId: string, userId: string): Promise<{ ended: number; failed: number }>
 }
 
 class NoopMailSearchService implements MailSearchService {
