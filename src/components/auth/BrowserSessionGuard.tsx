@@ -2,7 +2,11 @@
 
 import { useEffect } from 'react'
 import { onBrowserSessionLost } from '@/lib/supabase/browser-session-token'
-import { clearBrowserSessionState } from '@/lib/auth/session-client'
+import {
+  clearBrowserSessionState,
+  onSignedOutElsewhere,
+  reloadTo,
+} from '@/lib/auth/session-client'
 
 /**
  * Leaves the dashboard as soon as the server says the session is gone.
@@ -20,22 +24,36 @@ import { clearBrowserSessionState } from '@/lib/auth/session-client'
  * held and goes to /login, returning here after sign-in. A session-timeout
  * 401 is left to SessionTimeoutController, which signs out with its reason.
  * A 403 (an MFA step-up owed) goes to /mfa/verify the same way.
+ *
+ * A sign-out in another tab ends this tab's session too (they share the
+ * cookie): that tab announces it, and this one clears what it held (token,
+ * its own sessionStorage) and leaves for /login at once (CASA 6.6.1).
  */
 export function BrowserSessionGuard() {
   useEffect(() => {
     let leaving = false
-    return onBrowserSessionLost((reason) => {
+    const leave = (target: URL, clear: boolean) => {
       if (leaving) return
       leaving = true
-      const back = window.location.pathname + window.location.search
+      if (clear) clearBrowserSessionState()
+      reloadTo(target.toString())
+    }
+    const back = () => window.location.pathname + window.location.search
+    const stopLost = onBrowserSessionLost((reason) => {
       const url =
         reason === 'mfa_required'
           ? new URL('/mfa/verify', window.location.origin)
           : new URL('/login', window.location.origin)
-      if (back !== '/') url.searchParams.set(reason === 'mfa_required' ? 'returnTo' : 'next', back)
-      if (reason === 'unauthenticated') clearBrowserSessionState()
-      window.location.assign(url.toString())
+      if (back() !== '/') url.searchParams.set(reason === 'mfa_required' ? 'returnTo' : 'next', back())
+      leave(url, reason === 'unauthenticated')
     })
+    const stopSignedOut = onSignedOutElsewhere(() => {
+      leave(new URL('/login', window.location.origin), true)
+    })
+    return () => {
+      stopLost()
+      stopSignedOut()
+    }
   }, [])
 
   return null

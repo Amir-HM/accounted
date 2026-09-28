@@ -263,8 +263,48 @@ export async function signOut(
     body: { scope: options.scope ?? 'global' },
   })
   clearBrowserSessionState()
-  if (error && error.status === 401) return { error: null }
-  return { error }
+  const gone = !error || error.status === 401
+  // Every other tab of this origin shared the session cookie, so it is
+  // signed out too: tell them, so they drop their own token and per-tab
+  // storage now instead of whenever they next ask the server.
+  if (gone) announceSignedOut()
+  return { error: gone ? null : error }
+}
+
+const SIGNED_OUT_CHANNEL = 'gnubok-signed-out'
+
+/**
+ * Identifies this tab on the channel: BroadcastChannel delivers to every
+ * other channel object of the origin, including ones in the SAME tab, and
+ * the signing-out tab must not be redirected by its own announcement (it is
+ * already on its way to its own destination, e.g. /register from the
+ * sandbox). Not a secret; Math.random is enough (crypto.randomUUID is
+ * missing outside secure contexts, i.e. a plain-http self-hosted install).
+ */
+const TAB_ID = Math.random().toString(36).slice(2)
+
+function announceSignedOut(): void {
+  if (typeof BroadcastChannel === 'undefined') return
+  try {
+    const channel = new BroadcastChannel(SIGNED_OUT_CHANNEL)
+    channel.postMessage({ type: 'signed-out', from: TAB_ID })
+    channel.close()
+  } catch {
+    // Best effort: other tabs still find out on their next server call.
+  }
+}
+
+/**
+ * Called when ANOTHER tab of this origin signed out. Returns an unsubscribe
+ * function.
+ */
+export function onSignedOutElsewhere(listener: () => void): () => void {
+  if (typeof BroadcastChannel === 'undefined') return () => {}
+  const channel = new BroadcastChannel(SIGNED_OUT_CHANNEL)
+  channel.onmessage = (event: MessageEvent<{ type?: string; from?: string }>) => {
+    if (event.data?.type === 'signed-out' && event.data.from !== TAB_ID) listener()
+  }
+  return () => channel.close()
 }
 
 /**

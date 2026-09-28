@@ -15,6 +15,7 @@ vi.mock('@/lib/auth/browser-session-cookies', () => ({ scrubAuthCookies: mocks.s
 import {
   fetchSessionUser,
   isInsufficientAal,
+  onSignedOutElsewhere,
   signInWithPassword,
   signOut,
   signOutAndNavigate,
@@ -120,6 +121,73 @@ describe('signOut (CASA 6.6.1)', () => {
     const { error } = await signOut()
     expect(error?.code).toBe('network_error')
     expect(mocks.clearStorage).toHaveBeenCalled()
+  })
+
+  it('tells the other tabs, which clear their own state', async () => {
+    const posted: unknown[] = []
+    class FakeChannel {
+      onmessage: ((event: { data: unknown }) => void) | null = null
+      constructor(public name: string) {}
+      postMessage(message: unknown) { posted.push(message) }
+      close() {}
+    }
+    vi.stubGlobal('BroadcastChannel', FakeChannel)
+    fetchMock.mockResolvedValue(json(200, { data: { revoked: true } }))
+
+    await signOut()
+
+    expect(posted).toEqual([{ type: 'signed-out', from: expect.any(String) }])
+  })
+
+  it('does not announce a sign-out the server never received', async () => {
+    const posted: unknown[] = []
+    vi.stubGlobal('BroadcastChannel', class {
+      postMessage(message: unknown) { posted.push(message) }
+      close() {}
+    })
+    fetchMock.mockRejectedValue(new TypeError('offline'))
+
+    await signOut()
+
+    expect(posted).toEqual([])
+  })
+
+  it('onSignedOutElsewhere fires on the announcement only', async () => {
+    const instances: Array<{ onmessage: ((event: { data: unknown }) => void) | null }> = []
+    vi.stubGlobal('BroadcastChannel', class {
+      onmessage: ((event: { data: unknown }) => void) | null = null
+      constructor() { instances.push(this) }
+      postMessage() {}
+      close() {}
+    })
+    const listener = vi.fn()
+    const stop = onSignedOutElsewhere(listener)
+
+    instances[0].onmessage?.({ data: { type: 'other', from: 'another-tab' } })
+    instances[0].onmessage?.({ data: { type: 'signed-out', from: 'another-tab' } })
+
+    expect(listener).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it("ignores this tab's own announcement (it is already leaving for its own destination)", async () => {
+    const instances: Array<{ onmessage: ((event: { data: unknown }) => void) | null }> = []
+    const posted: unknown[] = []
+    vi.stubGlobal('BroadcastChannel', class {
+      onmessage: ((event: { data: unknown }) => void) | null = null
+      constructor() { instances.push(this) }
+      postMessage(message: unknown) { posted.push(message) }
+      close() {}
+    })
+    const listener = vi.fn()
+    onSignedOutElsewhere(listener)
+    fetchMock.mockResolvedValue(json(200, { data: { revoked: true } }))
+
+    await signOut()
+    // Deliver the tab's own message to its own listener, as a browser would.
+    instances[0].onmessage?.({ data: posted[0] })
+
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it('signOutAndNavigate leaves with a full page load', async () => {
