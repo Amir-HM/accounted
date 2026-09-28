@@ -37,7 +37,11 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { createSupplierInvoicePaymentEntry as mockedCreatePaymentEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { createJournalEntry as mockedCreateJournalEntry } from '@/lib/bookkeeping/engine'
+import {
+  createJournalEntry as mockedCreateJournalEntry,
+  findFiscalPeriod as mockedFindFiscalPeriod,
+  reverseEntry as mockedReverseEntry,
+} from '@/lib/bookkeeping/engine'
 import { eventBus } from '@/lib/events/bus'
 import { POST as matchSupplierInvoice } from '../route'
 
@@ -292,5 +296,77 @@ describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invo
       ['1930', { '1': 'KS1' }],
     ])
     expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invoice: no verifikat, no payment', () => {
+  it('refuses a payment date outside an open period before any write, the storno included', async () => {
+    const calls: RecordedCall[] = []
+    ;(mockedFindFiscalPeriod as ReturnType<typeof vi.fn>).mockResolvedValueOnce(null)
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase(
+        {
+          company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+          // A categorised row: the match would storno its verifikat first.
+          transactions: { data: { ...TRANSACTION, journal_entry_id: 'je-categorised' }, error: null },
+          supplier_invoices: { data: REGISTERED_INVOICE, error: null },
+          company_settings: { data: { accounting_method: 'accrual' }, error: null },
+        },
+        calls,
+      ),
+    )
+
+    const response = await matchSupplierInvoice(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`,
+        { supplier_invoice_id: SI_ID },
+      ),
+      detailParams(COMPANY_ID, TX_ID),
+    )
+
+    expect(response.status).toBe(400)
+    expect((await response.json()).error.code).toBe('INVOICE_PAID_NO_FISCAL_PERIOD')
+    expect(mockedReverseEntry).not.toHaveBeenCalled()
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+    // Only the v1 wrapper's own idempotency reservation may be written.
+    expect(
+      calls.some(
+        (c) => c.table !== 'idempotency_keys' && (c.method === 'update' || c.method === 'insert'),
+      ),
+    ).toBe(false)
+  })
+
+  it('fails closed when the payment entry books nothing: the invoice stays unpaid', async () => {
+    const calls: RecordedCall[] = []
+    mockCreatePaymentEntry.mockResolvedValueOnce(null)
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase(
+        {
+          company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+          transactions: { data: TRANSACTION, error: null },
+          supplier_invoices: [
+            { data: REGISTERED_INVOICE, error: null },
+            { data: [{ id: SI_ID }], error: null },
+          ],
+          company_settings: { data: { accounting_method: 'accrual' }, error: null },
+        },
+        calls,
+      ),
+    )
+
+    const response = await matchSupplierInvoice(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`,
+        { supplier_invoice_id: SI_ID },
+      ),
+      detailParams(COMPANY_ID, TX_ID),
+    )
+
+    expect(response.status).toBe(500)
+    const body = await response.json()
+    expect(body.error.code).toBe('MATCH_SI_RECORD_PAYMENT_FAILED')
+    expect(body.error.details).toMatchObject({ reason: 'no_journal_entry_created' })
+    expect(calls.some((c) => c.table === 'supplier_invoices' && c.method === 'update')).toBe(false)
+    expect(calls.some((c) => c.table === 'supplier_invoice_payments' && c.method === 'insert')).toBe(false)
   })
 })

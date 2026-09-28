@@ -225,6 +225,18 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     const paymentAmountSek =
       exchangeRateDifference !== 0 ? originalBookedSek : actualBankSek
 
+    // A payment date outside an open period leaves the entry generators with
+    // nothing to book (they return null), and the invoice used to be marked
+    // paid with no verifikat. Refuse before any write, the storno below
+    // included, exactly as the dashboard route does.
+    const fiscalPeriodId = await findFiscalPeriod(ctx.supabase, ctx.companyId!, transaction.date)
+    if (!fiscalPeriodId) {
+      return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+        requestId: ctx.requestId,
+        details: { payment_date: transaction.date },
+      })
+    }
+
     // Storno any conflicting auto-categorization JE before booking the
     // payment. Mirrors the match-invoice path. Without this, an earlier
     // :categorize of the same transaction (e.g. as expense_office with a
@@ -361,13 +373,6 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
             details: { totalDebit, totalCredit },
           })
         }
-        const fiscalPeriodId = await findFiscalPeriod(ctx.supabase, ctx.companyId!, transaction.date)
-        if (!fiscalPeriodId) {
-          return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
-            requestId: ctx.requestId,
-            details: { payment_date: transaction.date },
-          })
-        }
         const sourceType = useCashEntry ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
         const desc = invoice.supplier?.name
           ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
@@ -445,6 +450,14 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       return v1ErrorResponseFromCode('MATCH_SI_RECORD_PAYMENT_FAILED', txLog, {
         requestId: ctx.requestId,
         details: { reason: getErrorMessage(err, { context: 'supplier_invoice' }) },
+      })
+    }
+    // Fail closed, as the dashboard route does: a generator that booked
+    // nothing must never leave the invoice marked paid without its verifikat.
+    if (!journalEntryId) {
+      return v1ErrorResponseFromCode('MATCH_SI_RECORD_PAYMENT_FAILED', txLog, {
+        requestId: ctx.requestId,
+        details: { reason: 'no_journal_entry_created' },
       })
     }
 

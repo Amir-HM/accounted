@@ -400,6 +400,18 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     const { newPaidAmount, newRemaining, isFullyPaid, newStatus } = payment.plan
     const paidAt = isFullyPaid ? paidAtFromDate(transaction.date) : null
 
+    // A payment date outside an open period leaves the entry builders with
+    // nothing to book (the cash entry returns null), and the invoice used to
+    // be marked paid with no verifikat. Refuse before any write, the storno
+    // below included, exactly as the dashboard routes do.
+    const fiscalPeriodId = await findFiscalPeriod(ctx.supabase, ctx.companyId!, transaction.date)
+    if (!fiscalPeriodId) {
+      return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+        requestId: ctx.requestId,
+        details: { payment_date: transaction.date },
+      })
+    }
+
     // A RECONCILIATION link (reconciliation_method set) is not a conflicting
     // booking: the entry is an independent verifikat that may evidence OTHER
     // affärshändelser; reversing it wholesale would be an over-broad rättelse
@@ -521,13 +533,6 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
             details: { totalDebit, totalCredit },
           })
         }
-        const fiscalPeriodId = await findFiscalPeriod(ctx.supabase, ctx.companyId!, transaction.date)
-        if (!fiscalPeriodId) {
-          return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
-            requestId: ctx.requestId,
-            details: { payment_date: transaction.date },
-          })
-        }
         const sourceType = useCashEntry ? 'invoice_cash_payment' : 'invoice_paid'
         const desc = invoice.customer?.name
           ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
@@ -562,17 +567,6 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
         // 1510 credited at the invoice's booking rate, and a 3960/7960 FX-diff
         // line (or a 3740 öresavrundning line on pure SEK) making the verifikat
         // balance per BFL 5 kap 4-5§.
-        const fiscalPeriodId = await findFiscalPeriod(
-          ctx.supabase,
-          ctx.companyId!,
-          transaction.date,
-        )
-        if (!fiscalPeriodId) {
-          return v1ErrorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
-            requestId: ctx.requestId,
-            details: { payment_date: transaction.date },
-          })
-        }
         const desc = invoice.customer?.name
           ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
           : `Inbetalning kundfaktura ${invoice.invoice_number}`
@@ -635,6 +629,14 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       return v1ErrorResponseFromCode('INVOICE_PAID_BOOK_FAILED', txLog, {
         requestId: ctx.requestId,
         details: { reason: getErrorMessage(err, { context: 'invoice' }) },
+      })
+    }
+    // Fail closed, as the dashboard route does: a builder that booked nothing
+    // must never leave the invoice marked paid without its verifikat.
+    if (!journalEntryId) {
+      return v1ErrorResponseFromCode('INVOICE_PAID_BOOK_FAILED', txLog, {
+        requestId: ctx.requestId,
+        details: { reason: 'no_journal_entry_created' },
       })
     }
 

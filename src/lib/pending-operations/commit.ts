@@ -3530,6 +3530,19 @@ async function commitMatchTransactionInvoice(
   // transaction settled into. Mirrors the match-invoice route fix.
   const paymentAccount = await resolveSettlementAccount(supabase, companyId, transaction.cash_account_id, log)
 
+  // A payment date outside an open period leaves the entry builders below with
+  // nothing to book, and the invoice used to be marked paid with no verifikat.
+  // Refuse here, before the irreversible storno, as the match routes do.
+  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, transaction.date)
+  if (!fiscalPeriodId) {
+    return {
+      error:
+        getErrorEntry('INVOICE_PAID_NO_FISCAL_PERIOD')?.message_sv ??
+        'Ingen öppen räkenskapsperiod för betalningsdatumet.',
+      status: 400,
+    }
+  }
+
   // From here on the executor posts irreversible vouchers. Track their ids so
   // a later failure can land the op in 'failed_partial' carrying them
   // (issue #842) instead of a clean-looking 'rejected'.
@@ -3557,54 +3570,48 @@ async function commitMatchTransactionInvoice(
       // 3740 öresavrundning line on pure SEK) making the verifikat balance.
       // The old createInvoicePaymentJournalEntry(paidAmount) shape could not
       // carry either residual, so öre-settled and cross-currency matches
-      // left 1510 unclean. Failure semantics preserved: no fiscal period
-      // still soft-fails to journalEntryId = null like the old builder did.
-      const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, transaction.date)
-      if (!fiscalPeriodId) {
-        log.warn('No open fiscal period found for payment date:', transaction.date)
-      } else {
-        const desc = invoice.customer?.name
-          ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
-          : `Inbetalning kundfaktura ${invoice.invoice_number}`
-        const { lines: clearingLines } = buildInvoicePaymentClearingLines(
-          {
-            amount: transaction.amount,
-            amount_sek: transaction.amount_sek ?? null,
-            currency: transaction.currency,
-            exchange_rate: transaction.exchange_rate ?? null,
-          },
-          {
-            currency: invoice.currency,
-            exchange_rate: invoice.exchange_rate ?? null,
-            remaining_amount: invoice.remaining_amount ?? null,
-            total: invoice.total,
-            paid_amount: invoice.paid_amount ?? null,
-          },
-          desc,
-          fx.required ? fx.paidInInvoiceCurrency : undefined,
-          paymentAccount,
-        )
-        // Re-propagate the invoice's default dimension bag onto every leg,
-        // including the FX result lines, so a project's kursvinst/kursförlust
-        // stays inside the project P&L: the shared line-builder is
-        // dimension-agnostic.
-        const defaultDimensions = coerceDimensionsBag(
-          (invoice as { default_dimensions?: unknown }).default_dimensions,
-        )
-        if (defaultDimensions) {
-          for (const line of clearingLines) line.dimensions = { ...defaultDimensions }
-        }
-        const je = await createJournalEntry(supabase, companyId, userId, {
-          fiscal_period_id: fiscalPeriodId,
-          entry_date: transaction.date,
-          description: desc,
-          source_type: 'invoice_paid',
-          source_id: invoice.id,
-          bank_booking_context: [bankBookingContext(transaction, paymentAccount)],
-          lines: clearingLines,
-        })
-        journalEntryId = je?.id ?? null
+      // left 1510 unclean. The open period was checked before the storno.
+      const desc = invoice.customer?.name
+        ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
+        : `Inbetalning kundfaktura ${invoice.invoice_number}`
+      const { lines: clearingLines } = buildInvoicePaymentClearingLines(
+        {
+          amount: transaction.amount,
+          amount_sek: transaction.amount_sek ?? null,
+          currency: transaction.currency,
+          exchange_rate: transaction.exchange_rate ?? null,
+        },
+        {
+          currency: invoice.currency,
+          exchange_rate: invoice.exchange_rate ?? null,
+          remaining_amount: invoice.remaining_amount ?? null,
+          total: invoice.total,
+          paid_amount: invoice.paid_amount ?? null,
+        },
+        desc,
+        fx.required ? fx.paidInInvoiceCurrency : undefined,
+        paymentAccount,
+      )
+      // Re-propagate the invoice's default dimension bag onto every leg,
+      // including the FX result lines, so a project's kursvinst/kursförlust
+      // stays inside the project P&L: the shared line-builder is
+      // dimension-agnostic.
+      const defaultDimensions = coerceDimensionsBag(
+        (invoice as { default_dimensions?: unknown }).default_dimensions,
+      )
+      if (defaultDimensions) {
+        for (const line of clearingLines) line.dimensions = { ...defaultDimensions }
       }
+      const je = await createJournalEntry(supabase, companyId, userId, {
+        fiscal_period_id: fiscalPeriodId,
+        entry_date: transaction.date,
+        description: desc,
+        source_type: 'invoice_paid',
+        source_id: invoice.id,
+        bank_booking_context: [bankBookingContext(transaction, paymentAccount)],
+        lines: clearingLines,
+      })
+      journalEntryId = je?.id ?? null
     }
   } catch (err) {
     // Recoverable: the dispatcher releases the op back to 'pending' and this
@@ -3626,7 +3633,19 @@ async function commitMatchTransactionInvoice(
     }
     log.error('Failed to create match journal entry:', err)
   }
-  if (journalEntryId) postedIds.payment_journal_entry_id = journalEntryId
+  // Fail closed, as the match routes do: the invoice is never marked paid
+  // without its payment verifikat. A storno posted above is reported as a
+  // partial commit rather than hidden behind a clean-looking refusal.
+  if (!journalEntryId) {
+    return {
+      error:
+        getErrorEntry('MATCH_INVOICE_RECORD_PAYMENT_FAILED')?.message_sv ??
+        'Kunde inte registrera fakturabetalningen.',
+      status: 500,
+      ...(Object.keys(postedIds).length > 0 ? { partialPostedIds: postedIds } : {}),
+    }
+  }
+  postedIds.payment_journal_entry_id = journalEntryId
 
   const { data: updatedRows, error: updateInvError } = await supabase
     .from('invoices')
