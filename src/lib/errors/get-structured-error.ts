@@ -17,6 +17,7 @@
 import { NextResponse } from 'next/server'
 import { ZodError } from 'zod'
 import { getErrorMessage } from './get-error-message'
+import { foreignKeyRefusal } from './foreign-key-refusal'
 import {
   conflictCode,
   getErrorEntry,
@@ -254,6 +255,20 @@ export function getStructuredError(
     }
   }
 
+  // A delete the database refused because other rows still point at the row.
+  // Before #2831 an agent got UNKNOWN_ERROR and the raw Postgres sentence;
+  // now it gets a code to branch on, English it can act on and the way back.
+  const refusal = foreignKeyRefusal(error)
+  if (refusal) {
+    return {
+      code: refusal.code,
+      message_sv: refusal.message_sv ?? getErrorMessage(error),
+      message_en: refusal.message_en,
+      remediation: refusal.remediation,
+      retryable: false,
+    }
+  }
+
   const message_en = extractEnglishMessage(error)
   const message_sv = getErrorMessage(error)
 
@@ -438,6 +453,36 @@ export function errorResponse(
 
   // 3. Postgres errors
   if (isPostgresError(err)) {
+    // A refused delete gets its own code, sentence and remediation instead of
+    // the generic VALIDATION_ERROR (#2831). details names the referencing
+    // table so an API client knows what still holds the row.
+    const refusal = foreignKeyRefusal(err)
+    if (refusal) {
+      const entry = entryFor(refusal.code)
+      logAtLevel(log, entry.httpStatus, 'refused delete', err as unknown as Error, {
+        requestId: ctx.requestId,
+        pgCode: err.code,
+      })
+      const details = mergeDetails(
+        {
+          pgCode: err.code,
+          ...(refusal.referencedBy ? { referenced_by: refusal.referencedBy } : {}),
+          ...(refusal.register ? { register: refusal.register } : {}),
+        },
+        ctx.details,
+      )
+      return buildResponse(
+        refusal.code,
+        {
+          ...entry,
+          message_sv: refusal.message_sv ?? entry.message_sv,
+          message_en: refusal.message_en,
+          remediation: refusal.remediation,
+        },
+        ctx.requestId,
+        details,
+      )
+    }
     const mapped = isIgnoredTransactionJournalConstraint(err)
       ? 'TX_CATEGORIZE_IGNORED_CONFLICT'
       : err.code === 'PT409' ? conflictCode(err.message) : postgresCodeToStructured(err.code)

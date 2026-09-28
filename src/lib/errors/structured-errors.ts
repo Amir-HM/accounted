@@ -4694,6 +4694,44 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     message_sv: 'Lönekörningen är kopplad till en verifikation och kan inte raderas (BFL 5 kap räkenskapsinformation).',
     message_en: 'Salary run is linked to a journal entry and cannot be deleted (BFL 5 kap räkenskapsinformation).',
   },
+  // Deletes the database refuses because other rows still point at the row
+  // (Postgres 23503 on "update or delete"), #2831. lib/errors/foreign-key-
+  // refusal.ts resolves the constraint to one of these codes and supplies the
+  // specific sentence and remediation for each mapped register; the entries
+  // below are the code-level defaults.
+  JOURNAL_ENTRY_DELETE_BLOCKED_BY_REGISTER: {
+    httpStatus: 409,
+    message_sv:
+      'Verifikatet används av ett register (anläggningar, periodiseringar eller lön) och kan inte raderas. Gör en rättelse (storno) i stället.',
+    message_en:
+      'This voucher is used by a register (fixed assets, accruals or payroll) and cannot be deleted. Make a correction (storno) instead.',
+    remediation: {
+      description:
+        'A posted verifikat that a register points at is corrected, never deleted (BFL 5 kap. 5 §). Reverse it with storno (gnubok_reverse_journal_entry); details.register names the register and the remediation on the error names its own way back.',
+      tool: 'gnubok_reverse_journal_entry',
+    },
+  },
+  SALARY_RUN_DELETE_BLOCKED_BY_PAYMENT_FILE: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen kan inte raderas eftersom en betalfil har skapats för den, och betalfilen ska sparas i sju år. Ändra lönekörningen i stället.',
+    message_en:
+      'This payroll run cannot be deleted because a payment file was generated for it, and that file must be kept for seven years. Edit the payroll run instead.',
+    remediation: {
+      description:
+        'A generated payment file is kept for seven years, so the run it belongs to stays. Edit the draft run instead (gnubok_set_run_salary, gnubok_update_salary_run), or leave it unbooked.',
+      tool: 'gnubok_update_salary_run',
+    },
+  },
+  RECORD_STILL_REFERENCED: {
+    httpStatus: 409,
+    message_sv: 'Posten kan inte tas bort eftersom annan data fortfarande hänvisar till den.',
+    message_en: 'This record cannot be deleted because other records still refer to it.',
+    remediation: {
+      description:
+        'Other records still point at this one; details.referenced_by names their table. Remove or re-point those records first, or keep this one (archive or deactivate it where the resource supports that). Retrying the same delete will not help.',
+    },
+  },
   // Utlägg repaid with the salary (#2331).
   SALARY_RUN_NO_OPEN_EXPENSE_CLAIMS: {
     httpStatus: 404,

@@ -26,6 +26,7 @@ import {
   isInvoicePaymentAccountCurrency,
 } from '@/lib/invoices/payment-accounts'
 import { conflictCode, getErrorEntry, hasErrorEntry } from './structured-errors'
+import { FOREIGN_KEY_REFUSAL_CODES, foreignKeyRefusal } from './foreign-key-refusal'
 import { ACCOUNT_NUMBER_MESSAGE } from '@/lib/invariants/account-number'
 
 type ErrorContext =
@@ -54,77 +55,16 @@ function pick(b: Bilingual, locale: ErrorLocale): string {
   return b[locale] ?? b.sv
 }
 
-// A RESTRICT foreign key names the register that still depends on the row, so
-// the refusal can say what the row is and what to do instead. Keyed by
-// constraint name; consulted only for 23503. A refusal nobody mapped still
-// gets the generic 23503 sentence below, never the database's own text.
-//
-// Every entry is a delete a user can start and the database refuses on
-// purpose, before anything is removed. Sizing (#2831): Postgres logs, 30 days
-// to 2026-09-27, sandbox teardown excluded.
-//
-// The voucher DELETE route (delete_last_voucher) on a verifikat a register
-// still points at. A posted verifikat is corrected, never deleted (BFL 5 kap.
-// 5 §), so each sentence names the register's own way back:
-//   - depreciation_schedules_journal_entry_id_fkey: planenlig avskrivning
-//     (issue #2779).
-//   - assets_disposal_journal_entry_id_fkey: avyttring or utrangering.
-//   - accrual_schedule_installments_journal_entry_id_fkey: a periodisering's
-//     monthly upplösning (7 refusals).
-//   - accrual_schedules_origin_journal_entry_id_fkey: the invoice booking a
-//     periodisering starts from. Crediting the invoice cancels the schedule
-//     and reverses its upplösningar (cancelSchedulesForSource).
-//   - salary_runs_*_entry_id_fkey: the four verifikat a booked payroll run
-//     posts (2 refusals). "Korrigera lönekörning (storno)" is the run's own
-//     correction.
-// The draft payroll run DELETE route:
-//   - salary_payment_files_salary_run_id_fkey: a run that went back to draft
-//     after its payment file was generated. The file is räkenskapsinformation
-//     kept for seven years (migration 20260919105035), so the run stays
-//     (3 refusals).
-const DEPRECIATION_VOUCHER: Bilingual = {
-  sv: 'Verifikatet bokför en avskrivning i anläggningsregistret och kan inte raderas. Gör en rättelse (storno) i stället.',
-  en: 'This voucher posts a depreciation in the fixed asset register and cannot be deleted. Make a correction (storno) instead.',
-}
-const DISPOSAL_VOUCHER: Bilingual = {
-  sv: 'Verifikatet bokför en avyttring i anläggningsregistret och kan inte raderas. Gör en rättelse (storno) i stället.',
-  en: 'This voucher posts a disposal in the fixed asset register and cannot be deleted. Make a correction (storno) instead.',
-}
-const ACCRUAL_RELEASE_VOUCHER: Bilingual = {
-  sv: 'Verifikatet löser upp en periodisering och kan inte raderas. Gör en rättelse (storno) i stället.',
-  en: 'This voucher releases an accrual and cannot be deleted. Make a correction (storno) instead.',
-}
-const ACCRUAL_ORIGIN_VOUCHER: Bilingual = {
-  sv: 'Verifikatet bokför en faktura som periodiseras och kan inte raderas. Kreditera fakturan i stället, så avbryts periodiseringen.',
-  en: 'This voucher books an invoice that is being accrued and cannot be deleted. Credit the invoice instead, which cancels the accrual.',
-}
-const PAYROLL_VOUCHER: Bilingual = {
-  sv: 'Verifikatet bokför en lönekörning och kan inte raderas. Använd Korrigera lönekörning (storno) på lönekörningen i stället.',
-  en: 'This voucher posts a payroll run and cannot be deleted. Use Correct payroll run (storno) on the payroll run instead.',
-}
-const PAYROLL_RUN_WITH_PAYMENT_FILE: Bilingual = {
-  sv: 'Lönekörningen kan inte raderas eftersom en betalfil har skapats för den, och betalfilen ska sparas i sju år. Ändra lönekörningen i stället.',
-  en: 'This payroll run cannot be deleted because a payment file was generated for it, and that file must be kept for seven years. Edit the payroll run instead.',
-}
-
-const FOREIGN_KEY_REFUSAL_MAP: Record<string, Bilingual> = {
-  depreciation_schedules_journal_entry_id_fkey: DEPRECIATION_VOUCHER,
-  assets_disposal_journal_entry_id_fkey: DISPOSAL_VOUCHER,
-  accrual_schedule_installments_journal_entry_id_fkey: ACCRUAL_RELEASE_VOUCHER,
-  accrual_schedules_origin_journal_entry_id_fkey: ACCRUAL_ORIGIN_VOUCHER,
-  salary_runs_salary_entry_id_fkey: PAYROLL_VOUCHER,
-  salary_runs_avgifter_entry_id_fkey: PAYROLL_VOUCHER,
-  salary_runs_vacation_entry_id_fkey: PAYROLL_VOUCHER,
-  salary_runs_pension_entry_id_fkey: PAYROLL_VOUCHER,
-  salary_payment_files_salary_run_id_fkey: PAYROLL_RUN_WITH_PAYMENT_FILE,
-}
-
+// A refused delete names the register that still depends on the row, so the
+// refusal can say what the row is and what to do instead. The table of
+// mapped constraints, and the agent-facing code and remediation for each,
+// live in ./foreign-key-refusal (one definition for this mapper,
+// getStructuredError and errorResponse). An unmapped refusal still gets the
+// generic 23503 sentence below, never the database's own text.
 function matchForeignKeyRefusal(code: string, message: string, locale: ErrorLocale): string | null {
-  if (code !== '23503') return null
-  for (const [constraint, text] of Object.entries(FOREIGN_KEY_REFUSAL_MAP)) {
-    if (message.includes(`"${constraint}"`)) return pick(text, locale)
-  }
-  return null
+  const refusal = foreignKeyRefusal({ code, message })
+  if (!refusal || refusal.message_sv === null) return null
+  return locale === 'en' ? refusal.message_en : refusal.message_sv
 }
 
 // Postgres error codes -> localized messages
@@ -640,6 +580,13 @@ export function getErrorMessage(
         details?: unknown
       }
       if (structured.code === 'PT409') return conflictMessage(structured.message, locale)
+
+      // A refused delete as errorResponse sends it: the envelope already
+      // carries the register's own sentence in both languages (#2831).
+      if (typeof structured.code === 'string' && FOREIGN_KEY_REFUSAL_CODES.has(structured.code)) {
+        const own = locale === 'en' ? structured.message_en : structured.message
+        if (typeof own === 'string' && own.trim()) return own
+      }
 
       // A database error forwarded inside the envelope is judged the same way.
       if (isDatabaseErrorCode(structured.code) && typeof structured.message === 'string') {
