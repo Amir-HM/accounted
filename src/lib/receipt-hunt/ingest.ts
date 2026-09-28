@@ -147,7 +147,7 @@ export async function ingestMailCandidate(
 
     let fetched
     try {
-      fetched = await service.fetchAttachment(candidate.connectionId, candidate.messageId, attachmentId)
+      fetched = await service.fetchAttachment(companyId, candidate.connectionId, candidate.messageId, attachmentId)
     } catch (error) {
       log.warn('could not fetch attachment', {
         messageId: candidate.messageId,

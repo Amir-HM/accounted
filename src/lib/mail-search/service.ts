@@ -100,7 +100,13 @@ export interface MailSearchService {
    * mailbox.
    */
   search(companyId: string, query: MailSearchQuery): Promise<MailCandidate[]>
+  /**
+   * Download one attachment through a connection of `companyId`. The company
+   * is part of the lookup, so a connection id can never reach another
+   * company's mailbox.
+   */
   fetchAttachment(
+    companyId: string,
     connectionId: string,
     messageId: string,
     attachmentId: string,

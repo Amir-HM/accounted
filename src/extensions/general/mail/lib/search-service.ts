@@ -197,17 +197,22 @@ export class GmailSearchService implements MailSearchService {
   }
 
   async fetchAttachment(
+    companyId: string,
     connectionId: string,
     messageId: string,
     attachmentId: string,
   ): Promise<FetchedAttachment | null> {
     const supabase = createServiceClientNoCookies()
+    // The service role skips RLS, so the company and the state are filters
+    // here: only a mailbox this company still has, connected and usable.
     const { data } = await supabase
       .from('mail_connections')
       .select(
         'id, company_id, provider, email_address, encrypted_refresh_token, encrypted_access_token, access_token_expires_at, scope_label, status',
       )
       .eq('id', connectionId)
+      .eq('company_id', companyId)
+      .eq('status', 'active')
       .maybeSingle()
     if (!data) return null
 

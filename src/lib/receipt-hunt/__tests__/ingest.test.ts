@@ -105,6 +105,8 @@ describe('ingestMailCandidate', () => {
     const result = await ingestMailCandidate(client, 'co-1', 'user-1', candidate())
 
     expect(result).toMatchObject({ documentId: 'doc-1', inboxItemId: 'item-1', fileName: 'kvitto.pdf' })
+    // The download is scoped to the company that is hunting.
+    expect(mockFetchAttachment).toHaveBeenCalledWith('co-1', 'conn-1', 'msg-1', 'att-1')
     expect(inserted).toHaveLength(1)
     expect(inserted[0].source).toBe('mail_hunt')
     // Provenance goes in channel_context, never extracted_data: retrying
