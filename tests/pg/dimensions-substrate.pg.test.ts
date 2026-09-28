@@ -182,6 +182,108 @@ describe('registry guard triggers', () => {
   })
 })
 
+// 20260928200100: tagged lines reference a value by its (sie_dim_no, code)
+// text, so a value's code, dimension and company are immutable.
+describe('dimension_values identity guard', () => {
+  it('blocks changing a value code, dimension or company; other columns stay editable', async () => {
+    const a = await seedWithDimensions()
+    const b = await seedWithDimensions()
+    const aDim6 = await getDimensionId(a.companyId, 6)
+    const aDim1 = await getDimensionId(a.companyId, 1)
+    const bDim6 = await getDimensionId(b.companyId, 6)
+    const valueId = await insertValue({ companyId: a.companyId, dimensionId: aDim6, code: 'P001' })
+
+    const renamed = (await getPool()
+      .query(`UPDATE public.dimension_values SET code = 'P999' WHERE id = $1`, [valueId])
+      .then(
+        () => null,
+        (err: { code?: string; message: string }) => err,
+      )) as { code?: string; message: string } | null
+    expect(renamed?.code).toBe('P0001')
+    expect(renamed?.message).toMatch(/kan inte ändras/)
+
+    await expect(
+      getPool().query(`UPDATE public.dimension_values SET dimension_id = $2 WHERE id = $1`, [
+        valueId,
+        aDim1,
+      ]),
+    ).rejects.toThrow(/kan inte flyttas/)
+    await expect(
+      getPool().query(
+        `UPDATE public.dimension_values SET company_id = $2, dimension_id = $3 WHERE id = $1`,
+        [valueId, b.companyId, bDim6],
+      ),
+    ).rejects.toThrow(/kan inte flyttas/)
+
+    // What the value routes do write stays writable, and naming an identity
+    // column without changing it is a no-op.
+    await getPool().query(
+      `UPDATE public.dimension_values
+          SET name = 'Projekt Alfa', is_active = false, start_date = '2026-01-01',
+              end_date = '2026-12-31', attributes = '{"ansvarig":"Eva"}', code = code
+        WHERE id = $1`,
+      [valueId],
+    )
+    const { rows } = await getPool().query(
+      `SELECT code, name, is_active, company_id, dimension_id FROM public.dimension_values WHERE id = $1`,
+      [valueId],
+    )
+    expect(rows[0]).toMatchObject({
+      code: 'P001',
+      name: 'Projekt Alfa',
+      is_active: false,
+      company_id: a.companyId,
+      dimension_id: aDim6,
+    })
+  })
+
+  it('refuses the rename from a writer session, so a tagged value can never slip past the retention guard', async () => {
+    const { userId, companyId, fiscalPeriodId } = await seedWithDimensions()
+    const dimId = await getDimensionId(companyId, 6)
+    await insertValue({ companyId, dimensionId: dimId, code: 'P001' })
+    const entryId = await insertDraftJournalEntry({ userId, companyId, fiscalPeriodId })
+    await insertDimensionedLines(entryId, { '6': 'P001' })
+    await commitEntry(companyId, entryId)
+
+    // The PostgREST shape of the old hole: a writer PATCHes the code, which
+    // would orphan the posted tag and leave the renamed row deletable.
+    await withUserContext(userId, async (client) => {
+      await expect(
+        client.query(
+          `UPDATE public.dimension_values SET code = 'P002' WHERE company_id = $1 AND code = 'P001'`,
+          [companyId],
+        ),
+      ).rejects.toThrow(/kan inte ändras/)
+    })
+
+    await expect(
+      getPool().query(
+        `DELETE FROM public.dimension_values WHERE company_id = $1 AND code = 'P001'`,
+        [companyId],
+      ),
+    ).rejects.toThrow(/arkivera/)
+  })
+
+  it('lets the parent_value_id ON DELETE SET NULL cascade through', async () => {
+    const { companyId } = await seedWithDimensions()
+    const dimId = await getDimensionId(companyId, 6)
+    const parentId = await insertValue({ companyId, dimensionId: dimId, code: 'P100' })
+    const childId = await insertValue({ companyId, dimensionId: dimId, code: 'P101' })
+    await getPool().query(`UPDATE public.dimension_values SET parent_value_id = $2 WHERE id = $1`, [
+      childId,
+      parentId,
+    ])
+
+    await getPool().query(`DELETE FROM public.dimension_values WHERE id = $1`, [parentId])
+
+    const { rows } = await getPool().query(
+      `SELECT code, parent_value_id FROM public.dimension_values WHERE id = $1`,
+      [childId],
+    )
+    expect(rows).toEqual([{ code: 'P101', parent_value_id: null }])
+  })
+})
+
 describe('dimension_values retention', () => {
   it('blocks deleting a value referenced by a posted line, allows unreferenced', async () => {
     const { userId, companyId, fiscalPeriodId } = await seedWithDimensions()
