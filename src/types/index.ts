@@ -1403,6 +1403,14 @@ export interface Invoice {
   vat_treatment: VatTreatment
   vat_rate: number
   moms_ruta: string | null  // For Swedish VAT reporting (05, 39, 40, etc.)
+  // Per-invoice treatment (#2906, migration 20260927223000): what the invoice
+  // itself states about its supply, validated by resolveInvoiceVatRules. Null
+  // = the customer decides. delivery_country is where the GOODS were
+  // transported (ISO alpha-2); under an export / reverse_charge header it
+  // books the goods accounts 3105 / 3108 instead of the services ones
+  // 3305 / 3308. Optional in TS for pre-migration fixtures.
+  vat_treatment_override?: 'standard' | 'export' | 'reverse_charge' | null
+  delivery_country?: string | null
 
   // Reference
   your_reference: string | null

@@ -144,6 +144,23 @@ describe('buildCutoffLines: fordringar', () => {
     expect(totals.debit).toBe(totals.credit)
   })
 
+  it('splits goods delivered abroad (#2906) from services on the same treatment', () => {
+    // An unpaid goods export books its cut-off revenue where its own verifikat
+    // will (3105, ruta 36); a services export stays on 3305 (ruta 40).
+    const { receivableLines } = buildCutoffLines(
+      [
+        receivable({ id: 'inv-goods', vatTreatment: 'export', goodsDeliveryCountry: 'NO', outstanding: 5000, vat: 0 }),
+        receivable({ id: 'inv-svc', vatTreatment: 'export', outstanding: 2000, vat: 0 }),
+      ],
+      [],
+      'aktiebolag',
+    )
+    expect(receivableLines.find((l) => l.account_number === '3105')?.credit_amount).toBe(5000)
+    expect(receivableLines.find((l) => l.account_number === '3305')?.credit_amount).toBe(2000)
+    const totals = sum(receivableLines)
+    expect(totals.debit).toBe(totals.credit)
+  })
+
   it('still balances if a stray moms amount reaches buildCutoffLines directly', () => {
     // The collector now excludes these rows and the posting step refuses them,
     // so this is the last-resort path. It must never invent a moms account and

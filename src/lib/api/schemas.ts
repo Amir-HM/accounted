@@ -25,6 +25,7 @@ import { SalaryCalculationPolicySchema } from '@/lib/salary/calculation-policy'
 import { MAX_INVOICE_EMAIL_COPY_RECIPIENTS } from '@/lib/invoices/email-recipients'
 import { INVOICE_POSTING_ACCOUNT_REGEX } from '@/lib/invoices/posting-account'
 import { computeLineNet } from '@/lib/invoices/line-amounts'
+import { INVOICE_VAT_TREATMENT_OVERRIDES } from '@/lib/invoices/invoice-vat-override'
 import {
   DEDUCTION_LINE_ERRORS,
   HOUSEWORK_TYPE_VALUES,
@@ -38,6 +39,7 @@ import {
   COUNTRY_CONSISTENCY_MESSAGES,
   checkCountryConsistency,
   defaultCountryForParty,
+  isAssignedCountryCode,
   normalizeCountryCode,
 } from '@/lib/vat/country-codes'
 import {
@@ -623,6 +625,34 @@ function refineRotRutLineCompleteness(
   })
 }
 
+/**
+ * Per-invoice VAT treatment (#2906). Omitted = the customer decides (create)
+ * or the draft keeps what it has (edit); null clears. The two travel as a
+ * pair: sending either replaces both. The rules live in
+ * resolveInvoiceVatRules (lib/invoices/vat-rules.ts), applied by the shared
+ * invoice builder; this is only the wire shape.
+ */
+export const InvoiceVatOverrideShape = {
+  vat_treatment: z
+    .enum(INVOICE_VAT_TREATMENT_OVERRIDES)
+    .nullable()
+    .optional()
+    .describe(
+      "This invoice's own VAT treatment instead of the customer's. standard = Swedish VAT at the line rates (ruta 05). export with delivery_country = export of goods (0 %, 3105, ruta 36); reverse_charge with delivery_country = intra-EU supply of goods (0 %, 3108, ruta 35). Without delivery_country, export / reverse_charge are the services treatments and only accepted where the customer already gets them. Omit to let the customer decide; null clears.",
+    ),
+  delivery_country: z
+    .string()
+    .regex(/^[A-Za-z]{2}$/, 'delivery_country must be an ISO 3166-1 alpha-2 code')
+    .transform((v) => normalizeCountryCode(v) as string)
+    // An unassigned code would read as "outside the EU" and unlock export.
+    .refine(isAssignedCountryCode, 'delivery_country must be an assigned ISO 3166-1 alpha-2 country code')
+    .nullable()
+    .optional()
+    .describe(
+      'ISO 3166-1 alpha-2 country the GOODS are transported to. Setting it declares the invoice a supply of goods; alone it implies the treatment (SE = standard, another EU member state = reverse_charge, elsewhere = export). XI = Northern Ireland (inside the EU for goods). Omit for services.',
+    ),
+}
+
 const CreateInvoiceBaseSchema = z.object({
   customer_id: uuid,
   invoice_date: isoDate,
@@ -730,6 +760,7 @@ const CreateInvoiceBaseSchema = z.object({
     .transform((v) => v || null)
     .nullable()
     .optional(),
+  ...InvoiceVatOverrideShape,
   items: z.array(CreateInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 

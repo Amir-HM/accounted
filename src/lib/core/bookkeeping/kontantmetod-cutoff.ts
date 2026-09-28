@@ -104,6 +104,11 @@ export interface CutoffReceivable {
   /** Human reference for the line description. */
   reference: string
   vatTreatment: VatTreatment
+  /**
+   * The invoice's delivery_country (#2906): goods delivered abroad book the
+   * goods accounts (3105 / 3108), like the invoice's own verifikat.
+   */
+  goodsDeliveryCountry?: string | null
   /** Outstanding INCLUDING moms at period end. */
   outstanding: number
   /** The moms share of `outstanding`. */
@@ -264,9 +269,10 @@ export function buildCutoffLines(
   const payableLines: CreateJournalEntryLineInput[] = []
 
   // ---- Fordringar -------------------------------------------------------
-  // Group by VAT treatment: the revenue account and the vilande moms account
-  // both follow from it.
-  const revenueByTreatment = new Map<VatTreatment, number>()
+  // Group revenue by the account the treatment books to (goods delivered
+  // abroad split from services, #2906) and moms by treatment: the vilande
+  // moms account follows from the treatment alone.
+  const revenueByAccount = new Map<string, number>()
   const outputVatByTreatment = new Map<VatTreatment, number>()
   let receivableOre = 0
 
@@ -279,7 +285,8 @@ export function buildCutoffLines(
     const netOre = outstandingOre - vatOre
 
     receivableOre += outstandingOre
-    revenueByTreatment.set(row.vatTreatment, (revenueByTreatment.get(row.vatTreatment) ?? 0) + netOre)
+    const revenueAccount = getRevenueAccount(row.vatTreatment, entityType, row.goodsDeliveryCountry ?? null)
+    revenueByAccount.set(revenueAccount, (revenueByAccount.get(revenueAccount) ?? 0) + netOre)
     if (vatOre !== 0) {
       outputVatByTreatment.set(
         row.vatTreatment,
@@ -296,10 +303,10 @@ export function buildCutoffLines(
       'Kundfordringar vid räkenskapsårets utgång (kontantmetoden)',
     ))
 
-    for (const [treatment, netOre] of revenueByTreatment) {
+    for (const [revenueAccount, netOre] of revenueByAccount) {
       if (netOre === 0) continue
       receivableLines.push(signedLine(
-        getRevenueAccount(treatment, entityType),
+        revenueAccount,
         'credit',
         netOre,
         'Obetalda kundfakturor vid bokslut',
@@ -756,7 +763,7 @@ export async function collectKontantmetodCutoff(
       fetchAllRows<Record<string, unknown>>(
         ({ from, to }) => supabase
           .from('invoices')
-          .select('id, invoice_number, invoice_date, status, total, total_sek, vat_amount, vat_amount_sek, vat_treatment, credited_invoice_id, document_type, currency, exchange_rate, deduction_total')
+          .select('id, invoice_number, invoice_date, status, total, total_sek, vat_amount, vat_amount_sek, vat_treatment, delivery_country, credited_invoice_id, document_type, currency, exchange_rate, deduction_total')
           .eq('company_id', companyId)
           .lte('invoice_date', periodEnd)
           .in('status', ['sent', 'overdue', 'partially_paid', 'paid', 'credited'])
@@ -900,6 +907,7 @@ export async function collectKontantmetodCutoff(
       id: row.id as string,
       reference,
       vatTreatment: treatment,
+      goodsDeliveryCountry: (row.delivery_country as string | null) ?? null,
       outstanding,
       vat: scaledVat,
     })
