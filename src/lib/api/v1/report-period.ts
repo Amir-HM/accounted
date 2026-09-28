@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Logger } from '@/lib/logger'
 import { parseReportDateRange, type DateRange } from '@/lib/reports/date-range'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from './errors'
+import type { EndpointDefinition } from './registry'
 import { UUID_RE } from '@/lib/invariants/uuid'
 
 /**
@@ -34,6 +35,20 @@ export const ReportDateRangeQueryShape = {
     .string()
     .optional()
     .describe('YYYY-MM-DD, inside the fiscal period and not before from_date.'),
+}
+
+/**
+ * The dimension filter pair parseDimensionFilterParams reads
+ * (lib/reports/dimension-filter.ts). Only the P&L-safe reports document it;
+ * on any other report the query gate in withApiV1 answers 400 instead of
+ * the unfiltered report.
+ */
+export const ReportDimensionFilterQueryShape = {
+  dim_no: z
+    .string()
+    .optional()
+    .describe('SIE dimension number to filter on: "1" kostnadsställe, "6" projekt, 20+ custom. Send with dim_code.'),
+  dim_code: z.string().optional().describe('The dimension value code, e.g. "P001". Send with dim_no.'),
 }
 
 export interface FiscalPeriodRow {
@@ -126,8 +141,9 @@ export type QueryParamsResult = { ok: true } | { ok: false; response: Response }
  * of `from_date=`) got a full-period report back with no signal that its
  * intent was ignored. For date-scoped financial reports that's dangerous:
  * the caller believes it holds a January-July resultatrapport when it holds
- * the whole year. Scoped to the report routes that opt in; not a global v1
- * behavior change.
+ * the whole year. Scoped to reports, not a global v1 behavior change:
+ * withApiV1 runs it on every report read (isReportRead) against the query
+ * the endpoint registers, and a route may still gate a narrower list.
  */
 // Params the withApiV1 wrapper itself reads on every request; a route-level
 // allowlist must never reject them.
@@ -154,6 +170,35 @@ export async function assertKnownQueryParams(
       },
     }),
   }
+}
+
+/**
+ * Operation-id prefixes whose GET doors serve a report or a report file (the
+ * SIE import lease keys on `reports.` the same way, lib/import/sie-period-read.ts).
+ */
+const REPORT_OPERATION_PREFIXES = ['reports.', 'arsredovisning.'] as const
+
+/**
+ * True for a read of a report. withApiV1 refuses such a request's unknown
+ * query parameters: a report read with a filter it does not know answered
+ * the unfiltered report, which the caller then took for the filtered one
+ * (?dim_no=6&dim_code=P001 on the trial balance).
+ */
+export function isReportRead(method: string, operation: string): boolean {
+  return method === 'GET' && REPORT_OPERATION_PREFIXES.some((prefix) => operation.startsWith(prefix))
+}
+
+/**
+ * The query parameters an endpoint registers in `request.query`: what the
+ * OpenAPI spec publishes and, pinned by query-params-registered.test.ts,
+ * exactly what the route reads. Null when there is nothing reliable to check
+ * against (no registration, or a query schema that is not an object).
+ */
+export function registeredQueryParams(def: EndpointDefinition | undefined): string[] | null {
+  if (!def) return null
+  const query = def.request?.query
+  if (!query) return []
+  return query instanceof z.ZodObject ? Object.keys(query.shape) : null
 }
 
 export type RangeResult =

@@ -141,7 +141,9 @@ const GROUPS: Array<{ file: string; title: string; members: string[]; blurb: str
     members: ['reports', 'audit-trail', 'vat'],
     blurb:
       'Read-only statutory and management reports: trial balance, balance sheet, income statement, ' +
-      'general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export.',
+      'general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export. Every report ' +
+      'answers 400 VALIDATION_ERROR to a query parameter it does not list, never ignores it; only ' +
+      'income-statement, general-ledger, monthly-breakdown and kpi take the dim_no + dim_code filter.',
   },
   {
     file: 'assets.md',

@@ -19,7 +19,9 @@
  *      (read-only) membership is refused for every write: mutating method
  *      or non-`:read` scope (FORBIDDEN, details.code ROLE_READ_ONLY). So is
  *      a company the key has read-only access to (FORBIDDEN, details.code
- *      CONNECTION_READ_ONLY).
+ *      CONNECTION_READ_ONLY). A report read (GET on a `reports.*` or
+ *      `arsredovisning.*` operation) refuses any query parameter its endpoint
+ *      does not register (VALIDATION_ERROR), never drops it.
  *   5. Resolves the dry-run flag (`?dry_run=true` query OR `X-Dry-Run` header).
  *   6. Resolves `Idempotency-Key` (header) and replays cached responses. The
  *      dry-run flag is part of the cache identity and dry-run responses are
@@ -68,6 +70,7 @@ ensureInitialized()
 import { resolveRequiredScope } from '@/lib/auth/scopes'
 import { getMultiUserState, isMembershipDormant } from '@/lib/entitlements/multi-user'
 import { getEndpointByConcretePath } from './registry'
+import { assertKnownQueryParams, isReportRead, registeredQueryParams } from './report-period'
 import {
   checkIdempotencyKey,
   hashRequest,
@@ -544,6 +547,22 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
               },
             })
           }
+        }
+      }
+
+      // 5b. A report read answers exactly the query its endpoint registers.
+      //     A filter the report does not know was dropped before, so
+      //     ?dim_no=6&dim_code=P001 on the trial balance answered the whole
+      //     company's report to a caller who believed it filtered. The
+      //     allowlist is the registered query (what the spec publishes and,
+      //     per query-params-registered.test.ts, what the route reads), so
+      //     it cannot drift from the parser. After the access gates, so a
+      //     company the key cannot see still answers 404, never 400.
+      if (isReportRead(request.method, operation)) {
+        const allowed = registeredQueryParams(getEndpointByConcretePath(request.method, path))
+        if (allowed) {
+          const known = await assertKnownQueryParams(request, allowed, { requestId, log: userLog })
+          if (!known.ok) return known.response
         }
       }
 
