@@ -9,6 +9,7 @@ import { validateBalance, getNextVoucherNumber } from '@/lib/bookkeeping/engine'
 import { normalizeLineDimensions } from '@/lib/bookkeeping/dimension-resolver'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { resolvePeriodStatusForDate } from '@/lib/core/bookkeeping/period-service'
+import { postedLineAsInput } from '@/lib/core/bookkeeping/posted-line-input'
 import {
   correctionChainDepth,
   CORRECTION_CHAIN_GUARD_DEPTH,
@@ -581,20 +582,7 @@ export async function recordateEntry(
   const copiedLines: CreateJournalEntryLineInput[] = originalLines
     .slice()
     .sort((a, b) => a.sort_order - b.sort_order)
-    .map((line) => ({
-      account_number: line.account_number,
-      debit_amount: Number(line.debit_amount) || 0,
-      credit_amount: Number(line.credit_amount) || 0,
-      line_description: line.line_description || undefined,
-      currency: line.currency || undefined,
-      amount_in_currency:
-        line.amount_in_currency != null ? Number(line.amount_in_currency) : undefined,
-      exchange_rate: line.exchange_rate != null ? Number(line.exchange_rate) : undefined,
-      tax_code: line.tax_code || undefined,
-      dimensions: line.dimensions || undefined,
-      cost_center: line.cost_center || undefined,
-      project: line.project || undefined,
-    }))
+    .map(postedLineAsInput)
 
   const result = await correctEntry(
     supabase,
