@@ -184,7 +184,7 @@ describe('contract', () => {
     expect(AddEmployeeToRunSchema.shape.hours_worked.description).toBeUndefined()
     expect(SalaryRunStatusSchema.description).toBeUndefined()
     const lineInput = (salaryRunsLinesCreate.input as unknown as z.ZodObject<z.ZodRawShape>).shape
-    expect(lineInput.item_type.description).toMatch(/bonus/)
+    expect((lineInput.item_type as z.ZodType).description).toMatch(/bonus/)
   })
 
   it('writes no em or en dash into anything an agent or approver reads', () => {

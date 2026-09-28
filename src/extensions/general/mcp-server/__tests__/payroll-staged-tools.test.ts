@@ -412,7 +412,7 @@ describe('gnubok_update_salary_run', () => {
     ).rejects.toThrow(/SALARY_RUN_NOT_FOUND/)
   })
 
-  it('rejects a malformed payment_date before touching the run', async () => {
+  it('rejects a malformed payment_date before touching the run, by code and naming the field', async () => {
     const { supabase } = createQueuedMockSupabase()
 
     await expect(
@@ -420,7 +420,7 @@ describe('gnubok_update_salary_run', () => {
         { salary_run_id: 'run-1', payment_date: '23/03/2026' },
         'company-1', 'user-1', supabase as never, { type: 'user' },
       ),
-    ).rejects.toThrow(/VALIDATION_ERROR/)
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR', message: expect.stringContaining('payment_date') })
   })
 
   it('rejects a call with no updatable field', async () => {

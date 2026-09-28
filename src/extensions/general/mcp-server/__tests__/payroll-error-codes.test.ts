@@ -333,3 +333,27 @@ describe('gnubok_agi_submit', () => {
     expect(error.remediation).toMatchObject({ tool: 'gnubok_generate_agi', args: { salary_run_id: 'run-1' } })
   })
 })
+
+describe('gnubok_book_salary_run', () => {
+  it('answers SALARY_RUN_NOT_FOUND for an unknown id', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: null })
+
+    const error = await refusal('gnubok_book_salary_run', { salary_run_id: 'run-x' }, supabase)
+
+    expect(error.code).toBe('SALARY_RUN_NOT_FOUND')
+    expect(error.retryable).toBe(false)
+    expect(error.message_en).toContain('run-x')
+  })
+
+  it('answers SALARY_RUN_ALREADY_BOOKED for a booked run instead of "Något gick fel"', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'run-1', status: 'booked', period_year: 2026, period_month: 8, payment_date: '2026-08-25' } })
+
+    const error = await refusal('gnubok_book_salary_run', { salary_run_id: 'run-1' }, supabase)
+
+    expect(error.code).toBe('SALARY_RUN_ALREADY_BOOKED')
+    expect(error.retryable).toBe(false)
+    expect(error.message_sv).toBe('Lönekörningen är redan bokförd.')
+  })
+})

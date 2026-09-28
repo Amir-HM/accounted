@@ -16890,7 +16890,9 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_STAGED_WRITE,
     async execute(args, companyId, userId, supabase, actor) {
       const id = args.salary_run_id as string
-      if (!id) throw new Error('salary_run_id is required')
+      if (!id) {
+        throw fieldValidationError('Cannot book salary run', [{ field: 'salary_run_id', en: 'is required', sv: 'krävs' }])
+      }
 
       const { data: run, error } = await supabase
         .from('salary_runs')
@@ -16899,8 +16901,8 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .maybeSingle()
       if (error) throw dbError(error)
-      if (!run) throw new Error('Salary run not found')
-      if (run.status === 'booked') throw new Error('Salary run is already booked')
+      if (!run) throw codedRefusal('SALARY_RUN_NOT_FOUND', `Salary run ${id} was not found in this company.`)
+      if (run.status === 'booked') throw codedRefusal('SALARY_RUN_ALREADY_BOOKED', `Salary run ${id} is already booked.`)
       if (!['draft', 'review', 'approved', 'paid'].includes(run.status as string)) {
         throw new Error(`Salary run cannot be booked from status "${run.status}"`)
       }
@@ -17788,7 +17790,7 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        throw new Error(`Cannot set run salary: ${preflight.code}`)
+        throw serviceRefusal('Cannot set run salary', preflight)
       }
 
       const [{ data: run }, { data: emp }] = await Promise.all([
@@ -17889,7 +17891,7 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        throw new Error(`Cannot update salary run: ${preflight.code}`)
+        throw serviceRefusal('Cannot update salary run', preflight)
       }
       const d = preflight.data
 
@@ -17989,7 +17991,7 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        throw new Error(`Cannot register absence: ${preflight.code}`)
+        throw serviceRefusal('Cannot register absence', preflight)
       }
 
       const { data: emp } = await supabase
@@ -18075,7 +18077,7 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        throw new Error(`Cannot delete absence: ${preflight.code}`)
+        throw serviceRefusal('Cannot delete absence', preflight)
       }
       if (preflight.data.deleted_count === 0) {
         throw new Error('No registered absence days in that range: nothing to delete')
@@ -18712,7 +18714,7 @@ export const tools: McpTool[] = [
       // day transitions + SEK drift that will commit.
       const preview = await previewVacationYearClose(supabase, companyId, yearStart)
       if (!preview.ok) {
-        throw new Error(`Cannot close vacation year: ${preview.code}`)
+        throw serviceRefusal('Cannot close vacation year', preview)
       }
       const report = preview.data
 

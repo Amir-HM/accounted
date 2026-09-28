@@ -362,6 +362,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_delete_payslip_line: 'payroll:write',
   gnubok_correct_salary_run: 'payroll:write',
   gnubok_mark_salary_run_paid: 'payroll:write',
+  gnubok_list_salary_payment_files: 'payroll:read',
   // Payroll over MCP, employee setup (lib/operations/salary-employee-setup.ts).
   gnubok_list_worked_days: 'payroll:read',
   gnubok_set_worked_days: 'payroll:write',

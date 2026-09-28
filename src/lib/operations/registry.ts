@@ -71,6 +71,7 @@ import {
   employeesWorkedDaysList,
   employeesWorkedDaysUpsert,
 } from './salary-employee-setup'
+import { salaryRunsPaymentFilesList } from './salary-payment-files'
 import {
   invoicesBook,
   invoicesBulkBook,
@@ -233,6 +234,8 @@ export const OPERATIONS: readonly AnyOperation[] = [
   salaryRunsLinesDelete,
   salaryRunsCorrect,
   salaryRunsMarkPaid,
+  // salary-payment-files (MCP only, metadata only: no door builds or hands over a file)
+  salaryRunsPaymentFilesList,
   // salary-employee-setup (MCP only: the v1 doors are the hand-written employee routes)
   employeesWorkedDaysList,
   employeesWorkedDaysUpsert,
