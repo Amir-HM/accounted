@@ -297,7 +297,17 @@ export async function createDimensionValue(
 
   const { data, error } = await supabase
     .from('dimension_values')
-    .insert({ company_id: companyId, ...value })
+    // Keys spelled out, not spread: tests/schema/no-phantom-columns.test.ts
+    // can only check the columns of a literal payload.
+    .insert({
+      company_id: companyId,
+      dimension_id: value.dimension_id,
+      code: value.code,
+      name: value.name,
+      is_active: value.is_active,
+      start_date: value.start_date,
+      end_date: value.end_date,
+    })
     .select('id, dimension_id, code, name, is_active, start_date, end_date, created_at')
     .single()
   if (error) {
