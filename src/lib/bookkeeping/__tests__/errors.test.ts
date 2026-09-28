@@ -200,6 +200,13 @@ describe('Typed bookkeeping errors', () => {
         { sie_dim_no: '21', code: 'KB7', reason: 'unknown_value', dimension_name: 'Kostnadsbärare' },
       ])
     ).toBe('Okänt värde "KB7" i Kostnadsbärare (dimension 21). Skapa värdet i registret först.')
+    expect(
+      formatDimensionValidationIssues([
+        { sie_dim_no: '21', code: 'KB1', reason: 'archived_dimension', dimension_name: 'Kostnadsbärare' },
+      ])
+    ).toBe(
+      '"KB1" i Kostnadsbärare (dimension 21): dimensionen är arkiverad. Återaktivera dimensionen för att använda värdet.'
+    )
     // A malformed name is not trusted into the sentence.
     expect(
       formatDimensionValidationIssues([

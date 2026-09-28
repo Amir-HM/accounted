@@ -148,10 +148,13 @@ export function dimensionsBagKey(dimensions?: LineDimensions): string {
  *     free-text passthrough: existing API/MCP writers are unaffected. This is
  *     the ONE place the toggle is load-bearing beyond UI visibility.
  *  3. Enabled companies get referential validation against the registry: a
- *     dimension number with no `dimensions` row, a code with no
- *     `dimension_values` row, or an archived (is_active = false) value rejects
- *     the whole entry with a DimensionValidationError whose Swedish message
- *     names every offending code.
+ *     dimension number with no `dimensions` row, any code of an archived
+ *     (is_active = false) dimension, a code with no `dimension_values` row, or
+ *     an archived value rejects the whole entry with a
+ *     DimensionValidationError whose Swedish message names every offending
+ *     code and its dimension. An archived dimension is judged like an archived
+ *     value: new entries may not use it, while the exempt paths below still
+ *     replay tags that were valid when first posted.
  *
  * Cost: at most three queries per entry (settings, dimensions,
  * dimension_values) regardless of line count: never per-line lookups.
@@ -196,7 +199,7 @@ export async function validateEntryDimensions(
   //     name rides along so every message names the actual dimension.
   const { data: dimRows, error: dimError } = await supabase
     .from('dimensions')
-    .select('id, sie_dim_no, name')
+    .select('id, sie_dim_no, name, is_active')
     .eq('company_id', companyId)
     .in('sie_dim_no', [...union.keys()].map(Number))
 
@@ -204,9 +207,17 @@ export async function validateEntryDimensions(
 
   const dimIdByNo = new Map<string, string>()
   const nameByNo = new Map<string, string>()
-  for (const row of (dimRows ?? []) as { id: string; sie_dim_no: number; name?: string | null }[]) {
-    dimIdByNo.set(String(row.sie_dim_no), row.id)
-    if (row.name) nameByNo.set(String(row.sie_dim_no), row.name)
+  const archivedDimNos = new Set<string>()
+  for (const row of (dimRows ?? []) as {
+    id: string
+    sie_dim_no: number
+    name?: string | null
+    is_active?: boolean | null
+  }[]) {
+    const dimNo = String(row.sie_dim_no)
+    dimIdByNo.set(dimNo, row.id)
+    if (row.name) nameByNo.set(dimNo, row.name)
+    if (row.is_active === false) archivedDimNos.add(dimNo)
   }
   const named = (dimNo: string): { dimension_name?: string } => {
     const name = nameByNo.get(dimNo)
@@ -215,10 +226,19 @@ export async function validateEntryDimensions(
 
   const issues: DimensionValidationIssue[] = []
   const knownDimIds: string[] = []
-  for (const dimNo of union.keys()) {
+  for (const [dimNo, codes] of union) {
     const dimId = dimIdByNo.get(dimNo)
-    if (dimId) knownDimIds.push(dimId)
-    else issues.push({ sie_dim_no: dimNo, code: null, reason: 'unknown_dimension' })
+    if (!dimId) {
+      issues.push({ sie_dim_no: dimNo, code: null, reason: 'unknown_dimension' })
+    } else if (archivedDimNos.has(dimNo)) {
+      // Every code under an archived dimension is refused, whether or not the
+      // value itself is active, so its values need no lookup.
+      for (const code of codes) {
+        issues.push({ sie_dim_no: dimNo, code, reason: 'archived_dimension', ...named(dimNo) })
+      }
+    } else {
+      knownDimIds.push(dimId)
+    }
   }
 
   // 3b. Value rows for every referenced (dimension, code) pair: one query.
@@ -249,7 +269,7 @@ export async function validateEntryDimensions(
 
     for (const [dimNo, codes] of union) {
       const dimId = dimIdByNo.get(dimNo)
-      if (!dimId) continue
+      if (!dimId || archivedDimNos.has(dimNo)) continue
       for (const code of codes) {
         const isActive = activeByKey.get(`${dimId}\u0000${code}`)
         if (isActive === undefined) {

@@ -32,6 +32,8 @@ export type DimensionValidationReason =
   | 'unknown_value'
   /** The value exists but is archived (is_active = false). */
   | 'archived_value'
+  /** The dimension itself is archived (is_active = false): no code under it is usable. */
+  | 'archived_dimension'
 
 export interface DimensionValidationIssue {
   /** SIE dimension number as keyed in the line bag, e.g. '1' or '6'. */
@@ -66,6 +68,8 @@ export function formatDimensionValidationIssue(issue: DimensionValidationIssue):
       return `"${issue.code}" i ${dimensionLabel(issue)} är arkiverat: återaktivera värdet för att använda det.`
     case 'unknown_value':
       return `Okänt värde "${issue.code}" i ${dimensionLabel(issue)}. Skapa värdet i registret först.`
+    case 'archived_dimension':
+      return `"${issue.code}" i ${dimensionLabel(issue)}: dimensionen är arkiverad. Återaktivera dimensionen för att använda värdet.`
   }
 }
 
@@ -76,7 +80,10 @@ function isDimensionValidationIssue(value: unknown): value is DimensionValidatio
   if (v.dimension_name !== undefined && typeof v.dimension_name !== 'string') return false
   if (v.reason === 'unknown_dimension') return true
   return (
-    (v.reason === 'unknown_value' || v.reason === 'archived_value') && typeof v.code === 'string'
+    (v.reason === 'unknown_value' ||
+      v.reason === 'archived_value' ||
+      v.reason === 'archived_dimension') &&
+    typeof v.code === 'string'
   )
 }
 
@@ -97,10 +104,10 @@ export function formatDimensionValidationIssues(raw: unknown): string | null {
 /**
  * Raised by validateEntryDimensions() when a company with
  * company_settings.dimensions_enabled = true tags a line with a dimension
- * number that has no registry row, a code with no dimension_values row, or an
- * archived value. Companies without the toggle keep free-text passthrough
- * (backward compatible with every existing API/MCP writer), and untagged
- * entries never reach this validation at all.
+ * number that has no registry row, a code with no dimension_values row, an
+ * archived value, or any code of an archived dimension. Companies without the
+ * toggle keep free-text passthrough (backward compatible with every existing
+ * API/MCP writer), and untagged entries never reach this validation at all.
  */
 export class DimensionValidationError extends Error {
   readonly code = DIMENSION_VALIDATION_FAILED

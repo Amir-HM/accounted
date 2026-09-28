@@ -726,3 +726,48 @@ describe('updateDraftEntry: dimension policy follows the stored source type', ()
     expect(lineRows[1].dimensions).toEqual({})
   })
 })
+
+/**
+ * An archived dimension is judged like an archived value: a new entry may not
+ * use any of its codes, while the validation-exempt accrual replay still posts
+ * the tag its origin carried.
+ */
+describe('createDraftEntry: archived dimension', () => {
+  const ARCHIVED_PROJECT_DIMENSION: Record<string, TableResult> = {
+    ...DIMENSION_TABLES,
+    dimensions: {
+      data: [
+        { id: 'dim-ks', sie_dim_no: 1, name: 'Kostnadsställe', is_active: true },
+        { id: 'dim-proj', sie_dim_no: 6, name: 'Projekt', is_active: false },
+      ],
+    },
+  }
+
+  it('rejects an active code of an archived dimension before any row is inserted', async () => {
+    const { supabase, inserts } = buildSupabase({ ...BASE_TABLES, ...ARCHIVED_PROJECT_DIMENSION })
+
+    const promise = createDraftEntry(supabase as never, 'company-1', 'user-1', makeInput({ '6': 'P001' }))
+
+    await expect(promise).rejects.toBeInstanceOf(DimensionValidationError)
+    await expect(promise).rejects.toThrow(
+      '"P001" i Projekt (dimension 6): dimensionen är arkiverad. Återaktivera dimensionen för att använda värdet.'
+    )
+    expect(inserts.journal_entries).toBeUndefined()
+    expect(inserts.journal_entry_lines).toBeUndefined()
+  })
+
+  it('still posts an accrual dissolution that replays a tag of the archived dimension', async () => {
+    const { supabase, inserts } = buildSupabase({ ...BASE_TABLES, ...ARCHIVED_PROJECT_DIMENSION })
+
+    const entry = await createDraftEntry(
+      supabase as never,
+      'company-1',
+      'user-1',
+      makeInput({ '6': 'P001' }, { source_type: 'accrual', source_id: 'sched-1' })
+    )
+
+    expect(entry.id).toBe('entry-1')
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({ '6': 'P001' })
+  })
+})

@@ -238,6 +238,44 @@ describe('validateEntryDimensions (soft registry validation, PR3)', () => {
     )
   })
 
+  it('rejects every code of an archived dimension, even an active value, without a value lookup', async () => {
+    const q = createQueuedMockSupabase()
+    q.enqueue(enabledSettings)
+    q.enqueue({ data: [{ id: 'dim-kb', sie_dim_no: 21, name: 'Kostnadsbärare', is_active: false }] })
+    const promise = run(q, [{ dimensions: { '21': 'KB1' } }, { dimensions: { '21': 'KB2' } }])
+    await expect(promise).rejects.toBeInstanceOf(DimensionValidationError)
+    await expect(promise).rejects.toMatchObject({
+      issues: [
+        { sie_dim_no: '21', code: 'KB1', reason: 'archived_dimension', dimension_name: 'Kostnadsbärare' },
+        { sie_dim_no: '21', code: 'KB2', reason: 'archived_dimension', dimension_name: 'Kostnadsbärare' },
+      ],
+    })
+    await expect(promise).rejects.toThrow(
+      '"KB1" i Kostnadsbärare (dimension 21): dimensionen är arkiverad. Återaktivera dimensionen för att använda värdet.'
+    )
+    // The archived dimension was the only one referenced: no value query.
+    expect(queriedTables(q)).toEqual(['company_settings', 'dimensions'])
+  })
+
+  it('judges an archived dimension apart from the active ones in the same entry', async () => {
+    const q = createQueuedMockSupabase()
+    q.enqueue(enabledSettings)
+    q.enqueue({
+      data: [
+        { id: 'dim-proj', sie_dim_no: 6, name: 'Projekt', is_active: true },
+        { id: 'dim-kb', sie_dim_no: 21, name: 'Kostnadsbärare', is_active: false },
+      ],
+    })
+    q.enqueue({ data: [{ dimension_id: 'dim-proj', code: 'P001', is_active: true }] })
+    const promise = run(q, [{ dimensions: { '6': 'P001', '21': 'KB1' } }])
+    await expect(promise).rejects.toMatchObject({
+      issues: [{ sie_dim_no: '21', code: 'KB1', reason: 'archived_dimension' }],
+    })
+    // Only the active dimension's values are looked up.
+    const valueLookup = q.findCall('dimension_values', 'in')
+    expect(valueLookup).toEqual(['dimension_id', ['dim-proj']])
+  })
+
   it('accepts valid active codes: three queries total, never per line', async () => {
     const q = createQueuedMockSupabase()
     q.enqueue(enabledSettings)

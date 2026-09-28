@@ -375,7 +375,7 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
       'One or more dimension codes on the entry lines are missing from the dimension registry or archived. details.issues lists each offending sie_dim_no/code.',
     remediation: {
       description:
-        'Create the missing dimension value in the register (or re-activate the archived value), then retry. Only companies with dimensions enabled are validated; each issue in details.issues carries sie_dim_no, code and reason (unknown_dimension | unknown_value | archived_value).',
+        'Create the missing dimension value in the register (or re-activate the archived value or dimension), then retry. Only companies with dimensions enabled are validated; each issue in details.issues carries sie_dim_no, code, reason (unknown_dimension | unknown_value | archived_value | archived_dimension) and, when the dimension is registered, dimension_name.',
     },
   },
   MANDATORY_DIMENSION_MISSING: {
