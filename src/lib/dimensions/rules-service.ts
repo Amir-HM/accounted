@@ -69,12 +69,15 @@ export async function listAccountDimensionRules(
   filter: { account_number?: string } = {},
 ): Promise<OperationOutcome<{ rules: AccountDimensionRuleDto[] }>> {
   try {
-    const rows = await fetchAllRows<RawRule>(({ from, to }) => {
+    const rows = await fetchAllRows(({ from, to }) => {
       let query = ctx.supabase.from('account_dimension_rules').select(RULE_SELECT).eq('company_id', ctx.companyId)
       if (filter.account_number) query = query.eq('account_number', filter.account_number)
       return query.order('account_number', { ascending: true }).order('id', { ascending: true }).range(from, to)
     })
-    return { ok: true, data: { rules: rows.map(toRuleDto) } }
+    // The generated types read each embed as an array; both are to-one
+    // (composite FKs), so every row carries one object or null. Same cast as
+    // fetchActiveDimensionRules in lib/bookkeeping/dimension-rules.ts.
+    return { ok: true, data: { rules: (rows as unknown as RawRule[]).map(toRuleDto) } }
   } catch (error) {
     ctx.log.error('dimension rule list failed', error as Error)
     return failed(error)
