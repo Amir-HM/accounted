@@ -67,6 +67,28 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   revert_salary_run: 'low',
   unapprove_salary_run: 'medium',
   attach_salary_expense_claims: 'medium',
+  // Payroll over MCP (lib/operations/salary-run-structure.ts and
+  // salary-employee-setup.ts). No verifikat, but each changes a pay outcome
+  // (who is paid, a payslip line, hours, a förmån, a recurring line), so human
+  // review at medium like update_payslip_line and set_run_salary, stricter
+  // than the v1 doors' 'low'. Marking a run paid records that the money left.
+  // Deactivating an employee cannot be undone on the API. The correction run
+  // storno-reverses the run's verifikationer: high, like booking it.
+  add_salary_run_employee: 'medium',
+  remove_salary_run_employee: 'medium',
+  add_payslip_line: 'medium',
+  delete_payslip_line: 'medium',
+  mark_salary_run_paid: 'medium',
+  correct_salary_run: 'high',
+  set_worked_days: 'medium',
+  delete_worked_days: 'medium',
+  add_employee_benefit: 'medium',
+  update_employee_benefit: 'medium',
+  delete_employee_benefit: 'medium',
+  add_employee_recurring_line: 'medium',
+  update_employee_recurring_line: 'medium',
+  delete_employee_recurring_line: 'medium',
+  delete_employee: 'medium',
   create_supplier_payment_batch: 'high',
   cancel_supplier_payment_batch: 'medium',
   book_invoice: 'high',

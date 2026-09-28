@@ -766,6 +766,27 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
   gnubok_send_invoice_peppol: { rows: PEPPOL_ROWS },
   gnubok_register_peppol_participant: { rows: PEPPOL_ROWS, empty: ['peppol_registrations'] },
   gnubok_request_peppol_access: { rows: { ...PEPPOL_ROWS, peppol_access: { status: 'none' } } },
+  // Payroll over MCP, run structure: a draft run the employee is not yet on,
+  // a line on a draft run, a booked run to correct, an approved run to mark
+  // paid. The previews read and never write.
+  gnubok_add_salary_run_employee: { empty: ['salary_run_employees'] },
+  gnubok_delete_payslip_line: { rows: { salary_line_items: { salary_run_employee: { salary_run_id: SOME_UUID } } } },
+  gnubok_correct_salary_run: {
+    rows: { salary_runs: { status: 'booked', period_year: 2026, period_month: 5, payment_date: '2026-05-25', salary_entry_id: SOME_UUID } },
+  },
+  gnubok_mark_salary_run_paid: { rows: { salary_runs: { status: 'approved' } } },
+  // Payroll over MCP, employee setup: valid hours, a car förmån with its
+  // monthly value, a union fee deduction (recurring lines are deductions and
+  // carry a negative amount), and one field to patch on each update.
+  gnubok_set_worked_days: { args: { days: [{ work_date: '2026-03-02', hours: 8 }] } },
+  gnubok_add_employee_benefit: {
+    args: { benefit_type: 'car', description: 'Bilförmån', monthly_value: 3500, valid_from: '2026-01-01' },
+  },
+  gnubok_update_employee_benefit: { args: { description: 'Bilförmån Volvo' } },
+  gnubok_add_employee_recurring_line: {
+    args: { item_type: 'net_deduction_union', description: 'Fackavgift', amount: -350, valid_from: '2026-01-01' },
+  },
+  gnubok_update_employee_recurring_line: { args: { description: 'Fackavgift Unionen' } },
 }
 
 describe('a tool that declares the staged envelope only stages', () => {

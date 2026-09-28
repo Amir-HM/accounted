@@ -4,11 +4,12 @@
  *
  * Single source of truth for the loading, the preconditions and the
  * `payment_file_format` / `payment_file_generated_at` stamp shared by the
- * dashboard routes (app/api/salary/runs/[id]/payment/{pain001,bg-lb}) and the
- * public endpoint (POST /api/v1/companies/:companyId/salary-runs/:id/payment-file).
- * The HTTP layers only translate the result: the dashboard keeps its legacy
- * `{ error: string }` envelope and download headers, v1 maps codes onto the
- * structured-error catalogue.
+ * dashboard routes (app/api/salary/runs/[id]/payment/{pain001,bg-lb}), the
+ * public endpoint (POST /api/v1/companies/:companyId/salary-runs/:id/payment-file)
+ * and the MCP operation (lib/operations/salary-payment-files.ts). The doors
+ * only translate the result: the dashboard keeps its legacy `{ error: string }`
+ * envelope and download headers, v1 and MCP map codes onto the
+ * structured-error catalogue through salaryPaymentFileRefusal().
  *
  * Preconditions, in the order they are checked (and the order the queries run,
  * which the dashboard route tests depend on):
@@ -180,6 +181,65 @@ function fail(
   extra: { stage?: SalaryPaymentFileLoadStage; cause?: unknown } = {},
 ): SalaryPaymentFileError {
   return { ok: false, code, format, details, ...extra }
+}
+
+/** A builder refusal in the structured-errors catalogue (lib/errors/structured-errors.ts). */
+export interface SalaryPaymentFileRefusal {
+  code: string
+  /** What the caller's envelope carries beside the code. */
+  details?: Record<string, unknown>
+  /** The builder's own explanation, for the log line. */
+  reason?: string
+}
+
+/**
+ * The structured-errors code (and details) for a builder failure, shared by
+ * the v1 route and the MCP operation so both doors answer the same code for
+ * the same state. Null for DB_ERROR and ARCHIVE_FAILED: those carry the
+ * database error in `cause`, whose SQLSTATE decides the answer (a statement
+ * timeout is transient, a constraint is not).
+ */
+export function salaryPaymentFileRefusal(result: SalaryPaymentFileError): SalaryPaymentFileRefusal | null {
+  switch (result.code) {
+    case 'RUN_NOT_FOUND':
+      return { code: 'SALARY_RUN_NOT_FOUND' }
+    case 'RUN_NOT_READY':
+      return { code: 'SALARY_RUN_PAYMENT_FILE_NOT_READY', details: result.details }
+    case 'COMPANY_NOT_FOUND':
+      return { code: 'COMPANY_NOT_FOUND' }
+    case 'SETTINGS_MISSING':
+    case 'IBAN_MISSING':
+    case 'BIC_MISSING':
+    case 'BANKGIRO_MISSING':
+    case 'BANKGIRO_INVALID':
+      return {
+        code: 'SALARY_RUN_PAYMENT_FILE_MISSING_BANK_DETAILS',
+        reason: result.code,
+        details: { format: result.format, problem: result.code.toLowerCase(), ...result.details },
+      }
+    case 'NO_EMPLOYEES':
+      return { code: 'SALARY_RUN_NO_EMPLOYEES' }
+    case 'EMPLOYEE_BANK_MISSING':
+      return {
+        code: 'SALARY_RUN_PAYMENT_FILE_EMPLOYEE_BANK_MISSING',
+        details: { format: result.format, ...result.details },
+      }
+    case 'EMPLOYEE_BANK_INVALID':
+      return {
+        code: 'SALARY_RUN_PAYMENT_FILE_EMPLOYEE_BANK_INVALID',
+        reason: String(result.details.message ?? ''),
+        details: { format: result.format, ...result.details },
+      }
+    case 'GENERATOR_FAILED':
+      return {
+        code: 'SALARY_RUN_PAYMENT_FILE_GENERATION_FAILED',
+        reason: String(result.details.message ?? ''),
+        details: { format: result.format, ...result.details },
+      }
+    case 'ARCHIVE_FAILED':
+    case 'DB_ERROR':
+      return null
+  }
 }
 
 function resolveFormat(

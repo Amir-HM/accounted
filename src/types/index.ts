@@ -2714,6 +2714,27 @@ export type PendingOperationType =
   // Completes / reopens the period's moms deadline; no ledger impact.
   | 'mark_vat_period_filed'
   | 'unmark_vat_period_filed'
+  // Payroll over MCP, run structure (lib/operations/salary-run-structure.ts):
+  // who is on a draft run, its payslip lines, the paid mark, and the
+  // rättelsekörning of a booked run (storno + a new draft for the period).
+  | 'add_salary_run_employee'
+  | 'remove_salary_run_employee'
+  | 'add_payslip_line'
+  | 'delete_payslip_line'
+  | 'mark_salary_run_paid'
+  | 'correct_salary_run'
+  // Payroll over MCP, employee setup (lib/operations/salary-employee-setup.ts):
+  // worked hours for hourly staff, förmåner, recurring payslip lines, and the
+  // soft delete (is_active=false; the row stays for the salary history).
+  | 'set_worked_days'
+  | 'delete_worked_days'
+  | 'add_employee_benefit'
+  | 'update_employee_benefit'
+  | 'delete_employee_benefit'
+  | 'add_employee_recurring_line'
+  | 'update_employee_recurring_line'
+  | 'delete_employee_recurring_line'
+  | 'delete_employee'
 // 'failed_partial' (issue #842, DB CHECK widened in 20260722134114): terminal
 // state for ops whose executor posted an irreversible side-effect (voucher,
 // credit note) and then failed a later step. Not re-committable, not pending

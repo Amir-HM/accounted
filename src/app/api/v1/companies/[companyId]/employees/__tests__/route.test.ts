@@ -1285,4 +1285,67 @@ describe('DELETE /api/v1/companies/:companyId/employees/:id', () => {
     const body = await res.json()
     expect(body.error.code).toBe('EMPLOYEE_NOT_FOUND')
   })
+
+  // The rule moved to lib/salary/employee-soft-delete.ts (shared with MCP):
+  // the wire behaviour is pinned here so the move cannot change it.
+  const ROW = { id: EMPLOYEE_ID, first_name: 'Anna', last_name: 'Andersson', is_active: true }
+
+  it('writes is_active=false and nothing else', async () => {
+    const mock = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      employees: { data: ROW, error: null },
+      idempotency_keys: { data: null, error: null },
+    })
+    mockServiceClient.mockReturnValue(mock)
+
+    const res = await deleteEmployee(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees/${EMPLOYEE_ID}`, {
+        method: 'DELETE',
+      }),
+      detailParams(COMPANY_ID, EMPLOYEE_ID),
+    )
+
+    expect(res.status).toBe(204)
+    expect(mock.updates.employees).toEqual([{ is_active: false }])
+  })
+
+  it('does not write for an employee who is already inactive', async () => {
+    const mock = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      employees: { data: { ...ROW, is_active: false }, error: null },
+      idempotency_keys: { data: null, error: null },
+    })
+    mockServiceClient.mockReturnValue(mock)
+
+    const res = await deleteEmployee(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees/${EMPLOYEE_ID}`, {
+        method: 'DELETE',
+      }),
+      detailParams(COMPANY_ID, EMPLOYEE_ID),
+    )
+
+    expect(res.status).toBe(204)
+    expect(mock.updates.employees).toBeUndefined()
+  })
+
+  it('previews { id, is_active: false } under ?dry_run=true and writes nothing', async () => {
+    const mock = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      employees: { data: ROW, error: null },
+      idempotency_keys: { data: null, error: null },
+    })
+    mockServiceClient.mockReturnValue(mock)
+
+    const res = await deleteEmployee(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/employees/${EMPLOYEE_ID}?dry_run=true`, {
+        method: 'DELETE',
+      }),
+      detailParams(COMPANY_ID, EMPLOYEE_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data).toEqual({ dry_run: true, preview: { id: EMPLOYEE_ID, is_active: false } })
+    expect(mock.updates.employees).toBeUndefined()
+  })
 })
