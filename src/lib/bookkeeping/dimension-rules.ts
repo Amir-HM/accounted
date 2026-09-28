@@ -196,9 +196,9 @@ export type DimensionRulePolicy = 'enforced' | 'exempt'
  *     registrations carry the invoice's bags and payroll the employee's;
  *   - webshop_order, expense_claim: the order dialog and the claim lines
  *     take tags;
- *   - reminder_fee: new revenue (3990). It carries no tag of its own, so a
- *     default/fixed rule tags it and a required rule without a default
- *     blocks the fee booking.
+ *   - reminder_fee: new revenue (3990) of the reminded invoice; both legs
+ *     carry that invoice's bag, so a required rule is met whenever the
+ *     invoice was tagged, and a fee whose booking fails is not charged.
  *
  * EXEMPT: entries that carry no user-supplied tag and replay, derive or
  * settle something already decided. A required rule could never be
