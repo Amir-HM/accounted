@@ -826,7 +826,7 @@ describe('createTransactionJournalEntry: dimensions propagation (PR7)', () => {
     expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
   })
 
-  it('all_lines_complete: each vat_lines[i].dimensions is used per line, with NO fallback to mappingResult.dimensions', async () => {
+  it('all_lines_complete: a line the pattern does not mark as business keeps only its own bag, with NO fallback to mappingResult.dimensions', async () => {
     const tx = makeTransaction({ amount: -1250, description: 'Multi-line pattern' })
     const vatLines: VatJournalLine[] = [
       { account_number: '5410', debit_amount: 1000, credit_amount: 0, description: 'Kostnad', dimensions: { '6': 'P001' } },
@@ -875,6 +875,53 @@ describe('createTransactionJournalEntry: dimensions propagation (PR7)', () => {
     expect(input.lines.find(l => l.account_number === '3001')?.dimensions).toEqual({ '1': 'KS01' })
     expect(input.lines.find(l => l.account_number === '2611')?.dimensions).toBeUndefined()
     expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+  })
+
+  it('all_lines_complete: an explicit bag overrides the learned bag per key on every business line, and on no other line', async () => {
+    const tx = makeTransaction({ amount: -1250, description: 'Multi-line pattern' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '2641', debit_amount: 250, credit_amount: 0, description: 'Ingående moms' },
+      { account_number: '5410', debit_amount: 600, credit_amount: 0, description: 'Kostnad', business_line: true, dimensions: { '1': 'KS01', '6': 'P001' } },
+      { account_number: '6110', debit_amount: 400, credit_amount: 0, description: 'Kontor', business_line: true },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '5410',
+      credit_account: '1930',
+      all_lines_complete: true,
+      vat_lines: vatLines,
+      dimensions: { '6': 'P002' },
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    // The explicit P002 wins over the learned P001; the learned KS01 stays.
+    expect(input.lines.find(l => l.account_number === '5410')?.dimensions).toEqual({ '1': 'KS01', '6': 'P002' })
+    // A business line with no learned bag takes the explicit one.
+    expect(input.lines.find(l => l.account_number === '6110')?.dimensions).toEqual({ '6': 'P002' })
+    expect(input.lines.find(l => l.account_number === '2641')?.dimensions).toBeUndefined()
+    expect(input.lines.find(l => l.account_number === '1930')?.dimensions).toBeUndefined()
+    assertBalanced(input)
+  })
+
+  it('all_lines_complete: without an explicit bag the business lines keep exactly the learned bags', async () => {
+    const tx = makeTransaction({ amount: 12500, description: 'Multi-line income' })
+    const vatLines: VatJournalLine[] = [
+      { account_number: '3001', debit_amount: 0, credit_amount: 10000, description: 'Försäljning', business_line: true, dimensions: { '1': 'KS01' } },
+      { account_number: '2611', debit_amount: 0, credit_amount: 2500, description: 'Utgående moms' },
+    ]
+    const mapping = makeMappingResult({
+      debit_account: '1930',
+      credit_account: '3001',
+      all_lines_complete: true,
+      vat_lines: vatLines,
+    })
+
+    await createTransactionJournalEntry(null as never, 'company-1', 'user-1', tx, mapping)
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(input.lines.find(l => l.account_number === '3001')?.dimensions).toEqual({ '1': 'KS01' })
+    expect(input.lines.find(l => l.account_number === '2611')?.dimensions).toBeUndefined()
   })
 
   it('default_private path never tags: even when a bag is set on the mapping', async () => {
@@ -966,6 +1013,28 @@ describe('buildTransactionEntryLines: the business line carries the bag in every
         vat_lines: [vat('2645', 0, 250), vat('2614', 250, 0)],
       },
       business: '6540',
+    },
+    {
+      branch: 'multi-line pattern expense (business, VAT and rounding lines)',
+      amount: -1250,
+      mapping: {
+        debit_account: '5410',
+        credit_account: '1930',
+        all_lines_complete: true,
+        vat_lines: [vat('2641', 250, 0), { ...vat('5410', 999.99, 0), business_line: true }, vat('3740', 0.01, 0)],
+      },
+      business: '5410',
+    },
+    {
+      branch: 'multi-line pattern income',
+      amount: 12500,
+      mapping: {
+        debit_account: '1930',
+        credit_account: '3001',
+        all_lines_complete: true,
+        vat_lines: [{ ...vat('3001', 0, 10000), business_line: true }, vat('2611', 0, 2500)],
+      },
+      business: '3001',
     },
   ]
 

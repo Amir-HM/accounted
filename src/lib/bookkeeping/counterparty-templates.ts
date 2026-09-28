@@ -762,7 +762,10 @@ function buildMultiLineMappingResult(
         credit_amount: side(entry.side) === 'credit' ? amount : 0,
         description: '',
         // Dimensions PR7: business lines carry the pattern's learned bag;
-        // VAT/tax/rounding lines stay untagged.
+        // VAT/tax/rounding lines stay untagged. The marker is what lets an
+        // explicit categorize bag tag the same lines, and only them
+        // (buildTransactionEntryLines).
+        ...(entry.type === 'business' ? { business_line: true } : {}),
         ...(entry.type === 'business' && entry.dimensions
           ? { dimensions: entry.dimensions }
           : {}),

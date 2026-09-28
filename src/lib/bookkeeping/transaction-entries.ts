@@ -2,7 +2,7 @@ import { createJournalEntry, findFiscalPeriod } from './engine'
 import { resolveCashAccountVoucherSeries } from './cash-account-voucher-series'
 import { bankBookingContext } from './bank-booking-context'
 import { resolveSekAmount, buildCurrencyMetadata } from './currency-utils'
-import { coerceDimensionsBag } from './dimension-resolver'
+import { coerceDimensionsBag, mergeDimensionBags } from './dimension-resolver'
 import { extractNetAmount, extractVatAmount } from './vat-entries'
 import { roundOre } from '@/lib/money'
 import { InvalidMappingResultError } from '@/lib/bookkeeping/errors'
@@ -14,6 +14,7 @@ import type {
   JournalEntry,
   MappingResult,
   Transaction,
+  VatJournalLine,
 } from '@/types'
 
 const log = createLogger('transaction-entries')
@@ -106,6 +107,21 @@ export function buildTransactionEntryLines(
   const businessLine = (
     line: Omit<CreateJournalEntryLineInput, 'dimensions'>,
   ): CreateJournalEntryLineInput => ({ ...line, dimensions: businessDimensions })
+  // Multi-line pattern path: every line keeps the pattern's own learned bag,
+  // and the lines the pattern marks as business also take the caller's
+  // explicit bag, which wins per key (on this path mappingResult.dimensions
+  // can only be that explicit bag: buildMultiLineMappingResult never sets
+  // it). VAT, tax and rounding lines are never marked, so they never inherit
+  // it.
+  const patternLine = (line: VatJournalLine): CreateJournalEntryLineInput => ({
+    account_number: line.account_number,
+    debit_amount: line.debit_amount,
+    credit_amount: line.credit_amount,
+    line_description: line.description || transaction.description,
+    dimensions: line.business_line
+      ? mergeDimensionBags(coerceDimensionsBag(line.dimensions), businessDimensions)
+      : coerceDimensionsBag(line.dimensions),
+  })
 
   if (mappingResult.default_private) {
     // Private expense: use entity-specific account from mappingResult
@@ -131,17 +147,10 @@ export function buildTransactionEntryLines(
       : (mappingResult.debit_account || '1930')
 
     if (isExpense) {
-      // All non-settlement lines (business, VAT, tax, rounding). Per-line bags
-      // are authoritative here: the pattern marks business lines only, so no
-      // fallback to the categorize-level bag (it would mis-tag VAT/tax lines).
+      // All non-settlement lines (business, VAT, tax, rounding), tagged per
+      // line by patternLine above.
       for (const line of mappingResult.vat_lines) {
-        lines.push({
-          account_number: line.account_number,
-          debit_amount: line.debit_amount,
-          credit_amount: line.credit_amount,
-          line_description: line.description || transaction.description,
-          dimensions: coerceDimensionsBag(line.dimensions),
-        })
+        lines.push(patternLine(line))
       }
       // Credit bank for full amount
       lines.push({
@@ -160,15 +169,9 @@ export function buildTransactionEntryLines(
         line_description: transaction.description,
         ...(isForeign ? currencyMeta : {}),
       })
-      // All non-settlement lines: per-line bags authoritative (see above).
+      // All non-settlement lines, tagged per line (see patternLine).
       for (const line of mappingResult.vat_lines) {
-        lines.push({
-          account_number: line.account_number,
-          debit_amount: line.debit_amount,
-          credit_amount: line.credit_amount,
-          line_description: line.description || transaction.description,
-          dimensions: coerceDimensionsBag(line.dimensions),
-        })
+        lines.push(patternLine(line))
       }
     }
   } else if (isExpense) {
