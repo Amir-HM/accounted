@@ -372,8 +372,7 @@ export async function restoreUnbookedDraft(
 export async function issueAndBookInvoice(
   opts: IssueAndBookOptions,
 ): Promise<IssueAndBookResult> {
-  const { supabase, companyId, userId, invoice, settings, log } = opts
-  const id = invoice.id
+  const { supabase, companyId, invoice, settings, log } = opts
 
   // An invoice that chose a bank account freezes that account's payee now,
   // from the account as it is at issue; a chosen account that can no longer
@@ -407,7 +406,6 @@ export async function issueAndBookInvoice(
   const issued = await markInvoiceSentAndBook(opts)
   if (!issued.ok) return { ok: false, errorCode: issued.errorCode }
   const { journalEntryId, partialFailures } = issued
-  const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
 
   if (partialFailures.some((failure) => failure.step === 'journal_link')) {
     return {
@@ -417,8 +415,28 @@ export async function issueAndBookInvoice(
     }
   }
 
-  // Render and archive the PDF as underlag so it remains retrievable even if
-  // the invoice row is later cancelled. Mirrors the send route.
+  partialFailures.push(
+    ...(await finishIssuedInvoice({ ...opts, journalEntryId, recordDelivery: true })),
+  )
+  return { ok: true, journalEntryId, partialFailures }
+}
+
+/**
+ * The tail of an issue that went through: archive the PDF as underlag (so it
+ * stays retrievable even if the invoice row is later cancelled), record the
+ * delivery when the invoice was delivered outside Accounted's email
+ * (mark-sent, Peppol), and emit invoice.sent. Also how a door finishes an
+ * invoice that is issued and booked but whose own delivery failed (the
+ * verifikat is never undone), then without the delivery record. Returns the
+ * failed steps; the issue itself is already committed.
+ */
+export async function finishIssuedInvoice(
+  opts: IssueAndBookOptions & { journalEntryId: string | null; recordDelivery: boolean },
+): Promise<IssuePartialFailure[]> {
+  const { supabase, companyId, userId, invoice, settings, log, journalEntryId } = opts
+  const failures: IssuePartialFailure[] = []
+  const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
+
   if (isRealInvoice) {
     const pdfFailure = await archiveIssuedInvoicePdf({
       supabase,
@@ -429,22 +447,24 @@ export async function issueAndBookInvoice(
       journalEntryId,
       log,
     })
-    if (pdfFailure) partialFailures.push(pdfFailure)
+    if (pdfFailure) failures.push(pdfFailure)
   }
 
-  try {
-    await recordManualInvoiceDelivery({
-      supabase,
-      companyId,
-      userId,
-      invoiceId: id,
-    })
-  } catch (err) {
-    log.error('failed to record manual invoice delivery', err as Error)
-    partialFailures.push({
-      step: 'delivery_history',
-      reason: 'Utskicket kunde inte sparas i fakturans historik.',
-    })
+  if (opts.recordDelivery) {
+    try {
+      await recordManualInvoiceDelivery({
+        supabase,
+        companyId,
+        userId,
+        invoiceId: invoice.id,
+      })
+    } catch (err) {
+      log.error('failed to record manual invoice delivery', err as Error)
+      failures.push({
+        step: 'delivery_history',
+        reason: 'Utskicket kunde inte sparas i fakturans historik.',
+      })
+    }
   }
 
   await eventBus.emit({
@@ -452,5 +472,5 @@ export async function issueAndBookInvoice(
     payload: { invoice: { ...(invoice as Invoice), status: 'sent' }, companyId, userId },
   })
 
-  return { ok: true, journalEntryId, partialFailures }
+  return failures
 }

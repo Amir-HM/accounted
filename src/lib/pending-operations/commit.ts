@@ -56,9 +56,14 @@ import {
 import {
   createInvoicePaymentJournalEntry,
   createInvoiceCashEntry,
-  createInvoiceJournalEntry,
   createCreditNoteJournalEntry,
 } from '@/lib/bookkeeping/invoice-entries'
+import {
+  archiveIssuedInvoicePdf,
+  markInvoiceSentAndBook,
+  restoreUnbookedDraft,
+  type IssuableInvoice,
+} from '@/lib/invoices/issue-and-book-invoice'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
@@ -327,38 +332,6 @@ export interface CommitOptions {
 // ensureFiscalPeriod moved to lib/transactions/categorize-core.ts (imported
 // above) so the bulk-book-inbox path and the single-categorize path share one
 // implementation.
-
-async function recordSkippedInvoiceJournalEntry(
-  invoiceId: string,
-  companyId: string,
-  userId: string,
-  operation: 'send_invoice' | 'mark_invoice_sent',
-  err: unknown
-): Promise<void> {
-  try {
-    const reasonCode = err instanceof AccountsNotInChartError
-      ? 'accounts_not_in_chart'
-      : 'journal_entry_error'
-    const accountNumbers = err instanceof AccountsNotInChartError ? err.accountNumbers : undefined
-    await appendProcessingHistory({
-      companyId,
-      correlationId: invoiceId,
-      aggregateType: 'System',
-      aggregateId: invoiceId,
-      eventType: 'InvoiceJournalEntrySkipped',
-      payload: {
-        invoice_id: invoiceId,
-        operation,
-        reason_code: reasonCode,
-        ...(accountNumbers ? { account_numbers: accountNumbers } : {}),
-      },
-      actor: { type: 'user', id: userId },
-      occurredAt: new Date(),
-    })
-  } catch (historyErr) {
-    log.warn('Failed to append InvoiceJournalEntrySkipped to processing_history', historyErr)
-  }
-}
 
 // ── Executors ────────────────────────────────────────────────────
 
@@ -3103,8 +3076,8 @@ async function commitSendInvoice(
   }
 
   // Override `status` to 'sent' on the in-memory copy. The DB flip happens
-  // after email delivery (line ~625); rendering with the stale 'draft' status
-  // would stamp the customer's PDF with "UTKAST".
+  // when the invoice is issued, right before the email; rendering with the
+  // stale 'draft' status would stamp the customer's PDF with "UTKAST".
   const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
   const { branding, company: renderCompany } = await prepareInvoicePdfRender(
     company as CompanySettings,
@@ -3134,6 +3107,67 @@ async function commitSendInvoice(
     documentType: invoice.document_type,
     isCreditNote,
   })
+
+  // Issue BEFORE delivery, fail closed: status sent + the verifikat through
+  // the one issue step the dashboard send, mark-sent and the recurring
+  // auto-send share. A refused verifikat (a required dimension, an archived
+  // dimension value, a locked period) leaves the invoice in draft and sends
+  // nothing; the compare-and-set stops a concurrent issuer before it emails.
+  const issued = await markInvoiceSentAndBook({
+    supabase,
+    companyId,
+    userId,
+    invoice: invoice as IssuableInvoice,
+    settings: company as CompanySettings,
+    log,
+  })
+  if (!issued.ok) {
+    if (issued.errorCode === 'INVOICE_MARK_SENT_RACE') {
+      return { error: 'Invoice has already been sent', status: 409 }
+    }
+    // The engine's own refusal: the dispatcher maps it with its Swedish text.
+    if (isBookkeepingError(issued.bookingError)) throw issued.bookingError
+    return {
+      error: issued.reason ?? getErrorEntry(issued.errorCode)?.message_sv ?? 'Fakturan kunde inte bokföras.',
+      errorCode: issued.errorCode,
+      status: getErrorEntry(issued.errorCode)?.httpStatus ?? 500,
+    }
+  }
+  const journalEntryId = issued.journalEntryId
+  const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
+
+  // The email did not go out after the invoice was issued. With nothing
+  // booked nothing irreversible happened: the draft is restored and the old
+  // error returned. A posted verifikat is never undone: the invoice stays
+  // issued, finished like mark-sent (PDF archived as underlag), and the op
+  // lands in failed_partial carrying the verifikat id.
+  const issuedButNotDelivered = async (whenNothingBooked: ExecutorResult): Promise<ExecutorResult> => {
+    if (!journalEntryId && (await restoreUnbookedDraft(supabase, companyId, invoiceId, log))) {
+      return whenNothingBooked
+    }
+    if (isRealInvoice) {
+      await archiveIssuedInvoicePdf({
+        supabase,
+        companyId,
+        userId,
+        invoice: invoice as IssuableInvoice,
+        settings: company as CompanySettings,
+        journalEntryId,
+        log,
+      })
+    }
+    await eventBus.emit({
+      type: 'invoice.sent',
+      payload: { invoice: { ...(invoice as Invoice), status: 'sent' }, userId, companyId },
+    })
+    const entry = getErrorEntry('INVOICE_SEND_ISSUED_NOT_DELIVERED')
+    return {
+      error: entry?.message_sv ?? 'Fakturan är utfärdad men e-postmeddelandet kunde inte skickas.',
+      errorCode: 'INVOICE_SEND_ISSUED_NOT_DELIVERED',
+      status: entry?.httpStatus ?? 502,
+      ...(journalEntryId ? { partialPostedIds: { journal_entry_id: journalEntryId } } : {}),
+    }
+  }
 
   const replyTo = resolveInvoiceReplyTo(company as CompanySettings, userEmail)
   const emailData = { invoice: renderableInvoice, customer, company: company as CompanySettings, replyTo }
@@ -3167,7 +3201,10 @@ async function commitSendInvoice(
       userId,
       invoiceId,
     })
-    return { error: 'Utskicksinformationen kunde inte sparas. Ingen e-post skickades.', status: 500 }
+    return issuedButNotDelivered({
+      error: 'Utskicksinformationen kunde inte sparas. Ingen e-post skickades.',
+      status: 500,
+    })
   }
 
   if (result.trackingWarning) {
@@ -3180,42 +3217,29 @@ async function commitSendInvoice(
     })
   }
 
-  if (!result.success) return { error: `Failed to send email: ${result.error}`, status: 500 }
-
-  await supabase.from('invoices').update({ status: 'sent' }).eq('id', invoiceId).eq('company_id', companyId)
-
-  const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
-  let createdJournalEntryId: string | undefined
-  // #967: kontantmetoden and defer_invoice_booking companies send WITHOUT
-  // booking; the verifikat comes at payment or via the explicit Bokför step.
-  if (isRealInvoice && booksInvoicesOnIssue(company)) {
-    try {
-      const je = await createInvoiceJournalEntry(
-        supabase, companyId, userId, invoice as Invoice, (company as CompanySettings).entity_type
-      )
-      if (je) {
-        createdJournalEntryId = je.id
-        await supabase.from('invoices').update({ journal_entry_id: je.id }).eq('id', invoiceId)
-      }
-    } catch (err) {
-      await recordSkippedInvoiceJournalEntry(invoiceId, companyId, userId, 'send_invoice', err)
-    }
+  if (!result.success) {
+    return issuedButNotDelivered({ error: `Failed to send email: ${result.error}`, status: 500 })
   }
 
-  if (isRealInvoice && createdJournalEntryId) {
+  if (isRealInvoice && journalEntryId) {
     try {
-      await linkToJournalEntry(supabase, companyId, result.documentId, createdJournalEntryId)
+      await linkToJournalEntry(supabase, companyId, result.documentId, journalEntryId)
     } catch { /* non-blocking */ }
   }
 
-  await eventBus.emit({ type: 'invoice.sent', payload: { invoice: invoice as Invoice, userId, companyId } })
+  await eventBus.emit({
+    type: 'invoice.sent',
+    payload: { invoice: { ...(invoice as Invoice), status: 'sent' }, userId, companyId },
+  })
 
+  const warnings = [
+    ...(result.trackingWarning ? ['Delivery history requires reconciliation.'] : []),
+    ...issued.partialFailures.map((failure) => failure.reason),
+  ]
   return {
     data: {
       message: `Invoice ${invoice.invoice_number} sent to ${customer.email}`,
-      ...(result.trackingWarning
-        ? { warning: 'Delivery history requires reconciliation.' }
-        : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
     },
   }
 }
@@ -3282,10 +3306,33 @@ async function commitMarkInvoiceSent(
     return { error: `Failed to assign invoice number: ${err instanceof Error ? err.message : 'unknown'}`, status: 500 }
   }
 
-  const { error: updateError } = await supabase
-    .from('invoices').update({ status: 'sent' }).eq('id', invoiceId).eq('company_id', companyId)
-
-  if (updateError) return { error: 'Failed to update invoice status', status: 500 }
+  // Issue: status sent + the verifikat, fail closed. The same step the
+  // dashboard mark-sent runs (issueAndBookInvoice): a refused verifikat (a
+  // required dimension, an archived dimension value, a locked period) leaves
+  // the invoice in draft instead of marking it sent without its verifikat.
+  const issued = await markInvoiceSentAndBook({
+    supabase,
+    companyId,
+    userId,
+    invoice: invoice as IssuableInvoice,
+    settings: settings as CompanySettings,
+    log,
+  })
+  if (!issued.ok) {
+    if (issued.errorCode === 'INVOICE_MARK_SENT_RACE') {
+      return { error: 'Only draft invoices can be marked as sent', status: 409 }
+    }
+    if (issued.errorCode === 'INVOICE_MARK_SENT_STATUS_FAILED') {
+      return { error: 'Failed to update invoice status', status: 500 }
+    }
+    // The engine's own refusal: the dispatcher maps it with its Swedish text.
+    if (isBookkeepingError(issued.bookingError)) throw issued.bookingError
+    return {
+      error: issued.reason ?? getErrorEntry(issued.errorCode)?.message_sv ?? 'Fakturan kunde inte bokföras.',
+      errorCode: issued.errorCode,
+      status: getErrorEntry(issued.errorCode)?.httpStatus ?? 500,
+    }
+  }
 
   let deliveryHistoryWarning: string | undefined
   try {
@@ -3299,31 +3346,15 @@ async function commitMarkInvoiceSent(
     deliveryHistoryWarning = 'Fakturan markerades som skickad men utskickshistoriken kunde inte sparas.'
   }
 
-  const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
-  let journalEntryId: string | null = null
-
-  // #967: same gate as the dashboard mark-sent path (issue-and-book-invoice.ts).
-  if (isRealInvoice && booksInvoicesOnIssue(settings)) {
-    try {
-      const je = await createInvoiceJournalEntry(
-        supabase, companyId, userId, invoice as Invoice,
-        await resolveCompanyEntityType(supabase, companyId, settings?.entity_type),
-        invoice.customer?.name
-      )
-      if (je) {
-        journalEntryId = je.id
-        await supabase.from('invoices').update({ journal_entry_id: je.id }).eq('id', invoiceId)
-      }
-    } catch (err) {
-      await recordSkippedInvoiceJournalEntry(invoiceId, companyId, userId, 'mark_invoice_sent', err)
-    }
-  }
-
+  const warnings = [
+    ...(deliveryHistoryWarning ? [deliveryHistoryWarning] : []),
+    ...issued.partialFailures.map((failure) => failure.reason),
+  ]
   return {
     data: {
       status: 'sent',
-      journal_entry_id: journalEntryId,
-      ...(deliveryHistoryWarning ? { warning: deliveryHistoryWarning } : {}),
+      journal_entry_id: issued.journalEntryId,
+      ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
     },
   }
 }
