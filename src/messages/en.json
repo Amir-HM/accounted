@@ -6371,6 +6371,7 @@
     "new_dimension_title": "New dimension",
     "edit_dimension": "Edit dimension",
     "edit_dimension_title": "Edit dimension",
+    "tag_history": "Tag past vouchers",
     "delete_dimension": "Delete dimension",
     "delete_dimension_confirm_title": "Delete the dimension?",
     "delete_dimension_confirm_description": "“{name}” and all its values are deleted permanently. Only possible while no voucher is booked on the dimension; otherwise archive it instead.",

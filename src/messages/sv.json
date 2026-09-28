@@ -6371,6 +6371,7 @@
     "new_dimension_title": "Ny dimension",
     "edit_dimension": "Redigera dimension",
     "edit_dimension_title": "Redigera dimension",
+    "tag_history": "Tagga historik",
     "delete_dimension": "Ta bort dimension",
     "delete_dimension_confirm_title": "Ta bort dimensionen?",
     "delete_dimension_confirm_description": "”{name}” och alla dess värden tas bort permanent. Det går bara när inget verifikat är bokfört på dimensionen, annars avaktiverar du den istället.",
