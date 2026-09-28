@@ -2,6 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import type { User } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createLogger } from '@/lib/logger'
+import { shouldExposeTimingHeaders } from '@/lib/observability/timing-headers'
 import {
   PROXY_TIMING_HEADER,
   classifyProxyRequest,
@@ -70,14 +71,16 @@ function homeDomainOkValue(userId: string, host: string): string {
 }
 
 /**
- * Auth proxy entry point. Wraps the real work so every response carries a
- * per-phase timing header and emits one structured log line, mirroring what
- * withRouteContext does for API routes: without it the proxy's sequential
- * network calls (getUser, session state, company RPC, MFA lookups) were the
- * one part of a request nobody could measure. Page/RSC/prefetch responses
- * get `Server-Timing` (visible in the browser Timing tab); /api responses
- * get `X-Proxy-Timing` so the route wrapper's own Server-Timing is left
- * alone. Token-carrying paths are collapsed before logging.
+ * Auth proxy entry point. Wraps the real work so every request emits one
+ * structured log line with per-phase timings, mirroring what withRouteContext
+ * does for API routes: without it the proxy's sequential network calls
+ * (getUser, session state, company RPC, MFA lookups) were the one part of a
+ * request nobody could measure. Outside production the same numbers also
+ * travel as a response header (lib/observability/timing-headers.ts):
+ * page/RSC/prefetch responses get `Server-Timing` (visible in the browser
+ * Timing tab); /api responses get `X-Proxy-Timing` so the route wrapper's
+ * own Server-Timing is left alone. Token-carrying paths are collapsed before
+ * logging.
  */
 export async function updateSession(request: NextRequest) {
   const start = Date.now()
@@ -86,10 +89,12 @@ export async function updateSession(request: NextRequest) {
   const totalMs = Date.now() - start
   const pathname = request.nextUrl.pathname
   const kind = classifyProxyRequest(pathname, request.headers)
-  response.headers.set(
-    kind === 'api' ? PROXY_TIMING_HEADER : 'Server-Timing',
-    formatProxyServerTiming(timing, totalMs),
-  )
+  if (shouldExposeTimingHeaders()) {
+    response.headers.set(
+      kind === 'api' ? PROXY_TIMING_HEADER : 'Server-Timing',
+      formatProxyServerTiming(timing, totalMs),
+    )
+  }
   log.info('proxy completed', {
     kind,
     route: proxyRouteTemplate(pathname),

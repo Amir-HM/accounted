@@ -1273,6 +1273,57 @@ describe('updateSession redirect destinations', () => {
       expect(lastLog().status).toBe(307)
     })
 
+    it('Vercel production keeps the numbers in the log line but sends no timing header', async () => {
+      try {
+        vi.stubEnv('VERCEL_ENV', 'production')
+        vi.stubEnv('EXPOSE_TIMING_HEADERS', undefined)
+        state.user = SIGNED_IN
+        const page = await run('/invoices')
+        expect(page.status).toBe(200)
+        expect(page.headers.get('server-timing')).toBeNull()
+        expect(page.headers.get('x-proxy-timing')).toBeNull()
+        const ctx = lastLog()
+        expect(ctx.kind).toBe('page')
+        expect(typeof ctx.totalMs).toBe('number')
+        expect(typeof ctx.authMs).toBe('number')
+        expect(typeof ctx.companyMs).toBe('number')
+        logState.info.mockClear()
+
+        const api = await run('/api/settings')
+        expect(api.headers.get('x-proxy-timing')).toBeNull()
+        expect(api.headers.get('server-timing')).toBeNull()
+        expect(lastLog().kind).toBe('api')
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it('a self-hosted production server (NODE_ENV only) sends no timing header either', async () => {
+      try {
+        vi.stubEnv('VERCEL_ENV', undefined)
+        vi.stubEnv('EXPOSE_TIMING_HEADERS', undefined)
+        vi.stubEnv('NODE_ENV', 'production')
+        const res = await run('/invoices')
+        expect(res.status).toBe(307)
+        expect(res.headers.get('server-timing')).toBeNull()
+        expect(lastLog().status).toBe(307)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it('EXPOSE_TIMING_HEADERS=true brings the header back in production', async () => {
+      try {
+        vi.stubEnv('VERCEL_ENV', 'production')
+        vi.stubEnv('EXPOSE_TIMING_HEADERS', 'true')
+        state.user = SIGNED_IN
+        const res = await run('/invoices')
+        expect(res.headers.get('server-timing')).toMatch(TIMING_RE)
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
     it('never logs a token-carrying path or a raw entity id', async () => {
       const res = await run('/invite/9f8e7d6c5b4a3928171605f4e3d2c1b0')
       expect(res.status).toBe(200)
