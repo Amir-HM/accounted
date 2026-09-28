@@ -191,9 +191,9 @@ export type DimensionRulePolicy = 'enforced' | 'exempt'
  * or reviews the lines and can tag them, or the producer carries the tags of
  * the document it books:
  *   - manual, bank_transaction, inbox_item: lines written in a booking form;
- *   - invoice_created/_paid/_cash_payment, supplier_invoice_registered/
- *     _paid/_cash_payment/_privately_paid, salary_payment: the document's
- *     own bags ride along;
+ *   - invoice_* and supplier_invoice_* registrations, payments and cash
+ *     payments, salary_payment: flows a user drives from the document; the
+ *     registrations carry the invoice's bags and payroll the employee's;
  *   - webshop_order, expense_claim: the order dialog and the claim lines
  *     take tags;
  *   - reminder_fee: new revenue (3990). It carries no tag of its own, so a
