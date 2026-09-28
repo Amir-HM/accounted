@@ -28,7 +28,12 @@ vi.mock('@/lib/entitlements/has-capability', () => ({ requireCapability: mockReq
 
 import { POST } from '../route'
 
-function session(userId: string | null) {
+/** A cookie session for `userId` (or none), whose membership has `role`. */
+function session(userId: string | null, role = 'owner') {
+  const membership: Record<string, unknown> = {}
+  membership.select = () => membership
+  membership.eq = () => membership
+  membership.maybeSingle = () => Promise.resolve({ data: { role }, error: null })
   mockCreateClient.mockResolvedValue({
     auth: {
       getUser: vi.fn().mockResolvedValue({
@@ -36,6 +41,7 @@ function session(userId: string | null) {
         error: userId ? null : { message: 'Auth session missing' },
       }),
     },
+    from: () => membership,
   })
 }
 
@@ -78,6 +84,13 @@ describe('POST /api/receipt-hunt/run: who may press', () => {
 
   it('answers 403 for a session that has not completed MFA', async () => {
     mockShouldEnforceMfa.mockReturnValue(true)
+    const res = await press()
+    expect(res.status).toBe(403)
+    expect(mockHuntCompany).not.toHaveBeenCalled()
+  })
+
+  it('answers 403 to a viewer: a press files documents and stages proposals', async () => {
+    session('user-1', 'viewer')
     const res = await press()
     expect(res.status).toBe(403)
     expect(mockHuntCompany).not.toHaveBeenCalled()

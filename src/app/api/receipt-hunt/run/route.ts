@@ -56,6 +56,8 @@ const RECEIPTS_PER_RUN = 3
 
 export const maxDuration = 300
 
+// requireWrite: a press archives documents, files inbox items and stages
+// proposals, all through the service role, so RLS cannot stop a viewer.
 export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) => {
   const { companyId, user, log } = ctx
 
@@ -111,4 +113,4 @@ export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) =
       searchFailures,
     },
   })
-})
+}, { requireWrite: true })

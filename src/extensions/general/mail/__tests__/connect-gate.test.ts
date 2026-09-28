@@ -33,9 +33,16 @@ const COMPANY = 'company-1'
 const route = (method: 'GET' | 'POST', path: string) =>
   mailExtension.apiRoutes!.find((r) => r.method === method && r.path === path)!
 
+// The signed-in member is an owner: connecting is not for a viewer.
+const membership: Record<string, unknown> = {}
+membership.select = () => membership
+membership.eq = () => membership
+membership.maybeSingle = () => Promise.resolve({ data: { role: 'owner' }, error: null })
+
 const ctx = {
   userId: 'user-1',
   companyId: COMPANY,
+  supabase: { from: () => membership },
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 } as unknown as Parameters<ReturnType<typeof route>['handler']>[1]
 

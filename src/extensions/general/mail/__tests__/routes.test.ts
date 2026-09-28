@@ -65,7 +65,12 @@ import { exchangeCodeForTokens, GMAIL_READONLY_SCOPE } from '../lib/google-oauth
 import { getMailboxAddress } from '../lib/gmail-client'
 import { createOAuthState, verifyOAuthState } from '../lib/crypto'
 
-function session(userId: string | null) {
+/** A cookie session for `userId` (or none), whose membership has `role`. */
+function session(userId: string | null, role = 'owner') {
+  const membership: Record<string, unknown> = {}
+  membership.select = () => membership
+  membership.eq = () => membership
+  membership.maybeSingle = () => Promise.resolve({ data: { role }, error: null })
   mockCreateClient.mockResolvedValue({
     auth: {
       getUser: vi.fn().mockResolvedValue({
@@ -73,6 +78,7 @@ function session(userId: string | null) {
         error: userId ? null : { message: 'Auth session missing' },
       }),
     },
+    from: () => membership,
   })
 }
 
@@ -136,6 +142,13 @@ describe('POST /api/extensions/ext/mail/oauth/start', () => {
     mockShouldEnforceMfa.mockReturnValue(true)
     const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
     expect(res.status).toBe(403)
+  })
+
+  it('answers 403 to a viewer, who may not connect a mailbox to the books', async () => {
+    session(USER, 'viewer')
+    const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
+    expect(res.status).toBe(403)
+    expect(await res.json()).not.toHaveProperty('url')
   })
 
   it('answers 400 when the deployment has no Gmail OAuth client', async () => {
@@ -230,6 +243,13 @@ describe('DELETE /api/extensions/ext/mail/connections', () => {
     expect(disconnect).not.toHaveBeenCalled()
   })
 
+  it('answers 403 to a viewer and disconnects nothing', async () => {
+    session(USER, 'viewer')
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(403)
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
   it('answers 400 without an id', async () => {
     const res = await DELETE(request('/connections', { method: 'DELETE' }), params('connections'))
     expect(res.status).toBe(400)
@@ -268,6 +288,13 @@ describe('POST /api/extensions/ext/mail/connections/backfill', () => {
     session(null)
     const res = await backfill({ id: CONNECTION, days: 90 })
     expect(res.status).toBe(401)
+    expect(serviceClient.from).not.toHaveBeenCalled()
+  })
+
+  it('answers 403 to a viewer and writes nothing', async () => {
+    session(USER, 'viewer')
+    const res = await backfill({ id: CONNECTION, days: 90 })
+    expect(res.status).toBe(403)
     expect(serviceClient.from).not.toHaveBeenCalled()
   })
 

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
-import type { Extension } from '@/lib/extensions/types'
+import type { Extension, ExtensionContext } from '@/lib/extensions/types'
+import { requireWritePermission } from '@/lib/auth/require-write'
 import { registerMailSearchService } from '@/lib/mail-search/service'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { createLogger } from '@/lib/logger'
@@ -30,6 +31,17 @@ function jsonError(message: string, status = 500): Response {
   return NextResponse.json({ error: message }, { status })
 }
 
+/**
+ * Connecting a mailbox, disconnecting one and choosing its look-back change
+ * what feeds underlag into the books, so a viewer (read-only member) may not.
+ * The dispatcher only proves a session; the role is checked here, the same
+ * rule withRouteContext's requireWrite applies to the app's own routes.
+ */
+async function refuseViewer(ctx: ExtensionContext): Promise<Response | null> {
+  const check = await requireWritePermission(ctx.supabase, ctx.userId, { companyId: ctx.companyId })
+  return check.ok ? null : check.response
+}
+
 const ConnectionId = z.string().uuid()
 
 /** A connection and one of the offered look-back choices, in days. */
@@ -57,6 +69,8 @@ export const mailExtension: Extension = {
       path: '/oauth/start',
       handler: async (request, ctx) => {
         if (!ctx) return jsonError('Missing context', 500)
+        const refused = await refuseViewer(ctx)
+        if (refused) return refused
         if (!isGoogleMailConfigured()) return jsonError('provider_not_configured', 400)
         // Withheld while Google's scope review is open; see connect-gate.ts.
         if (!isMailConnectEnabled(ctx.companyId)) return jsonError('connect_disabled', 403)
@@ -184,6 +198,8 @@ export const mailExtension: Extension = {
       path: '/connections',
       handler: async (request, ctx) => {
         if (!ctx) return jsonError('Missing context', 500)
+        const refused = await refuseViewer(ctx)
+        if (refused) return refused
         const id = new URL(request.url).searchParams.get('id')
         if (!id) return jsonError('missing_id', 400)
         // A malformed id would otherwise reach the database as a cast error
@@ -204,6 +220,8 @@ export const mailExtension: Extension = {
       path: '/connections/backfill',
       handler: async (request, ctx) => {
         if (!ctx) return jsonError('Missing context', 500)
+        const refused = await refuseViewer(ctx)
+        if (refused) return refused
         const parsed = BackfillRequest.safeParse(await request.json().catch(() => null))
         if (!parsed.success) return jsonError('invalid_request', 400)
         const from = new Date()
