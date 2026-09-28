@@ -1,7 +1,9 @@
 -- Security fix: retag_line_dimensions trusted the caller's p_user_id.
 --
--- The latest definition (20260702230000) resolves its actor from
--- COALESCE(p_user_id, auth.uid()) and EXECUTE is granted to authenticated.
+-- The installed definition (20260702230000, whose tenant guard
+-- 20260703180000 later rewrote in place to caller_is_company_member, kept
+-- below) resolves its actor from COALESCE(p_user_id, auth.uid()) and
+-- EXECUTE is granted to authenticated.
 -- The tenant guard only checks that the JWT caller is a member of the
 -- company, and the writer gate then reads the role of v_actor, not of the
 -- caller. Any writer member could therefore POST /rest/v1/rpc/
@@ -76,7 +78,7 @@ BEGIN
   -- Tenant guard (20260619130100 pattern): anon/authenticated JWTs must be
   -- members; service_role/no-JWT callers are scoped by the application layer.
   IF v_jwt_role IN ('anon', 'authenticated')
-     AND p_company_id NOT IN (SELECT public.user_company_ids()) THEN
+     AND NOT public.caller_is_company_member(p_company_id) THEN
     RAISE EXCEPTION 'unauthorized: caller is not a member of company %', p_company_id
       USING ERRCODE = '42501';
   END IF;
