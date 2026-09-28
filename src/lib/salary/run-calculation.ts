@@ -28,7 +28,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { calculateSalary, monthlyBaseSalary } from './calculation-engine'
 import { SalaryCalculationPolicySchema } from './calculation-policy'
-import { isAutomaticVacationLine, VACATION_COMPENSATION_SOURCE } from './calculated-line-items'
+import {
+  DERIVED_ABSENCE_TYPES,
+  DERIVED_PREMIUM_TYPES,
+  isCalculatedLine,
+  VACATION_COMPENSATION_SOURCE,
+} from './calculated-line-items'
 import { validateOneOffTaxLine } from './one-off-tax'
 import {
   benefitPaymentRefusalDetails,
@@ -55,30 +60,6 @@ import { dailyDivisor, degreeAdjustedMonthlySalary, hourlyDivisor, scheduledHour
 import type { WorkedDayShift } from './shift-premium-engine'
 import type { Logger } from '@/lib/logger'
 import type { SalaryLineItemType, ShiftPremiumRule, ShiftPremiumItemType } from '@/types'
-
-/** Item types that the calculator derives from per-day absence records. */
-const DERIVED_ABSENCE_TYPES: SalaryLineItemType[] = [
-  'sick_karens',
-  'sick_day2_14',
-  'sick_day15_plus',
-  'vab',
-  'parental_leave',
-  'unpaid_leave',
-]
-
-/**
- * Item types that the calculator derives from shift_premium_rules + worked
- * days. These are wiped at the start of each per-employee pass and
- * regenerated so the displayed line items always match the latest rules.
- */
-const DERIVED_PREMIUM_TYPES: ShiftPremiumItemType[] = [
-  'overtime_50',
-  'overtime_100',
-  'ob_weekday_evening',
-  'ob_weekend',
-  'ob_night',
-  'ob_holiday',
-]
 
 /**
  * Effective hourly rate used as the base for shift-premium computation.
@@ -764,17 +745,11 @@ export async function runSalaryCalculation(
 
     // 8e. Assemble the in-memory line item set fed to calculateSalary.
     const manualLineItems = (sre.line_items || [])
-      .filter((li: Record<string, unknown>) => {
-        if (DERIVED_ABSENCE_TYPES.includes(li.item_type as SalaryLineItemType)) return false
-        if (DERIVED_PREMIUM_TYPES.includes(li.item_type as ShiftPremiumItemType)) return false
-        if (li.source_benefit_id) return false
-        if (li.source_recurring_line_id) return false
-        // Only the engine's own semesterersättning row is re-derived; a
-        // manually entered one is a wage the operator decided on.
-        if (isAutomaticVacationLine(li)) return false
-        if (li.item_type === 'oresavrundning') return false
-        return true
-      })
+      // Everything the calculation derives is re-derived above; the rest are
+      // manual lines (only the engine's own semesterersättning row counts as
+      // derived: a manually entered one is a wage the operator decided on).
+      // The line commands refuse hand edits to exactly these rows.
+      .filter((li: Record<string, unknown>) => !isCalculatedLine(li))
       .map((li: Record<string, unknown>) => ({
         itemType: li.item_type as SalaryLineItemType,
         amount: li.amount as number,

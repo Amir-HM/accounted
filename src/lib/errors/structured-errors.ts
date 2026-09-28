@@ -4396,6 +4396,22 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     message_sv: 'Lönebeskedsraden kunde inte hittas.',
     message_en: 'Payslip line not found.',
   },
+  // lib/salary/calculated-line-items.ts: absence, Övertid 50/100 % and OB rows,
+  // förmån and recurring-line rows, the engine's semesterersättning and
+  // öresavrundning rows are deleted and re-derived by every calculation, so a
+  // hand edit would silently vanish before booking (#3185).
+  SALARY_LINE_CALCULATED: {
+    httpStatus: 400,
+    message_sv:
+      'Raden räknas fram av lönekörningen och skrivs om vid varje beräkning. Ändra underlaget i stället: frånvaron, de arbetade timmarna, förmånen eller den återkommande raden. En engångsrad för övertid eller OB läggs som Övertid eller Övrigt.',
+    message_en:
+      'This payslip line is derived by the salary calculation and rewritten on every calculation. Change its source instead: the absence, the worked hours and premium rules, the benefit or the recurring line. Put a one-off overtime or OB amount on item_type overtime or other.',
+    remediation: {
+      description:
+        'Absence: gnubok_register_absence / gnubok_delete_absence. Hours: gnubok_set_worked_days. Förmåner: gnubok_update_employee_benefit. Recurring lines: gnubok_update_employee_recurring_line. A one-off amount: gnubok_add_payslip_line with item_type overtime or other. Then gnubok_calculate_salary_run.',
+    },
+    retryable: false,
+  },
   SALARY_RUN_EMPLOYEE_DUPLICATE: {
     httpStatus: 409,
     message_sv: 'Den anställda finns redan i lönekörningen.',

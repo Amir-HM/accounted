@@ -1134,6 +1134,7 @@ Creates a salary_line_items row (bonus, overtime, gross/net deduction, benefit, 
 - Draft-only: returns 400 SALARY_RUN_LINE_NOT_DRAFT once the run has advanced.
 - Line edits do not recompute tax or totals: call POST /salary-runs/{id}/calculate afterwards.
 - Engine-derived lines (absence, benefits, the semesterersättning row under vacation_rule semesterersattning) are regenerated on every :calculate; manual lines survive, including a semesterersattning line you add yourself.
+- The calculation owns the absence types (sick_karens, sick_day2_14, sick_day15_plus, vab, parental_leave, unpaid_leave) and the shift-premium types (overtime_50, overtime_100, ob_weekday_evening, ob_weekend, ob_night, ob_holiday): a line of those types returns 400 SALARY_LINE_CALCULATED. Register absence or worked hours instead, or put a one-off övertid or OB amount on item_type overtime or other.
 - one_off_tax_percent is the percentage YOU verified against Skatteverket's engångsbelopp table for the employee's yearly income; the API never estimates it. It is refused (400) on deductions, benefits, non-taxable rows and non-positive amounts. A valid jämkning decision on the employee overrides it. Equal percentages are summed before the öre are dropped, so splitting one bonus over two rows never changes the withholding.
 - vacation_category is only valid on item_type vacation (400 VALIDATION_ERROR otherwise) and vacation_saved_year only with category saved. Omitted category = paid. The vacation ledger splits the booked run's days by category: saved consumes the named origin year, or the oldest saved year first when omitted; unpaid and advance consume their own cutover pools.
 
@@ -1322,6 +1323,7 @@ Updates fields on a salary_line_items row (amount, description, quantity, unit_p
 - Draft-only: 400 SALARY_RUN_LINE_NOT_DRAFT once the run has advanced.
 - A lineId that belongs to a different run returns 404 SALARY_LINE_NOT_FOUND.
 - Line edits do not recompute tax or totals: call POST /salary-runs/{id}/calculate afterwards.
+- A line the calculation owns (absence, Övertid 50/100 % and OB rows, förmån and recurring-line rows, the engine's semesterersättning and öresavrundning rows), or a patch changing item_type to such a type, returns 400 SALARY_LINE_CALCULATED: the next :calculate would overwrite the edit. Change the source (absence, worked hours, the förmån, the recurring line) instead.
 - The row is validated as it reads after the patch: flipping is_net_deduction or is_gross_deduction on, setting is_taxable false, or making the amount non-positive on a line that carries one_off_tax_percent is refused with 400 VALIDATION_ERROR; clear the percentage (null) in the same call.
 - vacation_category (paid, extra_paid, saved, unpaid, advance) is only valid while item_type is vacation, and vacation_saved_year only with category saved; a patch that breaks either is refused with 400 VALIDATION_ERROR.
 
@@ -1422,7 +1424,7 @@ Removes a salary_line_items row while the run is a draft. Engine-derived lines (
 
 **Pitfalls:**
 - Draft-only: 400 SALARY_RUN_LINE_NOT_DRAFT once the run has advanced.
-- Deleting an engine-derived line is futile: :calculate regenerates it from source data.
+- A line the calculation owns (absence, Övertid 50/100 % and OB rows, förmån and recurring-line rows, the engine's semesterersättning and öresavrundning rows) returns 400 SALARY_LINE_CALCULATED: :calculate would bring it back. Change the source (absence, worked hours, the förmån, the recurring line) instead.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
