@@ -47,6 +47,7 @@ vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: () => serv
 vi.mock('../lib/connections', () => ({
   SCOPE_MISSING: 'scope_missing',
   disconnect: vi.fn(),
+  findConnectionOwner: vi.fn(),
   listConnections: vi.fn(),
   saveConnection: vi.fn(),
 }))
@@ -60,7 +61,7 @@ vi.mock('../lib/gmail-client', () => ({ getMailboxAddress: vi.fn() }))
 import { GET, POST, DELETE } from '@/app/api/extensions/ext/[...path]/route'
 import { extensionRegistry } from '@/lib/extensions/registry'
 import { mailExtension } from '../index'
-import { disconnect, listConnections, saveConnection } from '../lib/connections'
+import { disconnect, findConnectionOwner, listConnections, saveConnection } from '../lib/connections'
 import { exchangeCodeForTokens, GMAIL_READONLY_SCOPE } from '../lib/google-oauth'
 import { getMailboxAddress } from '../lib/gmail-client'
 import { createOAuthState, verifyOAuthState } from '../lib/crypto'
@@ -79,6 +80,8 @@ function session(userId: string | null, role = 'owner') {
       }),
     },
     from: () => membership,
+    // user_is_company_admin, the predicate isCompanyAdmin asks the database.
+    rpc: vi.fn(async () => ({ data: role === 'owner' || role === 'admin', error: null })),
   })
 }
 
@@ -123,6 +126,7 @@ beforeEach(() => {
   extensionRegistry.clear()
   extensionRegistry.register(mailExtension)
   session(USER)
+  ;(findConnectionOwner as Mock).mockResolvedValue({ connectedBy: USER })
 })
 
 afterEach(() => {
@@ -243,10 +247,47 @@ describe('DELETE /api/extensions/ext/mail/connections', () => {
     expect(disconnect).not.toHaveBeenCalled()
   })
 
-  it('answers 403 to a viewer and disconnects nothing', async () => {
+  it('answers 403 to a viewer who did not connect the mailbox, and disconnects nothing', async () => {
     session(USER, 'viewer')
+    ;(findConnectionOwner as Mock).mockResolvedValue({ connectedBy: 'colleague' })
     const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
     expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'disconnect_not_allowed' })
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
+  it('answers 403 to a plain member cutting off a colleague\'s mailbox', async () => {
+    session(USER, 'member')
+    ;(findConnectionOwner as Mock).mockResolvedValue({ connectedBy: 'colleague' })
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(403)
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
+  it('lets the person who connected the mailbox disconnect it, whatever their role now', async () => {
+    // Reducing access is always safe for the owner of the grant.
+    session(USER, 'viewer')
+    ;(findConnectionOwner as Mock).mockResolvedValue({ connectedBy: USER })
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(200)
+    expect(disconnect).toHaveBeenCalledWith(serviceClient, COMPANY, CONNECTION, USER)
+  })
+
+  it('lets an admin disconnect a colleague\'s mailbox, and one whose connector was erased', async () => {
+    session(USER, 'admin')
+    for (const connectedBy of ['colleague', null]) {
+      ;(findConnectionOwner as Mock).mockResolvedValue({ connectedBy })
+      const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+      expect(res.status).toBe(200)
+    }
+    expect(disconnect).toHaveBeenCalledTimes(2)
+  })
+
+  it('answers 404 for a mailbox this company does not have', async () => {
+    ;(findConnectionOwner as Mock).mockResolvedValue(null)
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(404)
+    expect(findConnectionOwner).toHaveBeenCalledWith(serviceClient, COMPANY, CONNECTION)
     expect(disconnect).not.toHaveBeenCalled()
   })
 

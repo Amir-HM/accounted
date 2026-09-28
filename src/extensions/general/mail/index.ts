@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import type { Extension, ExtensionContext } from '@/lib/extensions/types'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { isCompanyAdmin, requireWritePermission } from '@/lib/auth/require-write'
 import { registerMailSearchService } from '@/lib/mail-search/service'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { createLogger } from '@/lib/logger'
@@ -16,7 +16,13 @@ import {
   lacksGmailScope,
   revokeGoogleToken,
 } from './lib/google-oauth'
-import { SCOPE_MISSING, disconnect, listConnections, saveConnection } from './lib/connections'
+import {
+  SCOPE_MISSING,
+  disconnect,
+  findConnectionOwner,
+  listConnections,
+  saveConnection,
+} from './lib/connections'
 import { resolveCallbackOrigin } from './lib/callback-origin'
 import { isMailConnectEnabled } from './lib/connect-gate'
 import { requireFlowInitiator } from '@/lib/auth/oauth-flow-binding'
@@ -32,10 +38,11 @@ function jsonError(message: string, status = 500): Response {
 }
 
 /**
- * Connecting a mailbox, disconnecting one and choosing its look-back change
- * what feeds underlag into the books, so a viewer (read-only member) may not.
- * The dispatcher only proves a session; the role is checked here, the same
- * rule withRouteContext's requireWrite applies to the app's own routes.
+ * Connecting a mailbox and choosing its look-back change what feeds underlag
+ * into the books, so a viewer (read-only member) may not. The dispatcher only
+ * proves a session; the role is checked here, the same rule
+ * withRouteContext's requireWrite applies to the app's own routes.
+ * Disconnecting has its own rule (DELETE /connections).
  */
 async function refuseViewer(ctx: ExtensionContext): Promise<Response | null> {
   const check = await requireWritePermission(ctx.supabase, ctx.userId, { companyId: ctx.companyId })
@@ -198,14 +205,22 @@ export const mailExtension: Extension = {
       path: '/connections',
       handler: async (request, ctx) => {
         if (!ctx) return jsonError('Missing context', 500)
-        const refused = await refuseViewer(ctx)
-        if (refused) return refused
         const id = new URL(request.url).searchParams.get('id')
         if (!id) return jsonError('missing_id', 400)
         // A malformed id would otherwise reach the database as a cast error
         // and come back as a 500.
         if (!ConnectionId.safeParse(id).success) return jsonError('invalid_id', 400)
-        await disconnect(createServiceClientNoCookies(), ctx.companyId, id, ctx.userId)
+        const supabase = createServiceClientNoCookies()
+        const connection = await findConnectionOwner(supabase, ctx.companyId, id)
+        if (!connection) return jsonError('not_found', 404)
+        // Disconnecting only ever reduces access, so the person whose grant
+        // it is may always do it, whatever their role now. Anyone else needs
+        // to run the company: a colleague's mailbox is not a plain member's
+        // to cut off.
+        if (connection.connectedBy !== ctx.userId && !(await isCompanyAdmin(ctx.supabase, ctx.companyId))) {
+          return jsonError('disconnect_not_allowed', 403)
+        }
+        await disconnect(supabase, ctx.companyId, id, ctx.userId)
         return NextResponse.json({ data: { disconnected: true } })
       },
     },

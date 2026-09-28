@@ -327,6 +327,27 @@ export async function listGrantsConnectedBy(
   return (data ?? []) as StoredGrant[]
 }
 
+/**
+ * Who connected a mailbox of this company, or null when the company has no
+ * such connection. `connectedBy` is null once that person's account has been
+ * erased.
+ */
+export async function findConnectionOwner(
+  supabase: SupabaseClient,
+  companyId: string,
+  connectionId: string,
+): Promise<{ connectedBy: string | null } | null> {
+  const { data, error } = await supabase
+    .from('mail_connections')
+    .select('connected_by')
+    .eq('id', connectionId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to read mail connection: ${error.message}`)
+  if (!data) return null
+  return { connectedBy: (data as { connected_by: string | null }).connected_by }
+}
+
 export async function disconnect(
   supabase: SupabaseClient,
   companyId: string,
