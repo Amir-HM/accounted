@@ -4311,6 +4311,12 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     httpStatus: 404,
     message_sv: 'Lönekörningen kunde inte hittas.',
     message_en: 'Salary run not found.',
+    retryable: false,
+    remediation: {
+      description:
+        'Check the salary run id and the company: a run of another company reads as not found. To find the run for a month, call gnubok_get_salary_run with period_year and period_month (v1: GET /salary-runs?period_year=YYYY).',
+      tool: 'gnubok_get_salary_run',
+    },
   },
   SALARY_RUN_NO_EMPLOYEES: {
     httpStatus: 400,
@@ -4321,6 +4327,12 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     httpStatus: 400,
     message_sv: 'Lönebeskedets rader kan bara redigeras medan lönekörningen är ett utkast.',
     message_en: 'Payslip lines can only be edited while the salary run is a draft.',
+    retryable: false,
+    remediation: {
+      description:
+        'Only the lines of a draft run change. Send a run in review back to draft first (gnubok_revert_salary_run, v1 POST /salary-runs/{id}/revert); an approved run is unapproved before that (gnubok_unapprove_salary_run). A paid or booked run is never edited: it is corrected with a rättelsekörning.',
+      tool: 'gnubok_revert_salary_run',
+    },
   },
   SALARY_RUN_EMPLOYEE_NOT_FOUND: {
     httpStatus: 404,
@@ -4387,10 +4399,19 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     message_sv: 'Semestersaldon rullades men justeringsverifikationen kunde inte bokföras. Bokför justeringen manuellt från rapporten.',
     message_en: 'Vacation balances rolled but the adjustment entry failed to post. Book the adjustment manually from the report.',
   },
+  // Not a lookup miss: the ledger row is seeded lazily (the first booked run
+  // or the vacation year close), so before that there is no balance to read.
+  // An empty balance would state 0 days, which is false for anyone entitled.
   VACATION_BALANCE_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Inget semestersaldo finns för den anställda ännu.',
     message_en: 'No vacation balance exists for the employee yet.',
+    retryable: false,
+    remediation: {
+      description:
+        'The vacation ledger is seeded when the employee\'s first salary run is booked (gnubok_book_salary_run) or at the vacation year close, not before. Until then read the entitlement from the employee (gnubok_get_employee: vacation_rule, vacation_days_per_year). Retrying returns the same answer.',
+      tool: 'gnubok_get_employee',
+    },
   },
   SALARY_RUN_TAX_TABLE_MISSING: {
     httpStatus: 400,
@@ -4618,6 +4639,25 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     httpStatus: 400,
     message_sv: 'AGI kan endast genereras för lönekörningar i status review, approved, paid, booked eller corrected.',
     message_en: 'AGI can only be generated for salary runs in review, approved, paid, booked, or corrected status.',
+    retryable: false,
+    remediation: {
+      description:
+        'The run is still a draft. Calculate and book it first (gnubok_book_salary_run stages the booking of a calculated draft run) so the AGI matches the books, then generate the AGI.',
+      tool: 'gnubok_book_salary_run',
+    },
+  },
+  // gnubok_agi_submit files the stored underlag; it never generates one, so a
+  // run without an agi_declarations row has nothing to send yet.
+  AGI_SUBMIT_NOT_GENERATED: {
+    httpStatus: 409,
+    message_sv: 'AGI-underlaget saknas för lönekörningen. Generera AGI först och lämna sedan in.',
+    message_en: 'No AGI has been generated for this salary run yet. Generate the AGI first, then submit it.',
+    retryable: false,
+    remediation: {
+      description:
+        'Stage gnubok_generate_agi for the run and have it approved, then stage gnubok_agi_submit again.',
+      tool: 'gnubok_generate_agi',
+    },
   },
   AGI_PERIOD_CONFLICT: {
     httpStatus: 409,

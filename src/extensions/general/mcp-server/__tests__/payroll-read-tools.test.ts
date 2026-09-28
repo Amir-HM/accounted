@@ -317,8 +317,8 @@ describe('gnubok_get_vacation_balance', () => {
 
   it('returns the open balance with qualified id, remaining days and the SEK estimate', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: BALANCE_ROW })
     enqueue({ data: EMPLOYEE_ROW })
+    enqueue({ data: BALANCE_ROW })
 
     const result = (await getVacationBalance.execute(
       { employee_id: 'emp-1' }, 'company-1', 'user-1', supabase as never, { type: 'api_key' },
@@ -336,8 +336,8 @@ describe('gnubok_get_vacation_balance', () => {
 
   it('floors the SEK estimate at zero when the balance is overdrawn', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: { ...BALANCE_ROW, entitled_days: 5, taken_days: 12, saved_days: {} } })
     enqueue({ data: EMPLOYEE_ROW })
+    enqueue({ data: { ...BALANCE_ROW, entitled_days: 5, taken_days: 12, saved_days: {} } })
 
     const result = (await getVacationBalance.execute(
       { employee_id: 'emp-1' }, 'company-1', 'user-1', supabase as never, { type: 'api_key' },
@@ -347,25 +347,26 @@ describe('gnubok_get_vacation_balance', () => {
     expect(result.estimated_liability_sek).toBe(0)
   })
 
-  it('throws when the employee row is missing for the company', async () => {
-    const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: BALANCE_ROW })
+  it('throws EMPLOYEE_NOT_FOUND before reading the ledger when the employee is not the company\'s', async () => {
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
     enqueue({ data: null })
     await expect(
       getVacationBalance.execute(
         { employee_id: 'emp-1' }, 'company-1', 'user-1', supabase as never, { type: 'api_key' },
       ),
-    ).rejects.toThrow(/Employee emp-1 not found/)
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_NOT_FOUND', message: expect.stringMatching(/emp-1/) })
+    expect(findCalls('employee_vacation_balances', 'select')).toHaveLength(0)
   })
 
-  it('throws before the ledger has seeded', async () => {
+  it('throws VACATION_BALANCE_NOT_FOUND before the ledger has seeded', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: EMPLOYEE_ROW })
     enqueue({ data: null })
     await expect(
       getVacationBalance.execute(
         { employee_id: 'emp-x' }, 'company-1', 'user-1', supabase as never, { type: 'api_key' },
       ),
-    ).rejects.toThrow(/No vacation balance/)
+    ).rejects.toMatchObject({ code: 'VACATION_BALANCE_NOT_FOUND', message: expect.stringMatching(/No vacation balance/) })
   })
 })
 
@@ -460,10 +461,10 @@ describe('gnubok_get_salary_run: period selector', () => {
     const { supabase } = createQueuedMockSupabase()
     await expect(
       getSalaryRun.execute({ period_year: 2026, period_month: 13 }, 'company-1', 'user-1', supabase as never, { type: 'api_key' }),
-    ).rejects.toThrow(/period_month 1-12/)
+    ).rejects.toThrow(/period_month: must be an integer month 1-12/)
     await expect(
       getSalaryRun.execute({ period_year: 2026 }, 'company-1', 'user-1', supabase as never, { type: 'api_key' }),
-    ).rejects.toThrow(/period_month 1-12/)
+    ).rejects.toThrow(/period_month: must be an integer month 1-12/)
     expect(supabase.from).not.toHaveBeenCalled()
   })
 })

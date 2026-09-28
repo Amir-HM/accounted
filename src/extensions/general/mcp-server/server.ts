@@ -103,6 +103,7 @@ import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { dbError, errorCauseTag } from '@/lib/errors/db-error'
 import { getStructuredError } from '@/lib/errors/get-structured-error'
+import { codedRefusal, fieldValidationError, serviceRefusal, zodFieldIssues } from '@/lib/errors/refusal'
 import { applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
 import { creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
@@ -682,6 +683,32 @@ const ANNOTATIONS_WRITE_OPEN_WORLD = {
  */
 function registryError(code: string): Error {
   return Object.assign(new Error(getErrorEntry(code)?.message_sv ?? code), { code })
+}
+
+/** SALARY_RUN_NOT_FOUND naming the id the agent sent. */
+function salaryRunNotFound(salaryRunId: string): Error {
+  return codedRefusal('SALARY_RUN_NOT_FOUND', `Salary run not found: no run with id ${salaryRunId} in this company.`)
+}
+
+/**
+ * The run a `.maybeSingle()` salary_runs lookup found, or the refusal an agent
+ * can act on. A malformed id (22P02) is a miss as well: no run can have it.
+ * Any other database failure keeps its SQLSTATE, so a timeout stays transient.
+ */
+function salaryRunOrThrow<T>(
+  result: { data: T | null; error: { code?: string | null; message?: string | null } | null },
+  salaryRunId: string,
+): NonNullable<T> {
+  if (result.error && result.error.code !== '22P02') throw dbError(result.error)
+  if (!result.data) throw salaryRunNotFound(salaryRunId)
+  return result.data as NonNullable<T>
+}
+
+/** A missing salary_run_id: hosts do not always enforce inputSchema `required`. */
+function salaryRunIdRequired(): Error {
+  return fieldValidationError('Invalid arguments', [
+    { field: 'salary_run_id', en: 'is required', sv: 'Obligatoriskt fält saknas: ange lönekörningens id.' },
+  ])
 }
 
 /**
@@ -15752,24 +15779,34 @@ export const tools: McpTool[] = [
       const byId = typeof args.salary_run_id === 'string' && args.salary_run_id.length > 0
       const byPeriod = args.period_year !== undefined || args.period_month !== undefined
       if (byId === byPeriod) {
-        throw new Error('Pass either salary_run_id or period_year + period_month')
+        throw fieldValidationError('Invalid arguments', [{
+          field: 'salary_run_id',
+          en: 'pass either salary_run_id or period_year + period_month, not both and not neither',
+          sv: 'Ange antingen salary_run_id eller period_year och period_month.',
+        }])
       }
       let run: Record<string, unknown>
       if (byId) {
-        const { data, error } = await supabase
+        const salaryRunId = args.salary_run_id as string
+        const lookup = await supabase
           .from('salary_runs')
           .select('*')
-          .eq('id', args.salary_run_id as string)
+          .eq('id', salaryRunId)
           .eq('company_id', companyId)
-          .single()
-        if (error || !data) throw new Error('Salary run not found')
-        run = data as Record<string, unknown>
+          .maybeSingle()
+        run = salaryRunOrThrow(lookup, salaryRunId) as Record<string, unknown>
       } else {
         const periodYear = args.period_year as number
         const periodMonth = args.period_month as number
-        if (!Number.isInteger(periodYear) || !Number.isInteger(periodMonth) || periodMonth < 1 || periodMonth > 12) {
-          throw new Error('period_year must be an integer year and period_month 1-12')
-        }
+        const periodIssues = [
+          ...(Number.isInteger(periodYear)
+            ? []
+            : [{ field: 'period_year', en: 'must be an integer year, e.g. 2026', sv: 'Ska vara ett årtal, t.ex. 2026.' }]),
+          ...(Number.isInteger(periodMonth) && periodMonth >= 1 && periodMonth <= 12
+            ? []
+            : [{ field: 'period_month', en: 'must be an integer month 1-12', sv: 'Ska vara en månad 1-12.' }]),
+        ]
+        if (periodIssues.length > 0) throw fieldValidationError('Invalid arguments', periodIssues)
         // The partial unique index (status != corrected) leaves at most one
         // live run per period; a corrected original coexists with its
         // correction, so exclude it explicitly.
@@ -15783,7 +15820,12 @@ export const tools: McpTool[] = [
           .maybeSingle()
         if (error) throw dbError(error)
         if (!data) {
-          throw new Error(`No salary run for ${periodYear}-${String(periodMonth).padStart(2, '0')}`)
+          const period = `${periodYear}-${String(periodMonth).padStart(2, '0')}`
+          throw codedRefusal('SALARY_RUN_NOT_FOUND', `No salary run for ${period} in this company.`, {
+            description: `No run exists for ${period} yet. Stage one with gnubok_create_salary_run (period_year, period_month, payment_date).`,
+            tool: 'gnubok_create_salary_run',
+            args: { period_year: periodYear, period_month: periodMonth },
+          })
         }
         run = data as Record<string, unknown>
       }
@@ -15806,7 +15848,7 @@ export const tools: McpTool[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        year: { type: 'number', description: 'Year to report on' },
+        year: { type: 'number', description: 'Payroll year, 2020-2100' },
       },
       required: ['year'],
     },
@@ -15816,8 +15858,17 @@ export const tools: McpTool[] = [
     // rollup; the monthly flow reads gnubok_get_salary_run, which stays listed.
     catalogVisibility: 'search',
     async execute(args, companyId, _userId, supabase) {
+      // Required, as on the v1 report (GET /reports/salary-journal: integer
+      // 2020-2100). Hosts do not always enforce `required`, and an absent year
+      // reached the integer filter as the text "undefined" (SQLSTATE 22P02).
+      const year = z.coerce.number().int().min(2020).max(2100).safeParse(args.year)
+      if (!year.success) {
+        throw fieldValidationError('Invalid arguments', [
+          { field: 'year', en: 'is required, an integer 2020-2100', sv: 'Ange år som ett heltal 2020-2100.' },
+        ])
+      }
       const { generateSalaryJournal } = await import('@/lib/reports/salary-journal')
-      return generateSalaryJournal(supabase, companyId, args.year as number)
+      return generateSalaryJournal(supabase, companyId, year.data)
     },
   },
   {
@@ -16040,17 +16091,26 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_IDEMPOTENT_WRITE,
     async execute(args, companyId, userId, supabase, actor) {
       const id = args.salary_run_id as string
-      if (!id) throw new Error('salary_run_id is required')
+      if (!id) throw salaryRunIdRequired()
 
-      const { data: run } = await supabase
+      const lookup = await supabase
         .from('salary_runs')
         .select('id, status, period_year, period_month, payment_date')
         .eq('id', id)
         .eq('company_id', companyId)
         .maybeSingle()
-      if (!run) throw new Error('Salary run not found')
+      const run = salaryRunOrThrow(lookup, id)
       if (run.status === 'draft') {
-        throw new Error('Salary run must be past draft before AGI can be generated')
+        // The code the v1 generate-agi route answers for the same state.
+        throw codedRefusal(
+          'AGI_GENERATE_NOT_BOOKABLE',
+          'Salary run must be past draft before AGI can be generated: it is still a draft. Book it first so the AGI matches the books.',
+          {
+            description: 'Calculate the run (gnubok_calculate_salary_run), stage gnubok_book_salary_run and have it approved, then stage gnubok_generate_agi again.',
+            tool: 'gnubok_book_salary_run',
+            args: { salary_run_id: id },
+          },
+        )
       }
 
       const period = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
@@ -16323,17 +16383,17 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase, actor) {
       assertSkatteverketEnabled()
       const salaryRunId = args.salary_run_id as string
-      if (!salaryRunId) throw new Error('salary_run_id is required')
+      if (!salaryRunId) throw salaryRunIdRequired()
       // Local preconditions only: NO SKV call at stage time. The commit
       // executor posts the underlag + creates the granskningsunderlag on approval.
-      const { data: run } = await supabase
+      const lookup = await supabase
         .from('salary_runs')
         .select('id, status, period_year, period_month, payment_date')
         .eq('id', salaryRunId)
         .eq('company_id', companyId)
         .maybeSingle()
-      if (!run) throw new Error('Salary run not found')
-      const { data: decl } = await supabase
+      const run = salaryRunOrThrow(lookup, salaryRunId)
+      const { data: decl, error: declError } = await supabase
         .from('agi_declarations')
         .select('id, status, xml_content')
         .eq('salary_run_id', salaryRunId)
@@ -16341,8 +16401,17 @@ export const tools: McpTool[] = [
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
+      if (declError) throw dbError(declError)
       if (!decl?.xml_content) {
-        throw new Error('AGI-underlag saknas: generera AGI först med gnubok_generate_agi.')
+        throw codedRefusal(
+          'AGI_SUBMIT_NOT_GENERATED',
+          `No AGI underlag has been generated for salary run ${salaryRunId} yet: generate it with gnubok_generate_agi first, then submit.`,
+          {
+            description: 'Stage gnubok_generate_agi for this run and have it approved, then stage gnubok_agi_submit again.',
+            tool: 'gnubok_generate_agi',
+            args: { salary_run_id: salaryRunId },
+          },
+        )
       }
       const period = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
       return stagePendingOperation(
@@ -16386,10 +16455,10 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase) {
       assertSkatteverketEnabled()
       const salaryRunId = args.salary_run_id as string
-      if (!salaryRunId) throw new Error('salary_run_id is required')
+      if (!salaryRunId) throw salaryRunIdRequired()
       const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       try {
-        const { data: run } = await supabase
+        const lookup = await supabase
           .from('salary_runs')
           // agi_generated_at / agi_submitted_at feed the run-scoped filing
           // resolution below.
@@ -16397,7 +16466,7 @@ export const tools: McpTool[] = [
           .eq('id', salaryRunId)
           .eq('company_id', companyId)
           .maybeSingle()
-        if (!run) throw new Error('Salary run not found')
+        const run = salaryRunOrThrow(lookup, salaryRunId)
         const arbetsgivare = await resolveRedovisare(supabase, companyId)
         const period = formatRedovisningsperiod('monthly', run.period_year, run.period_month)
         // Local cached submission state (extension_data key agi_submission_${period}),
@@ -16759,7 +16828,9 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        throw new Error(`Cannot update payslip line: ${preflight.code}`)
+        // The service's own code (SALARY_RUN_LINE_NOT_DRAFT, SALARY_LINE_NOT_FOUND,
+        // ...) is what the agent dispatches on: never fold it into prose only.
+        throw serviceRefusal('Cannot update payslip line', preflight)
       }
       const merged = preflight.data
 
@@ -17234,17 +17305,21 @@ export const tools: McpTool[] = [
       const { CreateEmployeeSchema } = await import('@/lib/api/schemas')
       const parsed = CreateEmployeeSchema.safeParse(args)
       if (!parsed.success) {
-        const first = parsed.error.issues[0]
-        throw new Error(`Invalid employee: ${first ? `${first.path.join('.')}: ${first.message}` : 'validation failed'}`)
+        throw fieldValidationError('Invalid employee', zodFieldIssues(parsed.error, args))
       }
       const body = parsed.data
 
       // Preflight the EF-owner rule so staging fails early with a clean error.
+      // Same code and field as the v1 create (VALIDATION_ERROR on employment_type).
       const { getCompanyEntityType } = await import('@/lib/company/context')
       const { isEmploymentTypeAllowedForEntity, EF_OWNER_EMPLOYMENT_ERROR } = await import('@/lib/salary/employment-rules')
       const entityType = await getCompanyEntityType(supabase, companyId)
       if (!isEmploymentTypeAllowedForEntity(entityType, body.employment_type)) {
-        throw new Error(EF_OWNER_EMPLOYMENT_ERROR)
+        throw fieldValidationError('Invalid employee', [{
+          field: 'employment_type',
+          en: 'an enskild firma cannot employ its owner or board: the owner takes eget uttag (account 2013), not salary; use "employee" for hired staff',
+          sv: EF_OWNER_EMPLOYMENT_ERROR,
+        }])
       }
 
       // PII rule: encrypt AT STAGING TIME. pending_operations.params never
@@ -17335,9 +17410,17 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_STAGED_WRITE,
     async execute(args, companyId, userId, supabase, actor) {
       const { employee_id, ...rest } = args as { employee_id: string } & Record<string, unknown>
-      if (!employee_id) throw new Error('employee_id is required')
+      if (!employee_id) {
+        throw fieldValidationError('Invalid employee update', [
+          { field: 'employee_id', en: 'is required', sv: 'Obligatoriskt fält saknas: ange den anställdas id.' },
+        ])
+      }
       if ('personnummer' in rest) {
-        throw new Error('personnummer cannot be changed: identity is immutable post-create')
+        throw fieldValidationError('Invalid employee update', [{
+          field: 'personnummer',
+          en: 'cannot be changed: identity is immutable post-create',
+          sv: 'Personnumret kan inte ändras efter att den anställda har skapats.',
+        }])
       }
 
       // Resolve-don't-select: names resolve to registry codes; an explicit {}
@@ -17356,7 +17439,7 @@ export const tools: McpTool[] = [
         if (value !== undefined) patch[key] = value
       }
       if (Object.keys(patch).length === 0) {
-        throw new Error('At least one field to update is required')
+        throw codedRefusal('VALIDATION_ERROR', 'At least one field to update is required')
       }
 
       // The update contract the dashboard and v1 PATCH enforce, from the same
@@ -17366,8 +17449,7 @@ export const tools: McpTool[] = [
       const { UpdateEmployeeSchema } = await import('@/lib/api/schemas')
       const parsedPatch = UpdateEmployeeSchema.safeParse(patch)
       if (!parsedPatch.success) {
-        const first = parsedPatch.error.issues[0]
-        throw new Error(`Invalid employee update: ${first ? `${first.path.join('.')}: ${first.message}` : 'validation failed'}`)
+        throw fieldValidationError('Invalid employee update', zodFieldIssues(parsedPatch.error, patch))
       }
 
       const { data: existing, error } = await supabase
@@ -17377,15 +17459,20 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .maybeSingle()
       if (error) throw dbError(error)
-      if (!existing) throw new Error('Employee not found')
+      if (!existing) throw codedRefusal('EMPLOYEE_NOT_FOUND', `Employee not found: no employee with id ${employee_id} in this company.`)
 
       // Preflight the merged row with the rules every update door runs
       // (salary amount, tax table, Växa-stöd, jämkning #2058, bank details),
       // so the agent gets the error at staging time instead of at approval.
       // The executor (updateEmployee) runs the same validator again. #3008
       const { validateEmployeeUpdate } = await import('@/lib/salary/employee-update-rules')
-      const [issue] = validateEmployeeUpdate(existing as Record<string, unknown>, patch)
-      if (issue) throw new Error(`${issue.field}: ${issue.message}`)
+      const issues = validateEmployeeUpdate(existing as Record<string, unknown>, patch)
+      if (issues.length > 0) {
+        throw fieldValidationError(
+          'Invalid employee update',
+          issues.map((issue) => ({ field: issue.field, en: issue.message, sv: issue.message })),
+        )
+      }
 
       const changes = Object.entries(patch).map(([field, to]) => ({
         field,
@@ -17479,7 +17566,19 @@ export const tools: McpTool[] = [
       //      map the caller never described. Send the full map, or omit it.
       const rawItems = (args as { items?: unknown }).items
       if (!Array.isArray(rawItems) || rawItems.length === 0) {
-        throw new Error('Invalid opening balances: items must be a non-empty array')
+        // Name what arrived: a JSON string instead of the array was the
+        // repeated case (one agent sent it 241 times while the answer was
+        // UNKNOWN_ERROR, which reads as "try again").
+        const got =
+          rawItems === undefined ? 'nothing'
+            : typeof rawItems === 'string' ? 'a string: send the array itself, not JSON text'
+              : Array.isArray(rawItems) ? 'an empty array'
+                : `a value of type ${rawItems === null ? 'null' : typeof rawItems}`
+        throw fieldValidationError('Invalid opening balances', [{
+          field: 'items',
+          en: `must be a non-empty array of objects like { employee_id, cutover_date, ... } (got ${got})`,
+          sv: 'Ska vara en lista med minst en anställd, t.ex. [{ employee_id, cutover_date }].',
+        }])
       }
 
       const MERGEABLE_FIELDS = [
@@ -17498,9 +17597,11 @@ export const tools: McpTool[] = [
       // .default() would turn them into 0 / a missing key on every merge.
       const NULLABLE_FIELDS = new Set<string>(['ytd_net', 'vacation_as_of_date'])
 
-      const patches = rawItems.map((raw) => {
+      const patches = rawItems.map((raw, index) => {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-          throw new Error('Invalid opening balances: every item must be an object')
+          throw fieldValidationError('Invalid opening balances', [
+            { field: `items.${index}`, en: 'must be an object', sv: 'Ska vara ett objekt med employee_id och cutover_date.' },
+          ])
         }
         const item = raw as Record<string, unknown>
         const patch: Record<string, unknown> = {}
@@ -17551,10 +17652,10 @@ export const tools: McpTool[] = [
       })
 
       const { OpeningBalancesBulkSchema } = await import('@/lib/api/schemas')
-      const parsed = OpeningBalancesBulkSchema.safeParse({ items: mergedItems })
+      const mergedInput = { items: mergedItems }
+      const parsed = OpeningBalancesBulkSchema.safeParse(mergedInput)
       if (!parsed.success) {
-        const first = parsed.error.issues[0]
-        throw new Error(`Invalid opening balances: ${first ? `${first.path.join('.')}: ${first.message}` : 'validation failed'}`)
+        throw fieldValidationError('Invalid opening balances', zodFieldIssues(parsed.error, mergedInput))
       }
 
       // Preflight via the shared service in dry-run: employee existence,
@@ -17568,10 +17669,16 @@ export const tools: McpTool[] = [
         dryRun: true,
       })
       if (!preflight.ok) {
-        const itemSummary = preflight.itemErrors
-          ?.map((e) => `${e.employee_id}: ${e.message}`)
-          .join('; ')
-        throw new Error(`Cannot set opening balances: ${itemSummary ?? preflight.code}`)
+        const itemErrors = preflight.itemErrors ?? []
+        if (itemErrors.length === 0) throw serviceRefusal('Cannot set opening balances', preflight)
+        // Item errors share the batch's VALIDATION_ERROR; when every item
+        // failed for one reason (all locked, all unknown), that reason is the
+        // more precise code.
+        const itemCodes = new Set(itemErrors.map((e) => e.code))
+        throw codedRefusal(
+          itemCodes.size === 1 ? [...itemCodes][0] : preflight.code,
+          `Cannot set opening balances: ${itemErrors.map((e) => `${e.employee_id}: ${e.message}`).join('; ')}`,
+        )
       }
 
       return stagePendingOperation(
@@ -17637,7 +17744,23 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, _userId, supabase) {
       const employeeId = args.employee_id as string
-      if (!employeeId) throw new Error('employee_id is required')
+      if (!employeeId) {
+        throw fieldValidationError('Invalid arguments', [
+          { field: 'employee_id', en: 'is required', sv: 'Obligatoriskt fält saknas: ange den anställdas id.' },
+        ])
+      }
+      // The employee first, as on the v1 route: a wrong id (or a malformed
+      // one, 22P02) is EMPLOYEE_NOT_FOUND, never "no balance yet".
+      const { data: employee, error: empErr } = await supabase
+        .from('employees')
+        .select('vacation_rule, vacation_days_per_year, vacation_pay_rate, semestertillagg_rate, salary_type, monthly_salary, employment_degree, hourly_rate, hours_per_week, workdays_per_week')
+        .eq('id', employeeId)
+        .eq('company_id', companyId)
+        .maybeSingle()
+      if (empErr && empErr.code !== '22P02') throw dbError(empErr)
+      if (!employee) {
+        throw codedRefusal('EMPLOYEE_NOT_FOUND', `Employee not found: no employee with id ${employeeId} in this company.`)
+      }
       const { data: balance, error } = await supabase
         .from('employee_vacation_balances')
         .select('id, employee_id, vacation_year_start, entitled_days, accrued_days, taken_days, saved_days, forced_payout_days, unpaid_days, advance_days, saved_days_taken')
@@ -17648,7 +17771,14 @@ export const tools: McpTool[] = [
         .limit(1)
         .maybeSingle()
       if (error) throw dbError(error)
-      if (!balance) throw new Error('No vacation balance exists for the employee yet (the ledger seeds on first booking)')
+      // Not an empty balance: the ledger row is seeded by the first booked run
+      // (or the vacation year close), and zeros would claim no entitlement.
+      if (!balance) {
+        throw codedRefusal(
+          'VACATION_BALANCE_NOT_FOUND',
+          `No vacation balance exists for employee ${employeeId} yet: the vacation ledger is seeded when their first salary run is booked, or at the vacation year close.`,
+        )
+      }
       const { id, ...rest } = balance as { id: string } & Record<string, unknown>
       const entitled = (rest.entitled_days as number) ?? 0
       const taken = (rest.taken_days as number) ?? 0
@@ -17659,14 +17789,6 @@ export const tools: McpTool[] = [
       // estimate. remaining + sparade dagar, floored at zero: an overdrawn
       // balance is a receivable, not a negative skuld.
       const { dayValueSek } = await import('@/lib/salary/semesterberedning')
-      const { data: employee, error: empErr } = await supabase
-        .from('employees')
-        .select('vacation_rule, vacation_days_per_year, vacation_pay_rate, semestertillagg_rate, salary_type, monthly_salary, employment_degree, hourly_rate, hours_per_week, workdays_per_week')
-        .eq('id', employeeId)
-        .eq('company_id', companyId)
-        .maybeSingle()
-      if (empErr) throw dbError(empErr)
-      if (!employee) throw new Error(`Employee ${employeeId} not found for this company`)
       // Sparade dagar still held: seeded years minus what 'saved' vacation
       // lines consumed this year (same helper as the v1 route).
       const { remainingSavedDays, sumDays } = await import('@/lib/salary/vacation-category')
