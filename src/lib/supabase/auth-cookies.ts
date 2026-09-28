@@ -37,8 +37,16 @@ interface CookieReader {
   getAll(): Array<{ name: string; value: string }>
 }
 
+interface CookieSetOptions {
+  path?: string
+  sameSite?: 'lax' | 'strict' | 'none'
+  httpOnly?: boolean
+  secure?: boolean
+  maxAge?: number
+}
+
 interface CookieWriter {
-  set(name: string, value: string, options: Record<string, unknown>): unknown
+  set(name: string, value: string, options: CookieSetOptions): unknown
   getAll(): Array<{ name: string; value: string }>
 }
 

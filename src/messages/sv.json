@@ -6766,10 +6766,6 @@
     "managed_via": "Hanteras via {domain}",
     "locked_note": "Pausat: kräver betald plan"
   },
-  "browser_session_guard": {
-    "message": "Din webbläsare skickar inte med inloggningen, så sidor kan se tomma ut. Ingen data är borta. Logga in igen så rättar det sig.",
-    "sign_in_again": "Logga in igen"
-  },
   "system_notice": {
     "high_load": "Just nu är det hög belastning i systemet. Vissa sidor kan svara långsamt eller tillfälligt ge fel. Vi jobbar på det.",
     "dismiss": "Stäng"
