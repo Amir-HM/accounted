@@ -430,7 +430,7 @@ export const salaryRunsLinesCreate = defineOperation({
       'This month\'s base salary (gnubok_set_run_salary: the calculation rebuilds the Grundlön line), absence (gnubok_register_absence: the calculation derives sick, VAB and parental lines), utlägg (gnubok_attach_salary_expense_claims links the claim so booking settles it) or changing a line (gnubok_update_payslip_line).',
     pitfalls: [
       'Draft runs only: SALARY_RUN_LINE_NOT_DRAFT once the run has advanced; gnubok_revert_salary_run brings a run in review back to draft. The employee must be on the run, otherwise SALARY_RUN_EMPLOYEE_NOT_FOUND.',
-      'The calculation rebuilds every sick_*, vab, parental_leave, overtime_50, overtime_100 and ob_* line from registered absence and from worked hours under the company\'s OB and övertid rules, so a line of those types added here is gone after the next calculation. Put a one-off övertid amount on item_type overtime and a one-off OB amount on item_type other.',
+      'The calculation owns every sick_*, vab, parental_leave, unpaid_leave, overtime_50, overtime_100 and ob_* line (it rebuilds them from registered absence and from worked hours under the company\'s OB and övertid rules), so those types are refused with SALARY_LINE_CALCULATED. Put a one-off övertid amount on item_type overtime and a one-off OB amount on item_type other.',
       'The flags are not derived from item_type: send them. Pay (bonus, commission, overtime, other, correction) keeps the defaults. Skattefri traktamente or milersättning: is_taxable, is_avgift_basis and is_vacation_basis false. Skattepliktig traktamente or milersättning: is_vacation_basis false. Bruttolöneavdrag: is_gross_deduction true, is_vacation_basis false. Nettolöneavdrag and förskott: is_net_deduction true, is_taxable, is_avgift_basis and is_vacation_basis false.',
       'Deductions carry a negative amount, as the dashboard stores them: the booking credits a nettolöneavdrag\'s account only when its amount is negative.',
       'account_number defaults as for an employee (bonus "7210") even when the employee is a company owner, whose Grundlön books on "7220": send account_number on an owner\'s line.',
@@ -511,12 +511,12 @@ export const salaryRunsLinesCreate = defineOperation({
     ),
   }),
   output: PayslipLineOut,
-  errorCodes: ['SALARY_RUN_NOT_FOUND', 'SALARY_RUN_LINE_NOT_DRAFT', 'SALARY_RUN_EMPLOYEE_NOT_FOUND', 'VALIDATION_ERROR'],
+  errorCodes: ['SALARY_RUN_NOT_FOUND', 'SALARY_RUN_LINE_NOT_DRAFT', 'SALARY_RUN_EMPLOYEE_NOT_FOUND', 'VALIDATION_ERROR', 'SALARY_LINE_CALCULATED'],
   mcp: {
     name: 'gnubok_add_payslip_line',
     title: 'Add Payslip Line',
     description:
-      'Stage a payslip line for one employee on a draft salary run: bonus, provision, övertid, traktamente, milersättning, avdrag, förskott or semesterdagar (vacation, quantity = days). Deductions are negative; OB and absence lines are rebuilt by calculation. Recalculate afterwards.',
+      'Stage a payslip line for one employee on a draft salary run: bonus, provision, övertid, traktamente, milersättning, avdrag, förskott or semesterdagar (vacation, quantity = days). Deductions are negative; absence and OB/övertid-rule types are refused. Recalculate after.',
     keywords: [
       'lönerad',
       'lönebeskedsrad',
@@ -585,6 +585,7 @@ export const salaryRunsLinesDelete = defineOperation({
     pitfalls: [
       'Draft runs only: SALARY_RUN_LINE_NOT_DRAFT once the run has advanced; gnubok_revert_salary_run brings a run in review back to draft.',
       'A salary_line_item_id from another run answers SALARY_LINE_NOT_FOUND. The ids are in gnubok_get_payslip (line_items[].salary_line_item_id).',
+      'A line the calculation derives (absence, Övertid 50/100 % and OB rows, förmån and recurring-line rows, the engine\'s semesterersättning and öresavrundning rows) answers SALARY_LINE_CALCULATED: the next calculation would bring it back. Change the source: gnubok_delete_absence, gnubok_set_worked_days, the förmån or the recurring line.',
       'Deleting an utlägg line that gnubok_attach_salary_expense_claims added leaves the claim open: attach it again or repay it another way.',
       'Recalculate the run afterwards (gnubok_calculate_salary_run).',
     ],
@@ -608,12 +609,12 @@ export const salaryRunsLinesDelete = defineOperation({
     salary_line_item_id: z.string().uuid(),
     deleted: z.literal(true),
   }),
-  errorCodes: ['SALARY_RUN_NOT_FOUND', 'SALARY_RUN_LINE_NOT_DRAFT', 'SALARY_LINE_NOT_FOUND'],
+  errorCodes: ['SALARY_RUN_NOT_FOUND', 'SALARY_RUN_LINE_NOT_DRAFT', 'SALARY_LINE_NOT_FOUND', 'SALARY_LINE_CALCULATED'],
   mcp: {
     name: 'gnubok_delete_payslip_line',
     title: 'Delete Payslip Line',
     description:
-      'Stage deleting one payslip line from a draft salary run (salary_line_item_id from gnubok_get_payslip). Lines the calculation derives (absence, OB, benefits, recurring lines) come back on recalculation. To change a line, use gnubok_update_payslip_line.',
+      'Stage deleting one payslip line from a draft salary run (salary_line_item_id from gnubok_get_payslip). Lines the calculation derives (absence, OB, benefits, recurring lines) are refused: change their source. To change a line, use gnubok_update_payslip_line.',
     keywords: ['ta bort lönerad', 'radera lönebeskedsrad', 'ta bort bonus', 'ta bort avdrag', 'fel lönerad'],
     stage: {
       pendingType: 'delete_payslip_line',

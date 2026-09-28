@@ -2284,6 +2284,22 @@ export interface IncomeStatementReport {
   financial_sections: IncomeStatementSection[]
   total_financial: number
   net_result: number
+  // The statutory lines below are always set by buildIncomeStatementFromRows,
+  // the one builder. Optional so report fixtures and hand-built reports
+  // elsewhere need not carry them: no consumer computes with them.
+  /**
+   * Nettoomsättning, BAS 3000-3799, before bokslut entries like every figure
+   * here (definitions.basis). See lib/reports/income-definitions.ts.
+   */
+  nettoomsattning?: number
+  /** BAS 3800-3899. */
+  aktiverat_arbete?: number
+  /** BAS 3900-3999. */
+  ovriga_rorelseintakter?: number
+  /** Operating result before finansiella poster: total_revenue - total_expenses. */
+  rorelseresultat?: number
+  /** Which accounts each figure sums, returned so callers never guess. */
+  definitions?: Record<string, { accounts: string; definition: string }>
   period: { start: string; end: string }
 }
 
