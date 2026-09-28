@@ -36,6 +36,13 @@ import {
   verifySessionTimeoutState,
 } from '@/lib/auth/session-timeout'
 import {
+  expiredCookieOptions,
+  httpOnlyCookieOptions,
+  requestProtocolFromHeaders,
+  supabaseAuthCookieOptions,
+} from '@/lib/supabase/cookie-options'
+import { upgradeLegacyAuthCookies } from '@/lib/supabase/auth-cookies'
+import {
   isSessionAuthMethod,
   SESSION_AUTH_METHOD_HINT_COOKIE,
   SESSION_TIMEOUT_COOKIE,
@@ -107,11 +114,16 @@ async function updateSessionInner(
   let supabaseResponse = NextResponse.next({
     request,
   })
+  // Every cookie this proxy writes is HttpOnly (and Secure over TLS), the
+  // session cookie included: see lib/supabase/cookie-options.ts.
+  const requestProtocol =
+    requestProtocolFromHeaders(request.headers) ?? request.nextUrl.protocol
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      cookieOptions: supabaseAuthCookieOptions(requestProtocol),
       cookies: {
         getAll() {
           return request.cookies.getAll()
@@ -158,6 +170,10 @@ async function updateSessionInner(
       console.warn('[middleware] session cleanup after stale refresh token failed', signOutError)
     }
   }
+
+  // A session cookie written before the server-held switch gets the new
+  // attributes once, without a logout (lib/supabase/auth-cookies.ts).
+  await upgradeLegacyAuthCookies(request, supabaseResponse, requestProtocol)
 
   const timeoutConfig = getSessionTimeoutConfig()
   const hasAuthorizationHeader = request.headers.get('authorization') !== null
@@ -413,13 +429,7 @@ async function updateSessionInner(
     supabaseResponse.cookies.set(
       HOME_DOMAIN_OK_COOKIE,
       homeDomainOkValue(user.id, normalizeHost(request.nextUrl.hostname)),
-      {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: HOME_DOMAIN_OK_MAX_AGE,
-      },
+      httpOnlyCookieOptions(HOME_DOMAIN_OK_MAX_AGE, requestProtocol),
     )
   }
 
@@ -514,7 +524,7 @@ async function updateSessionInner(
   // archived), clear it so the browser stops sending it. Never on degraded
   // resolution: a transient query failure must not wipe a valid cookie.
   if (!degraded && cookieCompanyId && cookieCompanyId !== companyId) {
-    supabaseResponse.cookies.set('gnubok-company-id', '', { path: '/', maxAge: 0 })
+    supabaseResponse.cookies.set('gnubok-company-id', '', expiredCookieOptions(requestProtocol))
   }
 
   // Sync the locale cookie from user_preferences. This keeps next-intl's
@@ -523,12 +533,12 @@ async function updateSessionInner(
   const cookieLocale = request.cookies.get(LOCALE_COOKIE)?.value
   const effectiveLocale = isLocale(dbLocale) ? dbLocale : DEFAULT_LOCALE
   if (!degraded && cookieLocale !== effectiveLocale) {
-    supabaseResponse.cookies.set(LOCALE_COOKIE, effectiveLocale, {
-      path: '/',
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 60 * 60 * 24 * 365,
-    })
+    // HttpOnly: only the server reads it (i18n/request.ts).
+    supabaseResponse.cookies.set(
+      LOCALE_COOKIE,
+      effectiveLocale,
+      httpOnlyCookieOptions(60 * 60 * 24 * 365, requestProtocol),
+    )
   }
 
   // Routes that stay accessible when the user has no active company.
@@ -605,13 +615,11 @@ async function updateSessionInner(
   }
 
   // Set company cookie on the response so downstream requests have it
-  supabaseResponse.cookies.set('gnubok-company-id', companyId, {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 365,
-  })
+  supabaseResponse.cookies.set(
+    'gnubok-company-id',
+    companyId,
+    httpOnlyCookieOptions(60 * 60 * 24 * 365, requestProtocol),
+  )
 
   // Allow access to onboarding (for adding new companies), select-company, and companies/new
   if (pathname.startsWith('/select-company') || pathname.startsWith('/companies/new') || pathname.startsWith('/onboarding')) {
@@ -730,12 +738,7 @@ function clearAuthMethodHint(
 ): void {
   if (!request.cookies.has(SESSION_AUTH_METHOD_HINT_COOKIE)) return
   request.cookies.delete(SESSION_AUTH_METHOD_HINT_COOKIE)
-  response.cookies.set(SESSION_AUTH_METHOD_HINT_COOKIE, '', {
-    path: '/',
-    maxAge: 0,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-  })
+  response.cookies.set(SESSION_AUTH_METHOD_HINT_COOKIE, '', expiredCookieOptions())
 }
 
 function clearSessionTimeoutCookies(

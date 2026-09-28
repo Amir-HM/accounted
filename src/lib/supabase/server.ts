@@ -1,5 +1,9 @@
 import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
+import { cookies, headers } from 'next/headers'
+import {
+  requestProtocolFromHeaders,
+  supabaseAuthCookieOptions,
+} from '@/lib/supabase/cookie-options'
 
 // During Docker builds, NEXT_PUBLIC_* vars are placeholder sentinels
 // replaced at runtime by docker-entrypoint.sh.
@@ -27,14 +31,20 @@ const safeKey = isBuildPlaceholder ? 'placeholder' : key
  * encoding only together with those call sites, and identically here, in
  * client.ts and in middleware.ts: @supabase/ssr requires the two sides to
  * match.
+ *
+ * The session cookie is server-held: HttpOnly, and Secure over TLS
+ * (lib/supabase/cookie-options.ts). Only server code reads it; the browser
+ * client gets a short-lived access token from /api/auth/session-token.
  */
 export async function createClient() {
   const cookieStore = await cookies()
+  const requestProtocol = await currentRequestProtocol()
 
   return createServerClient(
     safeUrl,
     safeKey,
     {
+      cookieOptions: supabaseAuthCookieOptions(requestProtocol),
       cookies: {
         getAll() {
           return cookieStore.getAll()
@@ -53,6 +63,19 @@ export async function createClient() {
       },
     }
   )
+}
+
+/**
+ * The protocol of the request being served, when there is one. Outside a
+ * request scope (scripts, tests without a request) headers() throws: the
+ * cookie attributes then follow the deployment alone.
+ */
+async function currentRequestProtocol(): Promise<string | null> {
+  try {
+    return requestProtocolFromHeaders(await headers())
+  } catch {
+    return null
+  }
 }
 
 export function createServiceClient() {
