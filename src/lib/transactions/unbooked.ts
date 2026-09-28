@@ -131,9 +131,13 @@ export async function fetchAnchoredTransactionIds(
   for (let i = 0; i < transactionIds.length; i += ANCHOR_LOOKUP_CHUNK) {
     chunks.push(transactionIds.slice(i, i + ANCHOR_LOOKUP_CHUNK))
   }
+  // At most one request in flight per table: the three tables in parallel,
+  // each table's chunks in turn. This runs on every report read (data_status),
+  // so the work stays proportional to the candidates without a burst of
+  // 3 x ceil(n / ANCHOR_LOOKUP_CHUNK) concurrent requests from one call.
   await Promise.all(
-    ANCHOR_TABLES.flatMap((table) =>
-      chunks.map(async (chunk) => {
+    ANCHOR_TABLES.map(async (table) => {
+      for (const chunk of chunks) {
         const { data, error } = await supabase
           .from(table)
           .select('transaction_id')
@@ -144,8 +148,8 @@ export async function fetchAnchoredTransactionIds(
           const id = (row as { transaction_id?: string | null }).transaction_id
           if (id) anchored.add(id)
         }
-      }),
-    ),
+      }
+    }),
   )
   return anchored
 }

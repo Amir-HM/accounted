@@ -116,6 +116,41 @@ describe('fetchAnchoredTransactionIds', () => {
     expect(find('invoice_payments', 'eq')).toEqual([['company_id', 'co-1']])
   })
 
+  it('keeps at most one request in flight per table, however many chunks', async () => {
+    // Runs on every report read (data_status): the lookups must not burst
+    // into 3 x ceil(n / 200) concurrent requests from one call.
+    const inFlight: Record<string, number> = {}
+    let maxPerTable = 0
+    let maxTotal = 0
+    let total = 0
+    const seen: string[] = []
+    const supabase = {
+      from(table: string) {
+        const q = {
+          select: () => q,
+          eq: () => q,
+          in: async (_col: string, ids: string[]) => {
+            inFlight[table] = (inFlight[table] ?? 0) + 1
+            total += 1
+            maxPerTable = Math.max(maxPerTable, inFlight[table])
+            maxTotal = Math.max(maxTotal, total)
+            await new Promise((resolve) => setTimeout(resolve, 1))
+            inFlight[table] -= 1
+            total -= 1
+            seen.push(...ids)
+            return { data: [], error: null }
+          },
+        }
+        return q
+      },
+    }
+    const ids = Array.from({ length: 450 }, (_, i) => `t${i}`)
+    await fetchAnchoredTransactionIds(supabase as never, 'co-1', ids)
+    expect(maxPerTable).toBe(1)
+    expect(maxTotal).toBeLessThanOrEqual(3)
+    expect(seen).toHaveLength(450 * 3)
+  })
+
   it('reads nothing for an empty id list', async () => {
     const { supabase, find } = makeSupabase({})
     expect((await fetchAnchoredTransactionIds(supabase, 'co-1', [])).size).toBe(0)
