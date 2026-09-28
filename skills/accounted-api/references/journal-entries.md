@@ -153,7 +153,7 @@ Response `200`:
     reverses_id: string | null,
     reversed_by_id: string | null,
     correction_of_id: string | null,
-    lines: { id: string, account_number: string, debit_amount: number, credit_amount: number, line_description: string | null, currency: string | null, amount_in_currency: number | null, exchange_rate: number | null, tax_code: string | null, cost_center: string | null, project: string | null }[]
+    lines: { id: string, account_number: string, debit_amount: number, credit_amount: number, line_description: string | null, currency: string | null, amount_in_currency: number | null, exchange_rate: number | null, tax_code: string | null, dimensions: Record<string, string>, cost_center: string | null, project: string | null }[]
   },
   meta: {
     request_id: string,
@@ -221,7 +221,7 @@ Response `200`:
     reverses_id: string | null,
     reversed_by_id: string | null,
     correction_of_id: string | null,
-    lines: { id: string, account_number: string, debit_amount: number, credit_amount: number, line_description: string | null, currency: string | null, amount_in_currency: number | null, exchange_rate: number | null, tax_code: string | null, cost_center: string | null, project: string | null, sort_order: number }[],
+    lines: { id: string, account_number: string, debit_amount: number, credit_amount: number, line_description: string | null, currency: string | null, amount_in_currency: number | null, exchange_rate: number | null, tax_code: string | null, dimensions: Record<string, string>, cost_center: string | null, project: string | null, sort_order: number }[],
     created_at: string,
     updated_at: string
   },
@@ -251,12 +251,21 @@ Example response `200`:
         "account_number": "6570",
         "debit_amount": 50,
         "credit_amount": 0,
+        "dimensions": {
+          "6": "P001",
+          "20": "SYD"
+        },
+        "cost_center": null,
+        "project": "P001",
         "sort_order": 0
       },
       {
         "account_number": "1930",
         "debit_amount": 0,
         "credit_amount": 50,
+        "dimensions": {},
+        "cost_center": null,
+        "project": null,
         "sort_order": 1
       }
     ]
@@ -337,7 +346,7 @@ Response `200`:
     voucher_series: string,
     voucher_number: number,
     notes: string | null,
-    lines: { account_number: string, debit_amount: number, credit_amount: number, line_description: string | null }[]
+    lines: { account_number: string, debit_amount: number, credit_amount: number, line_description: string | null, dimensions: Record<string, string> }[]
   },
   meta: {
     request_id: string,
@@ -368,13 +377,15 @@ Example response `200`:
         "account_number": "6570",
         "debit_amount": 60,
         "credit_amount": 0,
-        "line_description": null
+        "line_description": null,
+        "dimensions": {}
       },
       {
         "account_number": "1930",
         "debit_amount": 0,
         "credit_amount": 60,
-        "line_description": null
+        "line_description": null,
+        "dimensions": {}
       }
     ]
   },
