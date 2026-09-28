@@ -626,6 +626,14 @@ describe('tools/list payload size guard', () => {
     //     measures 60 028 (next case), so a single-company session still
     //     starts ~3 470 tokens lighter than on main. The founder call above
     //     stands.
+    //   * KPI report correctness (fix/mcp-kpi-report-correctness):
+    //     gnubok_get_kpi_report gains from_date/to_date, a metrics filter and
+    //     a real outputSchema (bare types, metric keys only; the keys double
+    //     as the valid metrics values, so no input enum). Paid for by trims
+    //     on shared text every default-catalog write repeats: the staged
+    //     envelope's operation_id note and the generated tools' dry_run and
+    //     idempotency_key notes. Measured 63 302 on the old base; rebased onto
+    //     #3169 it measures 64 860, 170 under main alone. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(65_500)
   })
 
