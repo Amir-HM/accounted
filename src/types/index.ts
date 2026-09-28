@@ -4111,6 +4111,7 @@ export interface WebshopStoreSettings {
 export type ExtractedDocumentKind =
   | 'receipt'
   | 'supplier_invoice'
+  | 'credit_note'
   | 'government_letter'
   | 'other'
 export type ExtractedPaymentMethod = 'card' | 'swish' | 'cash' | 'invoice' | 'other'
@@ -4156,6 +4157,9 @@ export interface InvoiceExtractionResult {
     // existed lack it.
     servicePeriodStart?: string | null
     servicePeriodEnd?: string | null
+    // On a credit note: the number of the invoice it credits (ML 17 kap
+    // 22 § requires the reference). Optional: older readings lack it.
+    creditedInvoiceNumber?: string | null
   }
   lineItems: ExtractedInvoiceLineItem[]
   totals: {
