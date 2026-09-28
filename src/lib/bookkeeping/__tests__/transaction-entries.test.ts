@@ -906,3 +906,79 @@ describe('createTransactionJournalEntry: dimensions propagation (PR7)', () => {
     }
   })
 })
+
+// The class guard for the line builder: EVERY branch that books a business
+// (cost/revenue) line must stamp the categorize-level bag on it, and only on
+// it. The VAT-free income branch once dropped it, which left every income
+// line of a non VAT-registered company and all VAT-exempt income untagged
+// while the counterparty template learned the bag as if it had been booked.
+// A new branch belongs in this table.
+describe('buildTransactionEntryLines: the business line carries the bag in every branch', () => {
+  const BAG = { '1': 'KS01', '6': 'P001' }
+  const vat = (account_number: string, debit_amount: number, credit_amount: number): VatJournalLine => ({
+    account_number,
+    debit_amount,
+    credit_amount,
+    description: account_number,
+  })
+
+  const cases: Array<{ branch: string; amount: number; mapping: Partial<MappingResult>; business: string }> = [
+    {
+      branch: 'expense with input VAT',
+      amount: -1250,
+      mapping: { debit_account: '5410', credit_account: '1930', vat_lines: [vat('2641', 250, 0)] },
+      business: '5410',
+    },
+    {
+      branch: 'expense without VAT',
+      amount: -1000,
+      mapping: { debit_account: '5410', credit_account: '1930', vat_lines: [] },
+      business: '5410',
+    },
+    {
+      branch: 'expense with reverse charge (fiktiv moms and basis pair)',
+      amount: -1000,
+      mapping: {
+        debit_account: '6540',
+        credit_account: '1930',
+        vat_lines: [vat('2645', 250, 0), vat('2614', 0, 250), vat('4535', 1000, 0), vat('4598', 0, 1000)],
+      },
+      business: '6540',
+    },
+    {
+      branch: 'income with output VAT',
+      amount: 12500,
+      mapping: { debit_account: '1930', credit_account: '3001', vat_lines: [vat('2611', 0, 2500)] },
+      business: '3001',
+    },
+    {
+      branch: 'income without VAT (not VAT-registered, or exempt income)',
+      amount: 10000,
+      mapping: { debit_account: '1930', credit_account: '3004', vat_lines: [] },
+      business: '3004',
+    },
+    {
+      branch: 'income mirroring a reverse-charge refund',
+      amount: 1000,
+      mapping: {
+        debit_account: '1930',
+        credit_account: '6540',
+        vat_lines: [vat('2645', 0, 250), vat('2614', 250, 0)],
+      },
+      business: '6540',
+    },
+  ]
+
+  it.each(cases)('$branch', ({ amount, mapping, business }) => {
+    const tx = makeTransaction({ amount, description: 'Rad' })
+    const lines = buildTransactionEntryLines(tx, makeMappingResult({ ...mapping, dimensions: BAG }))
+
+    const businessLines = lines.filter((l) => l.account_number === business)
+    expect(businessLines).toHaveLength(1)
+    expect(businessLines[0].dimensions).toEqual(BAG)
+    for (const line of lines.filter((l) => l.account_number !== business)) {
+      expect(line.dimensions, `line ${line.account_number}`).toBeUndefined()
+    }
+    assertBalanced({ lines } as CreateJournalEntryInput)
+  })
+})

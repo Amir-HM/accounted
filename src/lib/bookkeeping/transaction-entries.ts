@@ -96,10 +96,16 @@ export function buildTransactionEntryLines(
   )
   const lines: CreateJournalEntryLineInput[] = []
   // Dimensions PR7: the bag tags the business (expense/revenue) lines only:
-  // bank/settlement and VAT lines stay untagged. In the multi-line template
-  // path each pattern line carries its own bag instead (LinePatternEntry).
-  // The private path books to a balance account (2013/2893): never tagged.
+  // bank/settlement and VAT lines stay untagged. The private path books to a
+  // balance account (2013/2893): never tagged.
   const businessDimensions = coerceDimensionsBag(mappingResult.dimensions)
+  // Every single-pair branch books its business line through this helper, so
+  // the bag is stamped in one place and no branch can drop it: the VAT-free
+  // income branch once did, and the counterparty template then learned a bag
+  // the verifikat never carried.
+  const businessLine = (
+    line: Omit<CreateJournalEntryLineInput, 'dimensions'>,
+  ): CreateJournalEntryLineInput => ({ ...line, dimensions: businessDimensions })
 
   if (mappingResult.default_private) {
     // Private expense: use entity-specific account from mappingResult
@@ -188,22 +194,20 @@ export function buildTransactionEntryLines(
       // Round to 2 decimal places to avoid floating point issues
       const netAmount = Math.round((absAmount - vatDebit) * 100) / 100
 
-      lines.push({
+      lines.push(businessLine({
         account_number: debitAccount,
         debit_amount: netAmount,
         credit_amount: 0,
         line_description: transaction.description,
-        dimensions: businessDimensions,
-      })
+      }))
     } else {
       // No VAT handling - debit full amount to expense account
-      lines.push({
+      lines.push(businessLine({
         account_number: debitAccount,
         debit_amount: absAmount,
         credit_amount: 0,
         line_description: transaction.description,
-        dimensions: businessDimensions,
-      })
+      }))
     }
 
     // Credit bank account
@@ -239,13 +243,12 @@ export function buildTransactionEntryLines(
         ...(isForeign ? currencyMeta : {}),
       })
       // Credit revenue for net amount
-      lines.push({
+      lines.push(businessLine({
         account_number: creditAccount,
         debit_amount: 0,
         credit_amount: netAmount,
         line_description: transaction.description,
-        dimensions: businessDimensions,
-      })
+      }))
       // Credit output VAT
       for (const vatLine of mappingResult.vat_lines) {
         lines.push({
@@ -256,7 +259,8 @@ export function buildTransactionEntryLines(
         })
       }
     } else {
-      // No VAT - simple two-line entry
+      // No VAT (a company that is not VAT-registered, or VAT-exempt income):
+      // simple two-line entry
       lines.push(
         {
           account_number: debitAccount,
@@ -265,12 +269,12 @@ export function buildTransactionEntryLines(
           line_description: transaction.description,
           ...(isForeign ? currencyMeta : {}),
         },
-        {
+        businessLine({
           account_number: creditAccount,
           debit_amount: 0,
           credit_amount: absAmount,
           line_description: transaction.description,
-        }
+        }),
       )
     }
   }
