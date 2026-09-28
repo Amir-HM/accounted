@@ -14,8 +14,8 @@ const EXPOSED_APP_METADATA = ['has_password', 'bankid_linked', 'mfa_exempt_until
 /**
  * GET /api/auth/me: the signed-in user as their own auth pages need it.
  *
- * Replaces browser supabase.auth.getUser() / getSession() calls (the
- * browser client holds no session any more): id, e-mail, a pending e-mail
+ * Replaces the browser's own getUser() and getSession() reads (the browser
+ * client holds no session any more): id, e-mail, a pending e-mail
  * change, whether the session is anonymous (sandbox), the app_metadata flags
  * above, and the assurance levels: `currentLevel` from the verified token,
  * `nextLevel` from the server's factor list (aal2 when a verified factor
