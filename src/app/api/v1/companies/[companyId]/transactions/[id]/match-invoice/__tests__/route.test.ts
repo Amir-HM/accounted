@@ -348,3 +348,52 @@ describe('POST /api/v1/companies/:companyId/transactions/:id/match-invoice', () 
     expect((await response.json()).error.code).toBe('MATCH_INVOICE_NOT_FOUND')
   })
 })
+
+describe('POST /api/v1/companies/:companyId/transactions/:id/match-invoice: custom lines', () => {
+  it('books each custom line with its own dimensions', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: TRANSACTION, error: null },
+        invoices: [
+          { data: SENT_INVOICE, error: null },
+          { data: [{ id: INVOICE_ID }], error: null },
+        ],
+        company_settings: {
+          data: { accounting_method: 'accrual', entity_type: 'enskild_firma' },
+          error: null,
+        },
+        invoice_payments: [
+          { data: [], error: null },
+          { data: { id: 'ip-1' }, error: null },
+        ],
+      }),
+    )
+
+    const response = await matchInvoice(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-invoice`,
+        {
+          invoice_id: INVOICE_ID,
+          lines: [
+            { account_number: '1930', debit_amount: 12500, credit_amount: 0, dimensions: { '1': 'KS1' } },
+            { account_number: '1510', debit_amount: 0, credit_amount: 12500, dimensions: { '6': 'P1' } },
+          ],
+        },
+      ),
+      detailParams(COMPANY_ID, TX_ID),
+    )
+
+    expect(response.status).toBe(200)
+    expect(mockCreateJournalEntry).toHaveBeenCalledTimes(1)
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      source_type: string
+      lines: Array<{ account_number: string; dimensions?: Record<string, string> }>
+    }
+    expect(input.source_type).toBe('invoice_paid')
+    expect(input.lines.map((l) => [l.account_number, l.dimensions])).toEqual([
+      ['1930', { '1': 'KS1' }],
+      ['1510', { '6': 'P1' }],
+    ])
+  })
+})

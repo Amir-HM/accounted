@@ -37,6 +37,7 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { createSupplierInvoicePaymentEntry as mockedCreatePaymentEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
+import { createJournalEntry as mockedCreateJournalEntry } from '@/lib/bookkeeping/engine'
 import { eventBus } from '@/lib/events/bus'
 import { POST as matchSupplierInvoice } from '../route'
 
@@ -249,5 +250,47 @@ describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invo
 
     expect(response.status).toBe(404)
     expect((await response.json()).error.code).toBe('MATCH_SI_NOT_FOUND')
+  })
+})
+
+describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invoice: custom lines', () => {
+  it('books each custom line with its own dimensions', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: TRANSACTION, error: null },
+        supplier_invoices: [
+          { data: REGISTERED_INVOICE, error: null },
+          { data: [{ id: SI_ID }], error: null },
+        ],
+        company_settings: { data: { accounting_method: 'accrual' }, error: null },
+      }),
+    )
+
+    const response = await matchSupplierInvoice(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`,
+        {
+          supplier_invoice_id: SI_ID,
+          lines: [
+            { account_number: '2440', debit_amount: 1000, credit_amount: 0, dimensions: { '6': 'P1' } },
+            { account_number: '1930', debit_amount: 0, credit_amount: 1000, dimensions: { '1': 'KS1' } },
+          ],
+        },
+      ),
+      detailParams(COMPANY_ID, TX_ID),
+    )
+
+    expect(response.status).toBe(200)
+    const createEntry = mockedCreateJournalEntry as ReturnType<typeof vi.fn>
+    expect(createEntry).toHaveBeenCalledTimes(1)
+    const input = createEntry.mock.calls[0][3] as {
+      lines: Array<{ account_number: string; dimensions?: Record<string, string> }>
+    }
+    expect(input.lines.map((l) => [l.account_number, l.dimensions])).toEqual([
+      ['2440', { '6': 'P1' }],
+      ['1930', { '1': 'KS1' }],
+    ])
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
   })
 })

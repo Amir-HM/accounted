@@ -1138,3 +1138,49 @@ describe('POST /api/transactions/[id]/match-supplier-invoice: the settled invoic
     expect(findCalls('supplier_invoices', 'update')).toHaveLength(0)
   })
 })
+
+describe('POST /api/transactions/[id]/match-supplier-invoice: user-edited lines', () => {
+  function makeLinesReq(lines: unknown[]) {
+    return new Request(`http://localhost/api/transactions/${TX_UUID}/match-supplier-invoice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supplier_invoice_id: SI_UUID, lines }),
+    })
+  }
+
+  it('books each edited line with its own dimensions', async () => {
+    enqueueHappyPath({
+      transaction: { amount: -1000, currency: 'SEK' },
+      invoice: { currency: 'SEK', remaining_amount: 1000 },
+    })
+    const res = await POST(
+      makeLinesReq([
+        { account_number: '2440', debit_amount: 1000, credit_amount: 0, dimensions: { '6': 'P1' } },
+        { account_number: '1930', debit_amount: 0, credit_amount: 1000, dimensions: { '1': 'KS1' } },
+      ]),
+      createMockRouteParams({ id: TX_UUID }),
+    )
+    expect(res.status).toBe(200)
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      source_type: string
+      lines: Array<{ account_number: string; dimensions?: Record<string, string> }>
+    }
+    expect(input.source_type).toBe('supplier_invoice_paid')
+    expect(input.lines.map((l) => [l.account_number, l.dimensions])).toEqual([
+      ['2440', { '6': 'P1' }],
+      ['1930', { '1': 'KS1' }],
+    ])
+  })
+
+  it('refuses an edited line whose dimension bag is invalid with 400, booking nothing', async () => {
+    const res = await POST(
+      makeLinesReq([
+        { account_number: '2440', debit_amount: 1000, credit_amount: 0, dimensions: { projekt: 'P1' } },
+        { account_number: '1930', debit_amount: 0, credit_amount: 1000 },
+      ]),
+      createMockRouteParams({ id: TX_UUID }),
+    )
+    expect(res.status).toBe(400)
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+  })
+})

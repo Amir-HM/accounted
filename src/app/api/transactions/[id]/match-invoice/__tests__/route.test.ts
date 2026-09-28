@@ -1536,3 +1536,59 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     expect(mockCreateJournalEntry).not.toHaveBeenCalled()
   })
 })
+
+describe('POST /api/transactions/[id]/match-invoice: user-edited lines', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: { id: 'user-1', email: 'test@test.se' } } })
+    mockDetectDuplicate.mockResolvedValue(null)
+    mockFindFiscalPeriod.mockResolvedValue('fp-1')
+    mockCreateJournalEntry.mockResolvedValue({ id: 'je-1' })
+  })
+
+  it('books each edited line with its own dimensions', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: 12500, invoice_id: null, date: '2024-06-15' })
+    const invoice = makeInvoice({
+      id: VALID_UUID,
+      status: 'sent',
+      total: 12500,
+      remaining_amount: 12500,
+      subtotal: 10000,
+      vat_amount: 2500,
+      invoice_number: 'F-2024001',
+      customer: makeCustomer(),
+    })
+    enqueue({ data: tx, error: null })
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: [], error: null }) // hard-duplicate check
+    enqueue({ data: { accounting_method: 'accrual', entity_type: 'enskild_firma' }, error: null })
+    enqueue({ data: [], error: null }) // resolveSettlementAccount -> 1930
+    enqueue({ data: [{ id: VALID_UUID }], error: null }) // invoice update
+    enqueue({ data: { id: 'ip-1' }, error: null }) // invoice_payments insert
+    enqueue({ data: null, error: null }) // transaction update
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: {
+        invoice_id: VALID_UUID,
+        lines: [
+          { account_number: '1930', debit_amount: 12500, credit_amount: 0, dimensions: { '1': 'KS1' } },
+          { account_number: '1510', debit_amount: 0, credit_amount: 12500, dimensions: { '6': 'P1' } },
+        ],
+      },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+
+    expect(response.status).toBe(200)
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      source_type: string
+      lines: Array<{ account_number: string; dimensions?: Record<string, string> }>
+    }
+    expect(input.source_type).toBe('invoice_paid')
+    expect(input.lines.map((l) => [l.account_number, l.dimensions])).toEqual([
+      ['1930', { '1': 'KS1' }],
+      ['1510', { '6': 'P1' }],
+    ])
+  })
+})
