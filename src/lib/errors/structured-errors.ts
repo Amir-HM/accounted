@@ -4344,6 +4344,13 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     message_en:
       'The registration verifikat has no line on the old account that matches this invoice line (it was corrected by hand). Correct the verifikat directly.',
   },
+  SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN: {
+    httpStatus: 409,
+    message_sv:
+      'Fakturan är i utländsk valuta och det går inte att avgöra vilken växelkurs registreringsverifikatet bokfördes med, så raden flyttas inte. Rätta verifikatet för hand.',
+    message_en:
+      'The supplier invoice is in a foreign currency and the exchange rate its registration verifikat was booked at cannot be determined, so the line is not moved. Correct the verifikat directly.',
+  },
   SI_ITEM_ACCOUNT_UPDATE_FAILED: {
     httpStatus: 500,
     message_sv: 'Fakturaraden kunde inte flyttas till det nya kontot. Försök igen.',

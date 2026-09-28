@@ -18,7 +18,11 @@
  *   - the moved cost keeps its kostnadsställe/projekt: the registration
  *     verifikat aggregates lines per (account, dimensions bag), so the plan
  *     only touches the lines carrying this item's bag, and every line it
- *     adds carries the bag of the lines it strikes.
+ *     adds carries the bag of the lines it strikes;
+ *   - the correction moves the kronor the registration booked for the line:
+ *     a foreign-currency line goes through the registration's own conversion
+ *     at the invoice's stored rate, and without that rate the move is
+ *     refused (SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN), never booked at a guess.
  *
  * A dry run reads, plans the correction and replays the RPC's rules as
  * reads (the rättelse preview); it writes nothing, not even the BAS
@@ -35,6 +39,10 @@ import {
   type LineDimensions,
 } from '@/lib/bookkeeping/dimension-resolver'
 import { strikeJournalEntryLines } from '@/lib/core/bookkeeping/journal-entry-corrections'
+import {
+  SupplierInvoiceFxRateMissingError,
+  toSekOrThrow,
+} from '@/lib/bookkeeping/supplier-invoice-entries'
 import { isUnsettledSupplierInvoiceStatus } from '@/lib/supplier-invoices/lifecycle'
 
 type Failure = Extract<OperationOutcome<never>, { ok: false }>
@@ -44,6 +52,8 @@ interface InvoiceRow {
   status: string
   registration_journal_entry_id: string | null
   default_dimensions?: Record<string, string> | null
+  currency?: string | null
+  exchange_rate?: number | string | null
 }
 
 interface ItemRow {
@@ -191,7 +201,7 @@ export async function moveSupplierInvoiceItemAccount(
 
   const { data: invoice } = await supabase
     .from('supplier_invoices')
-    .select('id, status, registration_journal_entry_id, default_dimensions')
+    .select('id, status, registration_journal_entry_id, default_dimensions, currency, exchange_rate')
     .eq('id', supplierInvoiceId)
     .eq('company_id', companyId)
     .maybeSingle()
@@ -232,6 +242,29 @@ export async function moveSupplierInvoiceItemAccount(
   const entryId = inv.registration_journal_entry_id
   const itemDimensions = bookedItemDimensions(inv.default_dimensions, row.dimensions)
 
+  // What the correction strikes and adds is the SEK amount the registration
+  // verifikat booked for this line: the registration's own conversion at the
+  // invoice's stored rate, rounding included, never a fresh rate. A foreign
+  // invoice without a usable rate cannot be matched against the verifikat
+  // and is refused before anything is written.
+  let bookedSek = Number(row.line_total)
+  if (entryId) {
+    try {
+      bookedSek = toSekOrThrow(
+        Number(row.line_total),
+        inv.currency ?? 'SEK',
+        inv.exchange_rate == null ? null : Number(inv.exchange_rate),
+      )
+    } catch (err) {
+      if (!(err instanceof SupplierInvoiceFxRateMissingError)) throw err
+      return {
+        ok: false,
+        code: 'SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN',
+        details: { journal_entry_id: entryId, currency: inv.currency ?? null },
+      }
+    }
+  }
+
   if (options.dryRun) {
     const base = {
       supplier_invoice_id: supplierInvoiceId,
@@ -248,7 +281,7 @@ export async function moveSupplierInvoiceItemAccount(
         preview: { ...base, corrects_verifikat: false, will: 'move the line; the invoice has no verifikat yet' },
       }
     }
-    const planned = await planForEntry(ctx, entryId, row, accountNumber, itemDimensions)
+    const planned = await planForEntry(ctx, entryId, row, accountNumber, itemDimensions, bookedSek)
     if (!planned.ok) return planned
     const rattelseLines = toRattelseLines(planned.plan.add)
     const rattelse = await strikeJournalEntryLines(
@@ -265,6 +298,8 @@ export async function moveSupplierInvoiceItemAccount(
         ...base,
         corrects_verifikat: true,
         journal_entry_id: entryId,
+        // The kronor the correction moves (amount is in the invoice currency).
+        amount_sek: roundOre(bookedSek),
         // The kostnadsställe/projekt the moved cost keeps: the bag of the
         // line it is struck from (the rättelse's added_lines carry it too).
         dimensions: rattelseLines[rattelseLines.length - 1]?.dimensions ?? {},
@@ -297,7 +332,7 @@ export async function moveSupplierInvoiceItemAccount(
       .eq('supplier_invoice_id', supplierInvoiceId)
   }
 
-  const planned = await planForEntry(ctx, entryId, row, accountNumber, itemDimensions)
+  const planned = await planForEntry(ctx, entryId, row, accountNumber, itemDimensions, bookedSek)
   if (!planned.ok) {
     await revert()
     return planned
@@ -320,6 +355,8 @@ async function planForEntry(
   row: ItemRow,
   accountNumber: string,
   itemDimensions: LineDimensions,
+  /** The line's amount as the registration booked it, in SEK. */
+  bookedSek: number,
 ): Promise<{ ok: true; plan: { strike: string[]; add: PlannedLine[] } } | Failure> {
   const { data: lines, error: linesError } = await ctx.supabase
     .from('journal_entry_lines')
@@ -335,7 +372,7 @@ async function planForEntry(
     (lines ?? []) as LineRow[],
     row.account_number,
     accountNumber,
-    Number(row.line_total),
+    bookedSek,
     row.description,
     itemDimensions,
   )
