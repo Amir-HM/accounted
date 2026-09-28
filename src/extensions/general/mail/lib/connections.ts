@@ -125,6 +125,11 @@ export async function listActiveConnections(
 /**
  * Upsert on (company, provider, address) so reconnecting the same mailbox
  * refreshes the grant instead of creating a twin that gets searched twice.
+ *
+ * Every save is audited, a first connect and a re-grant alike: which mailbox
+ * started feeding underlag into the books, when, and who granted it, is the
+ * other half of the disconnect entry (BFNAR 2013:2 kap 8). Written by hand
+ * for the reason given in disconnect(): safe columns only, never a token.
  */
 export async function saveConnection(
   supabase: SupabaseClient,
@@ -139,25 +144,49 @@ export async function saveConnection(
     scopes: string[]
   },
 ): Promise<void> {
-  const { error } = await supabase.from('mail_connections').upsert(
-    {
-      company_id: params.companyId,
-      provider: params.provider,
-      // Lowercased here rather than by an expression index, so the upsert's
-      // ON CONFLICT target matches the index exactly (Postgres 42P10 otherwise).
-      email_address: params.emailAddress.trim().toLowerCase(),
-      connected_by: params.userId,
-      encrypted_refresh_token: encryptToken(params.refreshToken),
-      encrypted_access_token: encryptToken(params.accessToken),
-      access_token_expires_at: params.expiresAt.toISOString(),
-      scopes: params.scopes,
-      status: 'active',
-      last_error_code: null,
-      last_error_at: null,
-    },
-    { onConflict: 'company_id,provider,email_address' },
-  )
+  // Lowercased here rather than by an expression index, so the upsert's
+  // ON CONFLICT target matches the index exactly (Postgres 42P10 otherwise).
+  const emailAddress = params.emailAddress.trim().toLowerCase()
+  const { data, error } = await supabase
+    .from('mail_connections')
+    .upsert(
+      {
+        company_id: params.companyId,
+        provider: params.provider,
+        email_address: emailAddress,
+        connected_by: params.userId,
+        encrypted_refresh_token: encryptToken(params.refreshToken),
+        encrypted_access_token: encryptToken(params.accessToken),
+        access_token_expires_at: params.expiresAt.toISOString(),
+        scopes: params.scopes,
+        status: 'active',
+        last_error_code: null,
+        last_error_at: null,
+      },
+      { onConflict: 'company_id,provider,email_address' },
+    )
+    .select('id')
+    .single()
   if (error) throw new Error(`Failed to save mail connection: ${error.message}`)
+
+  const { error: auditError } = await supabase.from('audit_log').insert({
+    user_id: params.userId,
+    company_id: params.companyId,
+    action: 'INSERT',
+    table_name: 'mail_connections',
+    record_id: (data as { id: string }).id,
+    description: `Brevlåda ansluten: ${emailAddress} (${params.provider})`,
+    old_state: null,
+    new_state: { email_address: emailAddress, provider: params.provider, scopes: params.scopes },
+  })
+  // The grant is saved either way: a missing note is surfaced loudly rather
+  // than undoing a connection the person just approved at Google.
+  if (auditError) {
+    log.error('mailbox connected but the audit entry failed to write', {
+      companyId: params.companyId,
+      error: auditError.message,
+    })
+  }
 }
 
 async function markNeedsReconsent(
