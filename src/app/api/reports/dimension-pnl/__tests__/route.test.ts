@@ -103,10 +103,11 @@ describe('GET /api/reports/dimension-pnl', () => {
   })
 
   it('returns 400 when the window falls outside the period or runs backwards', async () => {
-    for (const searchParams of [
+    const windows: Array<Record<string, string>> = [
       { period_id: 'period-1', from_date: '2025-12-01' },
       { period_id: 'period-1', from_date: '2026-09-30', to_date: '2026-07-01' },
-    ]) {
+    ]
+    for (const searchParams of windows) {
       enqueue({ data: PERIOD }) // fiscal_periods
       const res = await GET(createMockRequest('/api/reports/dimension-pnl', { searchParams }), noParams)
       expect(res.status).toBe(400)
