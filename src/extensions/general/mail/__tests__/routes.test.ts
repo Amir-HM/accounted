@@ -1,0 +1,315 @@
+/**
+ * The mail routes as a browser reaches them: through the extension dispatcher
+ * (app/api/extensions/ext/[...path]), which is where authentication and MFA
+ * are enforced for every extension route. The handlers themselves never see a
+ * request without a session, so a 401 is only meaningful at this level.
+ *
+ * The OAuth callback is the exception on purpose (skipAuth): Google's
+ * redirect must not be answered with a JSON 401. It binds the completion to
+ * the initiator's own session instead (oauth-callback.test.ts).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
+
+const COMPANY = '11111111-1111-4111-8111-111111111111'
+const CONNECTION = '22222222-2222-4222-8222-222222222222'
+const USER = 'user-1'
+const APP_URL = 'https://app.example'
+
+const { mockCreateClient, mockShouldEnforceMfa, serviceClient } = vi.hoisted(() => ({
+  mockCreateClient: vi.fn(),
+  mockShouldEnforceMfa: vi.fn(() => false),
+  serviceClient: { from: vi.fn() },
+}))
+
+vi.mock('@/lib/supabase/server', () => ({
+  createClient: mockCreateClient,
+  createServiceClient: vi.fn(),
+}))
+vi.mock('@/lib/init', () => ({ ensureInitialized: vi.fn() }))
+vi.mock('@/lib/auth/mfa', () => ({ shouldEnforceMfa: mockShouldEnforceMfa }))
+vi.mock('@/lib/company/context', () => ({
+  requireCompanyId: vi.fn(async () => COMPANY),
+  getActiveCompanyId: vi.fn(async () => COMPANY),
+}))
+vi.mock('@/lib/extensions/context-factory', () => ({
+  createExtensionContext: vi.fn(
+    (supabase: unknown, userId: string, companyId: string, extensionId: string, requestId: string) => ({
+      supabase,
+      userId,
+      companyId,
+      extensionId,
+      requestId,
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    }),
+  ),
+}))
+vi.mock('@/lib/auth/api-keys', () => ({ createServiceClientNoCookies: () => serviceClient }))
+vi.mock('../lib/connections', () => ({
+  SCOPE_MISSING: 'scope_missing',
+  disconnect: vi.fn(),
+  listConnections: vi.fn(),
+  saveConnection: vi.fn(),
+}))
+vi.mock('../lib/google-oauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/google-oauth')>()),
+  exchangeCodeForTokens: vi.fn(),
+  revokeGoogleToken: vi.fn(),
+}))
+vi.mock('../lib/gmail-client', () => ({ getMailboxAddress: vi.fn() }))
+
+import { GET, POST, DELETE } from '@/app/api/extensions/ext/[...path]/route'
+import { extensionRegistry } from '@/lib/extensions/registry'
+import { mailExtension } from '../index'
+import { disconnect, listConnections, saveConnection } from '../lib/connections'
+import { exchangeCodeForTokens, GMAIL_READONLY_SCOPE } from '../lib/google-oauth'
+import { getMailboxAddress } from '../lib/gmail-client'
+import { createOAuthState, verifyOAuthState } from '../lib/crypto'
+
+function session(userId: string | null) {
+  mockCreateClient.mockResolvedValue({
+    auth: {
+      getUser: vi.fn().mockResolvedValue({
+        data: { user: userId ? { id: userId, app_metadata: {} } : null },
+        error: userId ? null : { message: 'Auth session missing' },
+      }),
+    },
+  })
+}
+
+function params(...path: string[]) {
+  return { params: Promise.resolve({ path: ['mail', ...path] }) }
+}
+
+function request(path: string, init: RequestInit = {}) {
+  return new Request(`${APP_URL}/api/extensions/ext/mail${path}`, init)
+}
+
+/** The service client the backfill route writes through. */
+function backfillWrite(result: { data: unknown; error: unknown }) {
+  const calls: { update?: Record<string, unknown>; eq: Array<[string, unknown]> } = { eq: [] }
+  const chain: Record<string, unknown> = {
+    update: vi.fn((values: Record<string, unknown>) => {
+      calls.update = values
+      return chain
+    }),
+    eq: vi.fn((column: string, value: unknown) => {
+      calls.eq.push([column, value])
+      return chain
+    }),
+    select: vi.fn(() => Promise.resolve(result)),
+  }
+  serviceClient.from.mockReturnValue(chain)
+  return calls
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockShouldEnforceMfa.mockReturnValue(false)
+  vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL)
+  vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'false')
+  vi.stubEnv('MAIL_TOKEN_ENCRYPTION_KEY', '22'.repeat(32))
+  vi.stubEnv('GOOGLE_MAIL_CLIENT_ID', 'client-id')
+  vi.stubEnv('GOOGLE_MAIL_CLIENT_SECRET', 'client-secret')
+  vi.stubEnv('GOOGLE_MAIL_CONNECT_COMPANY_IDS', COMPANY)
+  vi.spyOn(console, 'info').mockImplementation(() => {})
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  extensionRegistry.clear()
+  extensionRegistry.register(mailExtension)
+  session(USER)
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.restoreAllMocks()
+})
+
+describe('POST /api/extensions/ext/mail/oauth/start', () => {
+  it('answers 401 without a session and never mints a consent URL', async () => {
+    session(null)
+    const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
+    expect(res.status).toBe(401)
+    expect(await res.json()).not.toHaveProperty('url')
+  })
+
+  it('answers 403 for a session that has not completed MFA', async () => {
+    mockShouldEnforceMfa.mockReturnValue(true)
+    const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
+    expect(res.status).toBe(403)
+  })
+
+  it('answers 400 when the deployment has no Gmail OAuth client', async () => {
+    vi.stubEnv('GOOGLE_MAIL_CLIENT_ID', '')
+    const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'provider_not_configured' })
+  })
+
+  it('returns a consent URL bound to the signed-in user and the resolved company', async () => {
+    const res = await POST(request('/oauth/start', { method: 'POST' }), params('oauth', 'start'))
+    expect(res.status).toBe(200)
+
+    const url = new URL((await res.json()).url as string)
+    expect(url.origin + url.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth')
+    // Registered in the Google console: the slug and the path are pinned.
+    expect(url.searchParams.get('redirect_uri')).toBe(`${APP_URL}/api/extensions/ext/mail/oauth/callback`)
+    expect(url.searchParams.get('scope')).toBe(GMAIL_READONLY_SCOPE)
+    expect(verifyOAuthState(url.searchParams.get('state') as string)).toEqual({
+      userId: USER,
+      companyId: COMPANY,
+    })
+  })
+})
+
+describe('GET /api/extensions/ext/mail/oauth/callback', () => {
+  function callback(state: string) {
+    const url = new URL(`${APP_URL}/api/extensions/ext/mail/oauth/callback`)
+    url.searchParams.set('code', 'google-code')
+    url.searchParams.set('state', state)
+    return new Request(url.toString())
+  }
+
+  it('is reached without a session, and sends that browser to sign in instead of a JSON 401', async () => {
+    session(null)
+    const res = await GET(callback(createOAuthState(USER, COMPANY)), params('oauth', 'callback'))
+
+    expect(res.status).toBe(307)
+    expect(new URL(res.headers.get('location') as string).pathname).toBe('/login')
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('answers invalid for a callback without a code', async () => {
+    const url = new URL(`${APP_URL}/api/extensions/ext/mail/oauth/callback`)
+    url.searchParams.set('state', createOAuthState(USER, COMPANY))
+    const res = await GET(new Request(url.toString()), params('oauth', 'callback'))
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=invalid`)
+  })
+
+  it('saves the grant for the company the flow was started in', async () => {
+    ;(exchangeCodeForTokens as Mock).mockResolvedValue({
+      refreshToken: 'refresh-1',
+      accessToken: 'access-1',
+      expiresAt: new Date('2030-01-01T00:00:00Z'),
+      scopes: [GMAIL_READONLY_SCOPE],
+    })
+    ;(getMailboxAddress as Mock).mockResolvedValue('ekonomi@example.se')
+
+    const res = await GET(callback(createOAuthState(USER, COMPANY)), params('oauth', 'callback'))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=connected`)
+    expect(saveConnection).toHaveBeenCalledWith(
+      serviceClient,
+      expect.objectContaining({ companyId: COMPANY, userId: USER, emailAddress: 'ekonomi@example.se' }),
+    )
+  })
+})
+
+describe('GET /api/extensions/ext/mail/connections', () => {
+  it('answers 401 without a session', async () => {
+    session(null)
+    const res = await GET(request('/connections'), params('connections'))
+    expect(res.status).toBe(401)
+    expect(listConnections).not.toHaveBeenCalled()
+  })
+
+  it('lists the mailboxes of the resolved company only', async () => {
+    ;(listConnections as Mock).mockResolvedValue([{ id: CONNECTION, status: 'active' }])
+    const res = await GET(request('/connections'), params('connections'))
+    expect(res.status).toBe(200)
+    expect((await res.json()).data.connections).toHaveLength(1)
+    expect(listConnections).toHaveBeenCalledWith(serviceClient, COMPANY)
+  })
+})
+
+describe('DELETE /api/extensions/ext/mail/connections', () => {
+  it('answers 401 without a session and disconnects nothing', async () => {
+    session(null)
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(401)
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
+  it('answers 400 without an id', async () => {
+    const res = await DELETE(request('/connections', { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'missing_id' })
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
+  it('answers 400 for an id that is not a connection id', async () => {
+    const res = await DELETE(request('/connections?id=not-a-uuid', { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'invalid_id' })
+    expect(disconnect).not.toHaveBeenCalled()
+  })
+
+  it('disconnects within the resolved company, as the signed-in user', async () => {
+    const res = await DELETE(request(`/connections?id=${CONNECTION}`, { method: 'DELETE' }), params('connections'))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ data: { disconnected: true } })
+    expect(disconnect).toHaveBeenCalledWith(serviceClient, COMPANY, CONNECTION, USER)
+  })
+})
+
+describe('POST /api/extensions/ext/mail/connections/backfill', () => {
+  function backfill(body: unknown) {
+    return POST(
+      request('/connections/backfill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      }),
+      params('connections', 'backfill'),
+    )
+  }
+
+  it('answers 401 without a session', async () => {
+    session(null)
+    const res = await backfill({ id: CONNECTION, days: 90 })
+    expect(res.status).toBe(401)
+    expect(serviceClient.from).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a body that is not JSON', 'not json'],
+    ['no id', { days: 90 }],
+    ['an id that is not a connection id', { id: 'nope', days: 90 }],
+    ['no days', { id: CONNECTION }],
+    ['a look-back that was never offered', { id: CONNECTION, days: 3650 }],
+    ['days as a string', { id: CONNECTION, days: '90' }],
+  ])('answers 400 for %s, and writes nothing', async (_label, body) => {
+    const res = await backfill(body)
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'invalid_request' })
+    expect(serviceClient.from).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 when no mailbox of this company has that id', async () => {
+    backfillWrite({ data: [], error: null })
+    const res = await backfill({ id: CONNECTION, days: 90 })
+    expect(res.status).toBe(404)
+  })
+
+  it('answers 500, not success, when the choice could not be saved', async () => {
+    backfillWrite({ data: null, error: { message: 'connection reset' } })
+    const res = await backfill({ id: CONNECTION, days: 90 })
+    expect(res.status).toBe(500)
+  })
+
+  it('records the chosen look-back on the connection, within the resolved company', async () => {
+    const calls = backfillWrite({ data: [{ id: CONNECTION }], error: null })
+    const res = await backfill({ id: CONNECTION, days: 30 })
+
+    expect(res.status).toBe(200)
+    const expected = new Date()
+    expected.setDate(expected.getDate() - 30)
+    const date = expected.toISOString().slice(0, 10)
+    expect(await res.json()).toEqual({ data: { backfill_from: date } })
+    expect(calls.update).toEqual({ backfill_from: date })
+    expect(calls.eq).toEqual([
+      ['id', CONNECTION],
+      ['company_id', COMPANY],
+    ])
+  })
+})

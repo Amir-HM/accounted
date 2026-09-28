@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import type { Extension } from '@/lib/extensions/types'
 import { registerMailSearchService } from '@/lib/mail-search/service'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
@@ -29,8 +30,13 @@ function jsonError(message: string, status = 500): Response {
   return NextResponse.json({ error: message }, { status })
 }
 
-/** How far back a newly connected mailbox may be searched, in days. */
-const BACKFILL_CHOICES = new Set([30, 90, 365])
+const ConnectionId = z.string().uuid()
+
+/** A connection and one of the offered look-back choices, in days. */
+const BackfillRequest = z.object({
+  id: ConnectionId,
+  days: z.union([z.literal(30), z.literal(90), z.literal(365)]),
+})
 
 export const mailExtension: Extension = {
   id: 'mail',
@@ -180,32 +186,44 @@ export const mailExtension: Extension = {
         if (!ctx) return jsonError('Missing context', 500)
         const id = new URL(request.url).searchParams.get('id')
         if (!id) return jsonError('missing_id', 400)
+        // A malformed id would otherwise reach the database as a cast error
+        // and come back as a 500.
+        if (!ConnectionId.safeParse(id).success) return jsonError('invalid_id', 400)
         await disconnect(createServiceClientNoCookies(), ctx.companyId, id, ctx.userId)
         return NextResponse.json({ data: { disconnected: true } })
       },
     },
 
     // How far back a mailbox may be searched once, chosen by the user at
-    // connect time. Bounded to the offered choices so an arbitrary date cannot
-    // widen the grant's reach by hand.
+    // connect time and bounded to the offered choices. Recorded only: nothing
+    // reads backfill_from yet, and a search is not limited by it (the hunt
+    // matches on amount and merchant across the whole mailbox, see
+    // MailSearchQuery.useDateWindow).
     {
       method: 'POST',
       path: '/connections/backfill',
       handler: async (request, ctx) => {
         if (!ctx) return jsonError('Missing context', 500)
-        const body = (await request.json().catch(() => ({}))) as { id?: string; days?: number }
-        if (!body.id || !body.days || !BACKFILL_CHOICES.has(body.days)) {
-          return jsonError('invalid_request', 400)
-        }
+        const parsed = BackfillRequest.safeParse(await request.json().catch(() => null))
+        if (!parsed.success) return jsonError('invalid_request', 400)
         const from = new Date()
-        from.setDate(from.getDate() - body.days)
-        const supabase = createServiceClientNoCookies()
-        await supabase
+        from.setDate(from.getDate() - parsed.data.days)
+        const backfillFrom = from.toISOString().slice(0, 10)
+        const { data, error } = await createServiceClientNoCookies()
           .from('mail_connections')
-          .update({ backfill_from: from.toISOString().slice(0, 10) })
-          .eq('id', body.id)
+          .update({ backfill_from: backfillFrom })
+          .eq('id', parsed.data.id)
           .eq('company_id', ctx.companyId)
-        return NextResponse.json({ data: { backfill_from: from.toISOString().slice(0, 10) } })
+          .select('id')
+        // Answering success for a write that failed, or that matched no row
+        // of this company, would tell the page a choice was saved when it
+        // was not.
+        if (error) {
+          ctx.log.error('mail backfill choice not saved', { error: error.message })
+          return jsonError('failed', 500)
+        }
+        if (!data || data.length === 0) return jsonError('not_found', 404)
+        return NextResponse.json({ data: { backfill_from: backfillFrom } })
       },
     },
   ],
