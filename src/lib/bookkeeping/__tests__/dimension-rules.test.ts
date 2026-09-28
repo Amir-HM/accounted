@@ -220,7 +220,7 @@ describe('assertMandatoryDimensions', () => {
   it('uses the Swedish message format naming account and dimension', () => {
     expect(() =>
       assertMandatoryDimensions([{ account_number: '4010' }], [requiredProjekt]),
-    ).toThrow('Konto 4010 kräver Projekt — välj ett värde innan bokföring.')
+    ).toThrow('Konto 4010 kräver Projekt: välj ett värde innan bokföring.')
   })
 
   it('is satisfied via the deprecated cost_center alias through normalize', () => {

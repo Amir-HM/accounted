@@ -39,6 +39,22 @@ export interface DimensionValidationIssue {
   /** Offending object code; null when the dimension number itself is unknown. */
   code: string | null
   reason: DimensionValidationReason
+  /**
+   * Registry display name of the dimension, e.g. 'Projekt' or a custom
+   * dimension's own name. Absent when the dimension has no registry row.
+   */
+  dimension_name?: string
+}
+
+/**
+ * How a message names the dimension: the registry name when known, else
+ * its SIE number. Never "kostnadsställe/projekt": a custom dimension (20 and
+ * up) is neither.
+ */
+function dimensionLabel(issue: Pick<DimensionValidationIssue, 'sie_dim_no' | 'dimension_name'>): string {
+  return issue.dimension_name
+    ? `${issue.dimension_name} (dimension ${issue.sie_dim_no})`
+    : `dimension ${issue.sie_dim_no}`
 }
 
 /** Swedish user-facing sentence for a single validation issue. */
@@ -47,9 +63,9 @@ export function formatDimensionValidationIssue(issue: DimensionValidationIssue):
     case 'unknown_dimension':
       return `Okänd dimension ${issue.sie_dim_no}. Skapa dimensionen i registret först.`
     case 'archived_value':
-      return `"${issue.code}" är arkiverat: återaktivera värdet för att använda det.`
+      return `"${issue.code}" i ${dimensionLabel(issue)} är arkiverat: återaktivera värdet för att använda det.`
     case 'unknown_value':
-      return `Okänt kostnadsställe/projekt: "${issue.code}" (dimension ${issue.sie_dim_no}). Skapa värdet i registret först.`
+      return `Okänt värde "${issue.code}" i ${dimensionLabel(issue)}. Skapa värdet i registret först.`
   }
 }
 
@@ -57,6 +73,7 @@ function isDimensionValidationIssue(value: unknown): value is DimensionValidatio
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
   if (typeof v.sie_dim_no !== 'string') return false
+  if (v.dimension_name !== undefined && typeof v.dimension_name !== 'string') return false
   if (v.reason === 'unknown_dimension') return true
   return (
     (v.reason === 'unknown_value' || v.reason === 'archived_value') && typeof v.code === 'string'
@@ -110,7 +127,7 @@ export interface MandatoryDimensionViolation {
 
 /** Swedish user-facing sentence for a single missing-dimension violation. */
 export function formatMandatoryDimensionViolation(v: MandatoryDimensionViolation): string {
-  return `Konto ${v.account_number} kräver ${v.dimension_name} — välj ett värde innan bokföring.`
+  return `Konto ${v.account_number} kräver ${v.dimension_name}: välj ett värde innan bokföring.`
 }
 
 /**

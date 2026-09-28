@@ -192,18 +192,25 @@ export async function validateEntryDimensions(
   const enabled = (settings as { dimensions_enabled?: boolean } | null)?.dimensions_enabled
   if (settingsError || !enabled) return
 
-  // 3a. Registry rows for every referenced dimension number: one query.
+  // 3a. Registry rows for every referenced dimension number: one query. The
+  //     name rides along so every message names the actual dimension.
   const { data: dimRows, error: dimError } = await supabase
     .from('dimensions')
-    .select('id, sie_dim_no')
+    .select('id, sie_dim_no, name')
     .eq('company_id', companyId)
     .in('sie_dim_no', [...union.keys()].map(Number))
 
   if (dimError) return
 
   const dimIdByNo = new Map<string, string>()
-  for (const row of (dimRows ?? []) as { id: string; sie_dim_no: number }[]) {
+  const nameByNo = new Map<string, string>()
+  for (const row of (dimRows ?? []) as { id: string; sie_dim_no: number; name?: string | null }[]) {
     dimIdByNo.set(String(row.sie_dim_no), row.id)
+    if (row.name) nameByNo.set(String(row.sie_dim_no), row.name)
+  }
+  const named = (dimNo: string): { dimension_name?: string } => {
+    const name = nameByNo.get(dimNo)
+    return name ? { dimension_name: name } : {}
   }
 
   const issues: DimensionValidationIssue[] = []
@@ -246,9 +253,9 @@ export async function validateEntryDimensions(
       for (const code of codes) {
         const isActive = activeByKey.get(`${dimId}\u0000${code}`)
         if (isActive === undefined) {
-          issues.push({ sie_dim_no: dimNo, code, reason: 'unknown_value' })
+          issues.push({ sie_dim_no: dimNo, code, reason: 'unknown_value', ...named(dimNo) })
         } else if (!isActive) {
-          issues.push({ sie_dim_no: dimNo, code, reason: 'archived_value' })
+          issues.push({ sie_dim_no: dimNo, code, reason: 'archived_value', ...named(dimNo) })
         }
       }
     }

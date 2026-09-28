@@ -370,7 +370,7 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
   DIMENSION_VALIDATION_FAILED: {
     httpStatus: 400,
     message_sv:
-      'Ett angivet kostnadsställe/projekt finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.',
+      'Ett angivet dimensionsvärde finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.',
     message_en:
       'One or more dimension codes on the entry lines are missing from the dimension registry or archived. details.issues lists each offending sie_dim_no/code.',
     remediation: {

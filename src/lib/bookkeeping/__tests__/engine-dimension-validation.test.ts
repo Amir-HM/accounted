@@ -146,8 +146,8 @@ const DIMENSION_TABLES: Record<string, TableResult> = {
   company_settings: { data: { dimensions_enabled: true } },
   dimensions: {
     data: [
-      { id: 'dim-ks', sie_dim_no: 1 },
-      { id: 'dim-proj', sie_dim_no: 6 },
+      { id: 'dim-ks', sie_dim_no: 1, name: 'Kostnadsställe' },
+      { id: 'dim-proj', sie_dim_no: 6, name: 'Projekt' },
     ],
   },
   dimension_values: {
@@ -245,7 +245,9 @@ describe('createDraftEntry: dimension validation wiring', () => {
 
     await expect(
       createDraftEntry(supabase as never, 'company-1', 'user-1', makeInput({ '6': 'P001' }))
-    ).rejects.toThrow('"P001" är arkiverat: återaktivera värdet för att använda det.')
+    ).rejects.toThrow(
+      '"P001" i Projekt (dimension 6) är arkiverat: återaktivera värdet för att använda det.'
+    )
   })
 
   it('creates the draft when every tagged code is registered and active', async () => {
@@ -478,7 +480,7 @@ describe('commitEntry — mandatory dimension enforcement (PR10)', () => {
     ).rejects.toBeInstanceOf(MandatoryDimensionMissingError)
     await expect(
       commitEntry(supabase as never, 'company-1', 'user-1', 'entry-1')
-    ).rejects.toThrow('Konto 4010 kräver Projekt — välj ett värde innan bokföring.')
+    ).rejects.toThrow('Konto 4010 kräver Projekt: välj ett värde innan bokföring.')
 
     // The verifikat must never have been posted.
     expect(supabase.rpc).not.toHaveBeenCalled()

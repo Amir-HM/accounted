@@ -126,8 +126,8 @@ describe('validateEntryDimensions (soft registry validation, PR3)', () => {
   const enabledSettings = { data: { dimensions_enabled: true } }
   const registry = {
     data: [
-      { id: 'dim-ks', sie_dim_no: 1 },
-      { id: 'dim-proj', sie_dim_no: 6 },
+      { id: 'dim-ks', sie_dim_no: 1, name: 'Kostnadsställe' },
+      { id: 'dim-proj', sie_dim_no: 6, name: 'Projekt' },
     ],
   }
 
@@ -198,11 +198,30 @@ describe('validateEntryDimensions (soft registry validation, PR3)', () => {
     q.enqueue({ data: [] })
     const promise = run(q, [{ dimensions: { '6': 'X' } }])
     await expect(promise).rejects.toMatchObject({
-      issues: [{ sie_dim_no: '6', code: 'X', reason: 'unknown_value' }],
+      issues: [{ sie_dim_no: '6', code: 'X', reason: 'unknown_value', dimension_name: 'Projekt' }],
     })
     await expect(promise).rejects.toThrow(
-      'Okänt kostnadsställe/projekt: "X" (dimension 6). Skapa värdet i registret först.'
+      'Okänt värde "X" i Projekt (dimension 6). Skapa värdet i registret först.'
     )
+  })
+
+  it('names a custom dimension by its registry name, never as kostnadsställe/projekt', async () => {
+    const q = createQueuedMockSupabase()
+    q.enqueue(enabledSettings)
+    q.enqueue({ data: [{ id: 'dim-kb', sie_dim_no: 21, name: 'Kostnadsbärare' }] })
+    q.enqueue({ data: [{ dimension_id: 'dim-kb', code: 'KB-GAMMAL', is_active: false }] })
+    const promise = run(q, [{ dimensions: { '21': 'KB7' } }, { dimensions: { '21': 'KB-GAMMAL' } }])
+    await expect(promise).rejects.toMatchObject({
+      issues: [
+        { sie_dim_no: '21', code: 'KB7', reason: 'unknown_value', dimension_name: 'Kostnadsbärare' },
+        { sie_dim_no: '21', code: 'KB-GAMMAL', reason: 'archived_value', dimension_name: 'Kostnadsbärare' },
+      ],
+    })
+    await expect(promise).rejects.toThrow(
+      'Okänt värde "KB7" i Kostnadsbärare (dimension 21). Skapa värdet i registret först. ' +
+        '"KB-GAMMAL" i Kostnadsbärare (dimension 21) är arkiverat: återaktivera värdet för att använda det.'
+    )
+    await expect(promise).rejects.not.toThrow(/kostnadsställe\/projekt/i)
   })
 
   it('rejects an archived (is_active = false) value', async () => {
@@ -215,7 +234,7 @@ describe('validateEntryDimensions (soft registry validation, PR3)', () => {
       issues: [{ sie_dim_no: '6', code: 'X', reason: 'archived_value' }],
     })
     await expect(promise).rejects.toThrow(
-      '"X" är arkiverat: återaktivera värdet för att använda det.'
+      '"X" i Projekt (dimension 6) är arkiverat: återaktivera värdet för att använda det.'
     )
   })
 
