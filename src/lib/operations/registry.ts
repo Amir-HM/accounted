@@ -49,6 +49,30 @@ import {
   salaryRunsUnapprove,
 } from './salary-run-lifecycle'
 import {
+  salaryRunsCorrect,
+  salaryRunsEmployeesAdd,
+  salaryRunsEmployeesRemove,
+  salaryRunsLinesCreate,
+  salaryRunsLinesDelete,
+  salaryRunsList,
+  salaryRunsMarkPaid,
+} from './salary-run-structure'
+import {
+  employeesBenefitsCreate,
+  employeesBenefitsDelete,
+  employeesBenefitsList,
+  employeesBenefitsUpdate,
+  employeesDelete,
+  employeesRecurringLinesCreate,
+  employeesRecurringLinesDelete,
+  employeesRecurringLinesList,
+  employeesRecurringLinesUpdate,
+  employeesWorkedDaysDelete,
+  employeesWorkedDaysList,
+  employeesWorkedDaysUpsert,
+} from './salary-employee-setup'
+import { salaryRunsPaymentFilesList } from './salary-payment-files'
+import {
   invoicesBook,
   invoicesBulkBook,
   supplierInvoicesBook,
@@ -202,6 +226,29 @@ export const OPERATIONS: readonly AnyOperation[] = [
   salaryRunsRevert,
   salaryRunsUnapprove,
   salaryRunsAttachExpenseClaims,
+  // salary-run-structure (MCP only: the v1 doors are the hand-written salary-run routes)
+  salaryRunsList,
+  salaryRunsEmployeesAdd,
+  salaryRunsEmployeesRemove,
+  salaryRunsLinesCreate,
+  salaryRunsLinesDelete,
+  salaryRunsCorrect,
+  salaryRunsMarkPaid,
+  // salary-payment-files (MCP only, metadata only: no door builds or hands over a file)
+  salaryRunsPaymentFilesList,
+  // salary-employee-setup (MCP only: the v1 doors are the hand-written employee routes)
+  employeesWorkedDaysList,
+  employeesWorkedDaysUpsert,
+  employeesWorkedDaysDelete,
+  employeesBenefitsList,
+  employeesBenefitsCreate,
+  employeesBenefitsUpdate,
+  employeesBenefitsDelete,
+  employeesRecurringLinesList,
+  employeesRecurringLinesCreate,
+  employeesRecurringLinesUpdate,
+  employeesRecurringLinesDelete,
+  employeesDelete,
   // invoice-booking
   invoicesBook,
   invoicesBulkBook,
