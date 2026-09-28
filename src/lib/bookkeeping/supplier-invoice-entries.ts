@@ -662,7 +662,8 @@ export function buildSupplierInvoiceCashLines(
       dimensions: defaultDimensions,
     })
   }
-  addSupplierBankFeeLine(lines, creditAccount, bankFeeSek)
+  // The fee is part of this invoice's payment: it carries the same bag.
+  addSupplierBankFeeLine(lines, creditAccount, bankFeeSek, defaultDimensions)
 
   return {
     description: desc,

@@ -1448,6 +1448,31 @@ describe('createSupplierInvoiceCashEntry', () => {
     const input = mockedCreateEntry.mock.calls[0][3]
     expect(input.description).toBe('Kontantbetalning leverantörsfaktura LF-300')
   })
+
+  it('carries the invoice dimensions onto every leg, the bank fee and the öre included', async () => {
+    // A matched bank row paying 10 012 kr for a 10 012,40 kr invoice plus a
+    // 25 kr fee on top: expense + moms, the bank credit, 3740 and 6570 all
+    // belong to this one invoice's payment.
+    const BAG = { '6': 'P1', '1': 'KS1' }
+    const invoice = makeSupplierInvoice({
+      subtotal: 8009.92,
+      vat_amount: 2002.48,
+      total: 10012.4,
+      default_dimensions: BAG,
+    })
+    const items = [makeItem({ line_total: 8009.92, account_number: '6200', vat_rate: 0.25 })]
+
+    await createSupplierInvoiceCashEntry(
+      null as never, 'company-1', 'user-1', invoice, items, '2024-07-01', 'swedish_business',
+      undefined, '1930', 10012, undefined, 25,
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+    expect(input.lines.map((l) => l.account_number)).toEqual(['6200', '2641', '1930', '3740', '6570'])
+    for (const line of input.lines) expect(line.dimensions).toEqual(BAG)
+    expect(findByAccount(input.lines, '1930')[0].credit_amount).toBe(10037)
+    assertBalanced(input)
+  })
 })
 
 // ============================================================
