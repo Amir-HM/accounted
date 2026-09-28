@@ -348,7 +348,7 @@ describe('bookPaidSalaryRun: utlägg repaid with the salary (#2331)', () => {
   })
 
   it('posts a run that only repays utlägg (gross 0, net > 0) instead of treating it as a nollkörning', async () => {
-    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    const { supabase, enqueueMany, findCalls } = createQueuedMockSupabase()
     enqueueMany([
       { data: makeRun({ status: 'paid', total_gross: 0, total_tax: 0, total_net: 800, total_avgifter: 0 }) },
       {
@@ -366,11 +366,26 @@ describe('bookPaidSalaryRun: utlägg repaid with the salary (#2331)', () => {
       { data: { id: 'run-1', status: 'booked' } },
     ])
 
+    // No avgifter in an utlägg-only run: createSalaryRunEntries posts no
+    // avgifter voucher, and the run records none.
+    vi.mocked(createSalaryRunEntries).mockResolvedValue({
+      salaryEntry: { id: 'je-1' },
+      avgifterEntry: null,
+      vacationEntry: null,
+      pensionEntry: null,
+    } as never)
+
     const result = await bookPaidSalaryRun(supabase as never, ARGS)
 
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.data.nollkorning).toBe(false)
+    if (result.ok) {
+      expect(result.data.nollkorning).toBe(false)
+      expect(result.data.entryIds).toEqual(['je-1'])
+    }
     expect(createSalaryRunEntries).toHaveBeenCalledTimes(1)
     expect(settleExpenseClaimsForBookedRun).toHaveBeenCalledTimes(1)
+    const runUpdate = findCalls('salary_runs', 'update').at(-1)?.[0] as Record<string, unknown>
+    expect(runUpdate).toMatchObject({ status: 'booked', salary_entry_id: 'je-1' })
+    expect(runUpdate).not.toHaveProperty('avgifter_entry_id')
   })
 })

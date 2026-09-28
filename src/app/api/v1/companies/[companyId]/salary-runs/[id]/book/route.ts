@@ -61,7 +61,7 @@ const SalaryRunBooked = z.object({
   booked_at: z.string(),
   booked_by: z.string().uuid().nullable(),
   salary_entry_id: z.string().uuid(),
-  avgifter_entry_id: z.string().uuid(),
+  avgifter_entry_id: z.string().uuid().nullable(),
   vacation_entry_id: z.string().uuid().nullable(),
   pension_entry_id: z.string().uuid().nullable(),
   entry_ids: z.array(z.string().uuid()),
@@ -76,7 +76,7 @@ registerEndpoint({
   path: '/api/v1/companies/:companyId/salary-runs/:id/book',
   summary: 'Post the verifikationer for a paid salary run.',
   description:
-    'Creates 2-4 journal entries (1: salary brutto/tax/net; 2: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip, and all entries are validated before the first is posted, so a refusal (locked period, missing BAS account, required or archived dimension value, etc.) posts nothing: the run stays in `paid` so the caller can fix the cause and retry.',
+    'Creates 1-4 journal entries (1: salary brutto/tax/net; 2 if the run has any: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip, and all entries are validated before the first is posted, so a refusal (locked period, missing BAS account, required or archived dimension value, etc.) posts nothing: the run stays in `paid` so the caller can fix the cause and retry.',
   useWhen:
     'You\'ve marked a salary run as paid and want to post the BFL-required verifikationer. This is the final lifecycle verb before AGI generation; after :book, the run can no longer be edited and corrections must use the (forthcoming) `:correct` verb.',
   doNotUseFor:
@@ -86,6 +86,7 @@ registerEndpoint({
     'payment_date must fall in an open fiscal period: locked period returns 400 PERIOD_LOCKED with `fiscal_period_id` and a hint of what unlock action is needed.',
     'BFL 5 kap immutability: once `:book` succeeds the verifikationer cannot be edited or deleted. Corrections require `:correct` (Phase 5 PR-3) which does a storno-then-rebook.',
     'The salary verifikation is the primary one; its voucher_number appears in the response audit block. The avgifter, vacation, and pension entries get separate voucher numbers (returned as `entry_ids`).',
+    'A run without arbetsgivaravgifter (only utlägg repaid, or only payees without avgifter such as F-skatt holders) posts no avgifter entry: avgifter_entry_id is null.',
     'Strict-mode: every entry is validated before the first is posted, so a refusal posts nothing and the run stays in `paid`. If posting stops partway on a transient failure, calling :book again adopts the entries already posted (when they match the run exactly) and posts only the missing ones, never twice. A posted entry of the run that does not match returns 409 SALARY_RUN_PARTIALLY_BOOKED with details.voucher_numbers: reverse those, then retry.',
   ],
   example: {
@@ -218,7 +219,13 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           would_advance_status_to: 'booked',
           would_post_entries: [
             'salary (gross + tax withholding + net payment)',
-            'arbetsgivaravgifter',
+            // Through the booking's own mapper (overrides, F-skatt rows), so
+            // a run without avgifter previews no avgifter entry either.
+            ...(salaryRunDataFromRows(run as SalaryRunRow, employees as SalaryRosterRow[]).employees.some(
+              (employee) => Math.round(employee.avgifter_amount * 100) !== 0,
+            )
+              ? ['arbetsgivaravgifter']
+              : []),
             ...(totalVacation > 0 || totalVacationAvgifter > 0 ? ['vacation accrual'] : []),
             ...((employees as Array<{ line_items: Array<{ item_type: string; amount: number }> | null }>).some(
               (employee) =>
@@ -243,7 +250,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // the F-skatt avgifter rules and employee dimensions reach the ledger
     // identically no matter which surface books the run.
     let salaryEntry: { id: string; voucher_number: string }
-    let avgifterEntry: { id: string }
+    let avgifterEntry: { id: string } | null
     let vacationEntry: { id: string } | null
     let pensionEntry: { id: string } | null
     try {
@@ -285,13 +292,16 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     //    would have re-posted JEs (a real bug: we'd have orphans), but
     //    the engine's atomicity makes that a no-op race that just won't
     //    commit the second status flip.
-    const entryIds = [salaryEntry.id, avgifterEntry.id]
+    const entryIds = [salaryEntry.id]
     const updates: Record<string, unknown> = {
       status: 'booked',
       salary_entry_id: salaryEntry.id,
-      avgifter_entry_id: avgifterEntry.id,
       booked_at: new Date().toISOString(),
       booked_by: ctx.userId,
+    }
+    if (avgifterEntry) {
+      updates.avgifter_entry_id = avgifterEntry.id
+      entryIds.push(avgifterEntry.id)
     }
     if (vacationEntry) {
       updates.vacation_entry_id = vacationEntry.id

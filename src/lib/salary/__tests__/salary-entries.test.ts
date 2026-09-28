@@ -694,16 +694,30 @@ describe('salary entries: dimensions propagation (PR8)', () => {
     assertBalanced(avgifter)
   })
 
-  it('keeps the legacy zero-avgifter shape (single untagged debit)', async () => {
+  it('a run without avgifter builds and posts no avgifter voucher (the engine refuses an all-zero one)', async () => {
     const run = makeRun([
       makeEmployee({ employee_id: 'a', avgifter_amount: 0, gross_salary: 1000, tax_withheld: 0, net_salary: 1000 }),
     ])
-    await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run)
-    const avgifter = entryByDescription('Arbetsgivaravgifter')
-    const expense = linesOn(avgifter, '7510')
-    expect(expense).toHaveLength(1)
-    expect(expense[0].debit_amount).toBe(0)
-    expect(expense[0].dimensions).toBeUndefined()
+    expect(buildSalaryRunEntryLines(run, 'Lön 2026-06', '1930').avgifterLines).toEqual([])
+
+    const result = await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run)
+
+    expect(mockedCreateEntry.mock.calls.map((call) => call[3].description)).toEqual(['Lön 2026-06'])
+    expect(result.avgifterEntry).toBeNull()
+    expect(result.salaryEntry.id).toBe(fake.ledger[0].id)
+  })
+
+  it('opposite-signed avgifter buckets that net to zero still book, without a 0/0 liability line', async () => {
+    const run = makeRun([
+      makeEmployee({ employee_id: 'a', avgifter_amount: 500, default_dimensions: { '1': 'KS01' } }),
+      makeEmployee({ employee_id: 'b', avgifter_amount: -500, default_dimensions: { '1': 'KS02' } }),
+    ])
+    const { avgifterLines } = buildSalaryRunEntryLines(run, 'Lön 2026-06', '1930')
+
+    expect(avgifterLines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+      ['7510', 500, 0],
+      ['7510', 0, 500],
+    ])
   })
 
   it('splits vacation accrual + its avgifter per bag; liabilities stay aggregated', async () => {
@@ -905,12 +919,15 @@ describe('salary entries: kostnadsersättning (#2331)', () => {
         line_items: [claimLine(800)],
       }),
     ])
-    await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run)
+    const result = await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run)
     const salary = entryByDescription('Lön 2026-06')
     expect(salary.lines).toEqual([
       expect.objectContaining({ account_number: '2820', debit_amount: 800, credit_amount: 0 }),
       expect.objectContaining({ account_number: '1930', debit_amount: 0, credit_amount: 800 }),
     ])
+    // No avgifter anywhere: the utlägg run posts only its salary voucher.
+    expect(fake.ledger.map((row) => row.description)).toEqual(['Lön 2026-06'])
+    expect(result.avgifterEntry).toBeNull()
   })
 })
 
@@ -1296,6 +1313,30 @@ describe('salary entries: all vouchers or none, and a retry never posts one twic
     await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run)
 
     expect(mockedCommit).toHaveBeenCalledTimes(3)
+  })
+
+  it('a run without avgifter books its other vouchers, and a retry treats the avgifter voucher as absent', async () => {
+    // F-skatt-only style run: pay and a vacation accrual, no avgifter at all.
+    const run = () =>
+      makeRun([
+        makeEmployee({ avgifter_amount: 0, avgifter_basis: 0, vacation_accrual: 1200, vacation_accrual_avgifter: 0 }),
+      ])
+    fake.failCommit = (input) => input.description.endsWith('Semesteravsättning')
+    await expect(createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run())).rejects.toThrow(
+      'commit failed',
+    )
+    expect(postedDescriptions()).toEqual(['Lön 2026-06'])
+
+    fake.failCommit = null
+    mockedCreateEntry.mockClear()
+    const retry = await createSalaryRunEntries(makeSupabase(), 'company-1', 'user-1', run())
+
+    expect(mockedCreateEntry.mock.calls.map((call) => call[3].description)).toEqual([
+      'Lön 2026-06: Semesteravsättning',
+    ])
+    expect(postedDescriptions()).toEqual(['Lön 2026-06', 'Lön 2026-06: Semesteravsättning'])
+    expect(retry.avgifterEntry).toBeNull()
+    expect(retry.vacationEntry?.id).toBe(fake.ledger[1].id)
   })
 
   it('fails closed: when the lookup of already-posted vouchers fails, nothing is posted', async () => {

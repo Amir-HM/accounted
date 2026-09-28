@@ -289,9 +289,9 @@ export class SalaryRunPartiallyBookedError extends Error {
 }
 
 /**
- * Create all journal entries for a salary run: 2-4 vouchers
+ * Create all journal entries for a salary run: 1-4 vouchers
  *   1. Salary: gross salary expenses, tax withholding, net payment
- *   2. Avgifter: employer contributions expense + liability
+ *   2. Avgifter (if the run has any): employer contributions expense + liability
  *   3. Vacation (if anything accrues): accrual expense + liability, with avgifter
  *   4. Pension (if löneväxling): pension provision + SLP
  *
@@ -316,7 +316,7 @@ export async function createSalaryRunEntries(
   run: SalaryRunData
 ): Promise<{
   salaryEntry: JournalEntry
-  avgifterEntry: JournalEntry
+  avgifterEntry: JournalEntry | null
   vacationEntry: JournalEntry | null
   pensionEntry: JournalEntry | null
 }> {
@@ -339,14 +339,15 @@ export async function createSalaryRunEntries(
   // so what the user approved on screen is what posts.
   const built = buildSalaryRunEntryLines(postingRun, desc, bankAccount)
 
-  // The run's vouchers in posting order. Vacation exists only when something
-  // accrues; pension only with löneväxling (per deductions-lonevaxling.md:
-  // pension = löneväxling × 1.058 on 7410/2740, SLP = pension × 24.26% on
-  // 7533/2514).
-  const vouchers: SalaryRunVoucher[] = [
-    { slot: 'salary', description: desc, lines: built.salaryLines },
-    { slot: 'avgifter', description: `${desc}: Arbetsgivaravgifter`, lines: built.avgifterLines },
-  ]
+  // The run's vouchers in posting order. Avgifter exists only when the run
+  // has any, vacation only when something accrues, pension only with
+  // löneväxling (per deductions-lonevaxling.md: pension = löneväxling × 1.058
+  // on 7410/2740, SLP = pension × 24.26% on 7533/2514). A voucher that is not
+  // in the set is absent, so a retry neither posts nor expects it.
+  const vouchers: SalaryRunVoucher[] = [{ slot: 'salary', description: desc, lines: built.salaryLines }]
+  if (built.avgifterLines.length > 0) {
+    vouchers.push({ slot: 'avgifter', description: `${desc}: Arbetsgivaravgifter`, lines: built.avgifterLines })
+  }
   if (built.vacationLines.length > 0) {
     vouchers.push({ slot: 'vacation', description: `${desc}: Semesteravsättning`, lines: built.vacationLines })
   }
@@ -376,16 +377,15 @@ export async function createSalaryRunEntries(
   const bySlot = new Map<SalaryVoucherSlot, JournalEntry>(adopted)
   pending.forEach((voucher, index) => bySlot.set(voucher.slot, created[index]))
   const salaryEntry = bySlot.get('salary')
-  const avgifterEntry = bySlot.get('avgifter')
-  if (!salaryEntry || !avgifterEntry) {
-    // Unreachable: both slots are always in the set and are either adopted
-    // or just created. Kept so the return type needs no assertion.
+  if (!salaryEntry) {
+    // Unreachable: the salary slot is always in the set and is either
+    // adopted or just created. Kept so the return type needs no assertion.
     throw new Error('Lönekörningens verifikationer kunde inte bokföras.')
   }
 
   return {
     salaryEntry,
-    avgifterEntry,
+    avgifterEntry: bySlot.get('avgifter') ?? null,
     vacationEntry: bySlot.get('vacation') ?? null,
     pensionEntry: bySlot.get('pension') ?? null,
   }
@@ -503,7 +503,7 @@ function linesFingerprint(
 export interface SalaryRunEntryLines {
   /** Entry 1: löner, kostnadsersättning, nettolöneavdrag, personalskatt, nettolön (on the bank account). */
   salaryLines: CreateJournalEntryLineInput[]
-  /** Entry 2: arbetsgivaravgifter (7510 / 2731 / 3740). Always present, zero-shaped for a nollkörning. */
+  /** Entry 2: arbetsgivaravgifter (7510 / 2731 / 3740); empty when the run has no avgifter. */
   avgifterLines: CreateJournalEntryLineInput[]
   /** Entry 3: semesteravsättning; empty when nothing accrues. */
   vacationLines: CreateJournalEntryLineInput[]
@@ -834,10 +834,13 @@ export function splitAvgifterLiability(
  * this alignment covers the booking as calculated.
  */
 function buildAvgifterLines(run: SalaryRunData, desc: string): CreateJournalEntryLineInput[] {
-  const dimBuckets = bucketByEmployeeDimensions(run.employees, (e) => e.avgifter_amount)
-  // Legacy shape parity: a run whose avgifter sum to zero still emits the
-  // single untagged debit line, exactly as before the dimension split.
-  const buckets = dimBuckets.length > 0 ? dimBuckets : [{ dimensions: undefined, amount: 0 }]
+  const buckets = bucketByEmployeeDimensions(run.employees, (e) => e.avgifter_amount)
+  // No avgifter anywhere in the run (a run that only repays utlägg, F-skatt
+  // payees, employees with 0% avgifter): nothing to book, so no voucher,
+  // exactly as vacation and pension produce none when nothing accrues. The
+  // zero-shaped lines this used to return could never post: the engine
+  // refuses a voucher whose total is zero.
+  if (buckets.length === 0) return []
   const roundedAvgifter = roundOre(buckets.reduce((sum, b) => sum + b.amount, 0))
   const { liabilityAvgifter, oresutjamning } = splitAvgifterLiability(run, roundedAvgifter)
 
@@ -848,10 +851,10 @@ function buildAvgifterLines(run: SalaryRunData, desc: string): CreateJournalEntr
       line_description: `${desc}: Arbetsgivaravgifter`,
       dimensions: bucket.dimensions,
     })),
-    // Skip the liability line only when the utjämning carries the whole
-    // (sub-1-krona) amount: a 0/0 line is verifikat noise. The zero-total
-    // parity shape (nollrun) keeps its single 0-credit line as before.
-    ...(liabilityAvgifter !== 0 || oresutjamning === 0
+    // Skip the liability line when it would be 0/0 (verifikat noise): the
+    // utjämning carries the whole sub-1-krona amount, or the buckets net to
+    // zero.
+    ...(liabilityAvgifter !== 0
       ? [
           {
             account_number: SALARY_ACCOUNTS.AVGIFTER_LIABILITY,

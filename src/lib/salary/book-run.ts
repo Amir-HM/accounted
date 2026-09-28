@@ -182,13 +182,17 @@ async function bookLoadedRun(
     salaryRunDataFromRows(run as unknown as SalaryRunRow, roster),
   )
 
-  const entryIds: string[] = [salaryEntry.id, avgifterEntry.id]
+  const entryIds: string[] = [salaryEntry.id]
   const updates: Record<string, unknown> = {
     status: 'booked',
     salary_entry_id: salaryEntry.id,
-    avgifter_entry_id: avgifterEntry.id,
     booked_at: new Date().toISOString(),
     booked_by: userId,
+  }
+  // No avgifter voucher for a run without avgifter (utlägg-only, F-skatt).
+  if (avgifterEntry) {
+    updates.avgifter_entry_id = avgifterEntry.id
+    entryIds.push(avgifterEntry.id)
   }
   if (vacationEntry) {
     updates.vacation_entry_id = vacationEntry.id
