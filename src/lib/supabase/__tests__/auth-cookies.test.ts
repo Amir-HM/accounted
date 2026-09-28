@@ -175,6 +175,26 @@ describe('upgradeLegacyAuthCookies', () => {
     expect(setCookieHeaders(response)).toEqual([])
   })
 
+  it('rewrites once more when the attribute policy changes (a self-host moving to https)', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'true')
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'http://nas.local:3000')
+    const value = encodeSession(NOW / 1000 + 3600)
+    const overHttp = NextResponse.next()
+    await upgradeLegacyAuthCookies(requestWith({ [KEY]: value }), overHttp, 'http', NOW)
+    const httpMarker = overHttp.cookies.get(AUTH_COOKIE_FLAGS_MARKER)!.value
+
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://nas.example.se')
+    const overHttps = NextResponse.next()
+    await upgradeLegacyAuthCookies(
+      requestWith({ [KEY]: value, [AUTH_COOKIE_FLAGS_MARKER]: httpMarker }),
+      overHttps,
+      'https',
+      NOW,
+    )
+    expect(overHttps.cookies.get(KEY)).toMatchObject({ value, httpOnly: true, secure: true })
+    expect(overHttps.cookies.get(AUTH_COOKIE_FLAGS_MARKER)?.value).not.toBe(httpMarker)
+  })
+
   it('omits Secure on a plain-http self-hosted install', async () => {
     vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'true')
     vi.stubEnv('NEXT_PUBLIC_APP_URL', 'http://nas.local:3000')

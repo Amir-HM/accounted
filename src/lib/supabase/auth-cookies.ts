@@ -11,11 +11,14 @@ export const AUTH_COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
 
 /**
  * Marks that the session cookie the browser holds was written by this
- * server with the HttpOnly/Secure attributes. The value is a fingerprint of
- * the cookie value, so the marker is tied to one exact cookie: any session
- * cookie the server did not write itself (a pre-HttpOnly cookie, or one an
- * old tab's script created after the server cleared the session) mismatches
- * and is rewritten once. Never holds token material.
+ * server with the current attributes. The value is a fingerprint of the
+ * attributes plus the cookie value, so the marker is tied to one exact
+ * cookie under one attribute policy: any session cookie the server did not
+ * write itself (a pre-HttpOnly cookie, or one an old tab's script created
+ * after the server cleared the session) mismatches and is rewritten once,
+ * and so does every cookie after the policy itself changes (Secure turned on
+ * for a self-host that moved to https, or HttpOnly turned off as the first
+ * step of a clean rollback). Never holds token material.
  */
 export const AUTH_COOKIE_FLAGS_MARKER = 'gnubok-session-cookie'
 
@@ -181,17 +184,17 @@ export async function upgradeLegacyAuthCookies(
     return
   }
 
-  const currentFingerprint = await fingerprint(current)
+  const policy = supabaseAuthCookieOptions(requestProtocol)
+  const currentFingerprint = await fingerprint(
+    `${policy.httpOnly ? 'h' : '-'}${policy.secure ? 's' : '-'}|${current}`,
+  )
   if (marker === currentFingerprint) return
 
   if (!writtenThisRequest) {
     const expiresAt = authCookieExpiresAt(current)
     if (expiresAt === null || expiresAt * 1000 - now < UPGRADE_MIN_REMAINING_MS) return
 
-    const options = {
-      ...supabaseAuthCookieOptions(requestProtocol),
-      maxAge: AUTH_COOKIE_MAX_AGE_SECONDS,
-    }
+    const options = { ...policy, maxAge: AUTH_COOKIE_MAX_AGE_SECONDS }
     for (const name of authTokenCookieNames(request.cookies.getAll(), key)) {
       const value = request.cookies.get(name)?.value
       if (value) response.cookies.set(name, value, options)
