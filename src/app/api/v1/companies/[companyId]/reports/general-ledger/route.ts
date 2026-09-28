@@ -24,7 +24,8 @@ import { dimensionFilterPartialView, parseDimensionFilterParams } from '@/lib/re
 const GeneralLedgerResponse = z.unknown()
 
 // Documents what the handler reads: it validates the account bounds and the
-// dimension pair itself. withApiV1 refuses anything else (report query gate).
+// dimension pair itself. withApiV1 names any other parameter in
+// X-Ignored-Query-Params (report query gate).
 const LedgerQuery = z.object({
   ...ReportPeriodQueryShape,
   account_from: z
@@ -56,7 +57,7 @@ registerEndpoint({
     'Account ranges are inclusive on both bounds. `account_from=3000` includes 3000; `account_to=3999` includes 3999.',
     'Lines with `status != \'posted\'` (drafts, reversed) are excluded.',
     'With `dim_no` + `dim_code` (always together) every opening_balance is 0: IB is company-wide and cannot be scoped to a dimension, so running and closing balances are the tagged lines\' movements only (`partial_view.opening_balances_included` is false).',
-    'Unknown query parameters (e.g. from_date) are rejected with VALIDATION_ERROR, not silently ignored.',
+    'A query parameter it does not document (e.g. from_date) is not applied: the answer names it in the X-Ignored-Query-Params header. A dimension filter is always applied or refused, never ignored.',
   ],
   example: {
     response: {

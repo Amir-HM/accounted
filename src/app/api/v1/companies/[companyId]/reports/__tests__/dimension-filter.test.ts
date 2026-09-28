@@ -174,10 +174,18 @@ describe('GET /reports/general-ledger: what the filter cannot scope', () => {
     })
   })
 
-  it('refuses a parameter it does not document instead of ignoring it (from_date)', async () => {
+  it('does not apply a parameter it does not document (from_date), and says so in X-Ignored-Query-Params', async () => {
     const res = await call(generalLedger as Handler, 'general-ledger', `period_id=${PERIOD_ID}&from_date=2026-07-01`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Ignored-Query-Params')).toBe('from_date')
+    // The whole period, no filter: the parameter really was not applied.
+    expect(mocks.generateGeneralLedger).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, PERIOD_ID, undefined, undefined, undefined)
+  })
+
+  it('refuses another spelling of a dimension filter rather than ignoring it (project)', async () => {
+    const res = await call(generalLedger as Handler, 'general-ledger', `period_id=${PERIOD_ID}&project=P001`)
     expect(res.status).toBe(400)
-    expect((await res.json()).error.details.unknown_params).toEqual(['from_date'])
+    expect((await res.json()).error.details.unknown_params).toEqual(['project'])
     expect(mocks.generateGeneralLedger).not.toHaveBeenCalled()
   })
 })

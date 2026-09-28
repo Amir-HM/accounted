@@ -1,14 +1,19 @@
 /**
- * The report query gate in withApiV1: a report read answers exactly the
- * query its endpoint registers.
+ * The report query gate in withApiV1 (default mode).
  *
  * Before it, only four report routes opted in to assertKnownQueryParams, so
  * ?dim_no=6&dim_code=P001 on the trial balance, the general ledger or any
  * filing report answered the unfiltered report to a caller who believed it
  * filtered ("a filter must never be silently ignored",
- * lib/reports/dimension-filter.ts). The gate now covers every GET on a
+ * lib/reports/dimension-filter.ts). The gate covers every GET on a
  * reports.* or arsredovisning.* operation, hand-written, operation door and
- * file door alike, with the registered query as the allowlist.
+ * file door alike, against the query each endpoint registers:
+ *   - a dimension filter the report does not register is refused (400);
+ *   - any other unregistered parameter is served and named in the
+ *     X-Ignored-Query-Params header, because production integrations may
+ *     send parameters nobody can see and a new 400 would break them.
+ * STRICT_REPORT_QUERY_PARAMS refuses every unregistered parameter; that mode
+ * is pinned in report-query-gate-strict.test.ts.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
@@ -32,9 +37,16 @@ vi.mock('@/lib/import/sie-period-read', () => ({ withSIEExternalReport: external
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { listEndpoints, registerEndpoint, dataEnvelope, type EndpointDefinition } from '../registry'
-import { isReportRead, registeredQueryParams } from '../report-period'
-import { withApiV1 } from '../with-api-v1'
+import {
+  DIMENSION_FILTER_QUERY_PARAMS,
+  STRICT_REPORT_QUERY_PARAMS,
+  isReportRead,
+  registeredQueryParams,
+  reportQueryVerdict,
+} from '../report-period'
+import { withApiV1, type ApiV1Context } from '../with-api-v1'
 import { ok } from '../response'
+import { v1ErrorResponseFromCode } from '../errors'
 // Side-effect import: populates the ENDPOINTS registry from every route file.
 import '../load-routes'
 
@@ -76,7 +88,11 @@ beforeEach(() => {
   mockServiceClient.mockReturnValue(makeSupabase({ company_id: COMPANY_ID, role: 'owner' }))
 })
 
-describe('isReportRead / registeredQueryParams', () => {
+describe('gate helpers', () => {
+  it('ships non-strict: stray parameters are reported, not refused', () => {
+    expect(STRICT_REPORT_QUERY_PARAMS).toBe(false)
+  })
+
   it('scopes the gate to GET on report operations', () => {
     expect(isReportRead('GET', 'reports.trial-balance')).toBe(true)
     expect(isReportRead('GET', 'reports.ink2.sru')).toBe(true)
@@ -97,9 +113,31 @@ describe('isReportRead / registeredQueryParams', () => {
     expect(registeredQueryParams(undefined)).toBeNull()
     expect(registeredQueryParams({ ...base, request: { query: z.string() } })).toBeNull()
   })
+
+  it('knows every spelling of a dimension filter', () => {
+    expect([...DIMENSION_FILTER_QUERY_PARAMS].sort()).toEqual(['cost_center', 'dim_code', 'dim_no', 'dimensions', 'project'])
+  })
+
+  it('default mode refuses only unregistered dimension filters and reports the rest', () => {
+    const q = new URLSearchParams('period_id=p&dim_no=6&dim_code=P1&project=P1&from=2026-01-01&x=1&dry_run=true')
+    expect(reportQueryVerdict(q, ['period_id'], { strict: false })).toEqual({
+      refused: ['dim_no', 'dim_code', 'project'],
+      ignored: ['from', 'x'],
+    })
+    // A report that registers the pair keeps it; dry_run belongs to the wrapper.
+    expect(reportQueryVerdict(q, ['period_id', 'dim_no', 'dim_code'], { strict: false })).toEqual({
+      refused: ['project'],
+      ignored: ['from', 'x'],
+    })
+  })
+
+  it('strict mode refuses every unregistered parameter', () => {
+    const q = new URLSearchParams('period_id=p&dim_no=6&from=2026-01-01&dry_run=true')
+    expect(reportQueryVerdict(q, ['period_id'], { strict: true })).toEqual({ refused: ['dim_no', 'from'], ignored: [] })
+  })
 })
 
-describe('withApiV1 report query gate', () => {
+describe('withApiV1 report query gate (default mode)', () => {
   const PATH = '/api/v1/companies/:companyId/reports/zz-gate-probe'
   registerEndpoint({
     operation: 'reports.zz-gate-probe',
@@ -119,19 +157,16 @@ describe('withApiV1 report query gate', () => {
     request: { query: z.object({ period_id: z.string(), to_date: z.string().optional() }) },
     response: { success: dataEnvelope(z.unknown()) },
   })
-  const handler = vi.fn(async (_req: Request, ctx: { requestId: string }) => ok({ ran: true }, { requestId: ctx.requestId }))
+  const handler = vi.fn(async (_req: Request, ctx: ApiV1Context) => ok({ ran: true }, { requestId: ctx.requestId }))
   const GET = withApiV1<{ params: Promise<{ companyId: string }> }>('reports.zz-gate-probe', handler, {
     requireScope: 'reports:read',
   })
-  const call = (query: string) =>
-    GET(
-      new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/reports/zz-gate-probe${query}`, {
-        headers: { Authorization: 'Bearer test-fixture-not-a-real-key' },
-      }),
-      { params: Promise.resolve({ companyId: COMPANY_ID }) },
-    )
+  const call = (query: string, headers: Record<string, string> = { Authorization: 'Bearer test-fixture-not-a-real-key' }) =>
+    GET(new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/reports/zz-gate-probe${query}`, { headers }), {
+      params: Promise.resolve({ companyId: COMPANY_ID }),
+    })
 
-  it('refuses a parameter the endpoint does not register, before the handler or the import lease', async () => {
+  it('refuses a dimension filter the report does not register, before the handler or the import lease', async () => {
     const res = await call('?period_id=p&dim_no=6&dim_code=P001')
     expect(res.status).toBe(400)
     const body = await res.json()
@@ -145,10 +180,41 @@ describe('withApiV1 report query gate', () => {
     expect(res.headers.get('X-Robots-Tag')).toBe('noai, noimageai')
   })
 
-  it('lets the registered parameters and the wrapper\'s own dry_run through', async () => {
-    const res = await call('?period_id=p&to_date=2026-06-30&dry_run=false')
+  it('refuses the other spellings of a dimension filter too', async () => {
+    for (const param of ['project', 'cost_center', 'dimensions']) {
+      const res = await call(`?period_id=p&${param}=P001`)
+      expect(res.status, param).toBe(400)
+      expect((await res.json()).error.details.unknown_params, param).toEqual([param])
+    }
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('serves a stray parameter and names it in X-Ignored-Query-Params', async () => {
+    const res = await call('?period_id=p&from=2026-01-01&page=2')
     expect(res.status).toBe(200)
     expect(handler).toHaveBeenCalledTimes(1)
+    expect(res.headers.get('X-Ignored-Query-Params')).toBe('from, page')
+  })
+
+  it('a request with both refuses the dimension filter only', async () => {
+    const res = await call('?period_id=p&page=2&dim_code=P001')
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.details.unknown_params).toEqual(['dim_code'])
+  })
+
+  it('sends no header when every parameter is registered, dry_run included', async () => {
+    const res = await call('?period_id=p&to_date=2026-06-30&dry_run=false')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Ignored-Query-Params')).toBeNull()
+  })
+
+  it('does not claim a parameter was ignored when the report itself failed', async () => {
+    handler.mockImplementationOnce(async (_req: Request, ctx: ApiV1Context) =>
+      v1ErrorResponseFromCode('NOT_FOUND', ctx.log, { requestId: ctx.requestId }),
+    )
+    const res = await call('?period_id=p&page=2')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('X-Ignored-Query-Params')).toBeNull()
   })
 
   it('answers a company the key cannot reach with 404, never with the 400', async () => {
@@ -159,10 +225,7 @@ describe('withApiV1 report query gate', () => {
   })
 
   it('401 without a key', async () => {
-    const res = await GET(
-      new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/reports/zz-gate-probe?dim_no=6`),
-      { params: Promise.resolve({ companyId: COMPANY_ID }) },
-    )
+    const res = await call('?dim_no=6', {})
     expect(res.status).toBe(401)
   })
 
@@ -172,13 +235,14 @@ describe('withApiV1 report query gate', () => {
       requireScope: 'reports:read',
     })
     const res = await LIST(
-      new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/customers-zz-probe?anything=1`, {
+      new Request(`https://x.test/api/v1/companies/${COMPANY_ID}/customers-zz-probe?dim_no=6&anything=1`, {
         headers: { Authorization: 'Bearer test-fixture-not-a-real-key' },
       }),
       { params: Promise.resolve({ companyId: COMPANY_ID }) },
     )
     expect(res.status).toBe(200)
     expect(listHandler).toHaveBeenCalledTimes(1)
+    expect(res.headers.get('X-Ignored-Query-Params')).toBeNull()
   })
 })
 
@@ -220,7 +284,7 @@ describe('every v1 report read is gated', () => {
   })
 
   it.each(REPORT_READS.map((ep) => [ep.operation, ep] as const))(
-    '%s refuses an unknown parameter, and a dimension filter unless it is P&L-safe',
+    '%s refuses a dimension filter it does not take, and only that',
     async (operation, ep) => {
       const mod = (await import(/* @vite-ignore */ routeModule(ep.path))) as {
         GET: (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
@@ -235,8 +299,10 @@ describe('every v1 report read is gated', () => {
         mode: 'live',
       })
       const concrete = ep.path.replace(':companyId', COMPANY_ID).replace(/:[^/]+/g, RESOURCE_ID)
+      // project is a dimension filter no report registers, so every report
+      // refuses this request; what differs is whether dim_code is refused too.
       const res = await mod.GET(
-        new Request(`https://x.test${concrete}?dim_no=6&dim_code=P001&not_a_param=1`, {
+        new Request(`https://x.test${concrete}?dim_no=6&dim_code=P001&project=P001&not_a_param=1`, {
           headers: { Authorization: 'Bearer test-fixture-not-a-real-key' },
         }),
         { params: Promise.resolve({ companyId: COMPANY_ID, id: RESOURCE_ID }) },
@@ -244,14 +310,16 @@ describe('every v1 report read is gated', () => {
       expect(res.status, operation).toBe(400)
       const body = await res.json()
       expect(body.error.code, operation).toBe('VALIDATION_ERROR')
-      const unknown: string[] = body.error.details.unknown_params
-      expect(unknown, operation).toContain('not_a_param')
+      const refused: string[] = body.error.details.unknown_params
+      expect(refused, operation).toContain('project')
       // dim_code is the filter value; dim_no alone is the axis of dimension-pnl.
       if (DIMENSION_FILTER_READS.has(operation)) {
-        expect(unknown, operation).not.toContain('dim_code')
+        expect(refused, operation).not.toContain('dim_code')
       } else {
-        expect(unknown, operation).toContain('dim_code')
+        expect(refused, operation).toContain('dim_code')
       }
+      // Default mode never refuses a stray parameter.
+      expect(refused, operation).not.toContain('not_a_param')
       // Refused before any report was produced.
       expect(externalReportGuard, operation).not.toHaveBeenCalled()
     },

@@ -2,7 +2,7 @@
 
 # Reports endpoints
 
-Read-only statutory and management reports: trial balance, balance sheet, income statement, general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export. Every report answers 400 VALIDATION_ERROR to a query parameter it does not list, never ignores it; only income-statement, general-ledger, monthly-breakdown and kpi take the dim_no + dim_code filter.
+Read-only statutory and management reports: trial balance, balance sheet, income statement, general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export. Only income-statement, general-ledger, monthly-breakdown and kpi take the dim_no + dim_code filter; every other report answers a dimension filter with 400 VALIDATION_ERROR, never an unfiltered report. Any other query parameter a report does not list is not applied and is named in the X-Ignored-Query-Params response header.
 
 Conventions (auth, envelope, pagination, dry-run, idempotency, standard errors)
 are in SKILL.md and are not repeated per endpoint.
@@ -584,7 +584,7 @@ Returns every posted journal line in the period grouped by account, with opening
 - Account ranges are inclusive on both bounds. `account_from=3000` includes 3000; `account_to=3999` includes 3999.
 - Lines with `status != 'posted'` (drafts, reversed) are excluded.
 - With `dim_no` + `dim_code` (always together) every opening_balance is 0: IB is company-wide and cannot be scoped to a dimension, so running and closing balances are the tagged lines' movements only (`partial_view.opening_balances_included` is false).
-- Unknown query parameters (e.g. from_date) are rejected with VALIDATION_ERROR, not silently ignored.
+- A query parameter it does not document (e.g. from_date) is not applied: the answer names it in the X-Ignored-Query-Params header. A dimension filter is always applied or refused, never ignored.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1058,7 +1058,7 @@ Returns revenue + expenses + net result per calendar month inside the fiscal per
 **Pitfalls:**
 - `period_id` is required.
 - With `dim_no` + `dim_code` (always together) the months cover only the tagged lines: they sum to the filtered income statement, not the company's.
-- Unknown query parameters are rejected with VALIDATION_ERROR, not silently ignored.
+- A query parameter it does not document is not applied: the answer names it in the X-Ignored-Query-Params header.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1476,7 +1476,7 @@ Returns the per-account opening balance + period debit/credit + closing balance 
 - `period_id` is required as a query parameter.
 - `isBalanced=false` means the period has unbalanced postings: a data-integrity red flag. The lib generator rounds at the source so a true imbalance is rare; investigate immediately.
 - Closed/locked periods are still queryable: the report is read-only.
-- No dimension filter: the saldobalans is company-wide, so dim_no/dim_code, like any unknown query parameter, answer 400 VALIDATION_ERROR. For one project or cost centre use /reports/income-statement or /reports/general-ledger with dim_no + dim_code.
+- No dimension filter: the saldobalans is company-wide, so dim_no/dim_code answer 400 VALIDATION_ERROR rather than an unfiltered report. For one project or cost centre use /reports/income-statement or /reports/general-ledger with dim_no + dim_code.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|

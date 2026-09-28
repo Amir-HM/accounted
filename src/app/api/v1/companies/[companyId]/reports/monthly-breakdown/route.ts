@@ -34,7 +34,7 @@ registerEndpoint({
   pitfalls: [
     '`period_id` is required.',
     'With `dim_no` + `dim_code` (always together) the months cover only the tagged lines: they sum to the filtered income statement, not the company\'s.',
-    'Unknown query parameters are rejected with VALIDATION_ERROR, not silently ignored.',
+    'A query parameter it does not document is not applied: the answer names it in the X-Ignored-Query-Params header.',
   ],
   example: {
     response: {
