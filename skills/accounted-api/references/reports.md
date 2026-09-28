@@ -501,21 +501,23 @@ Example response `200`:
 **Resultat per projekt or kostnadsställe: the income statement with one column per dimension value.**
 `scope:reports:read · risk:low · idempotent`
 
-A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account's amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport. Cumulative from the period start to to_date (default the period end). Read-only.
+A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account's amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport for the same window. The window is from_date to to_date (defaults: the period start and end), so one quarter per project is one call. Read-only.
 
-**Use when:** Following up profitability per project or cost centre.
-**Do not use for:** One value only (GET /reports/income-statement with a dimension filter) or balance accounts (dimensions are P&L-side).
+**Use when:** Following up profitability per project or cost centre, for the year or for one quarter or month.
+**Do not use for:** One value only (GET /reports/income-statement with dim_no and dim_code) or balance accounts (dimensions are P&L-side).
 
 **Pitfalls:**
-- No from_date: the matrix uses closing-balance semantics so its Totalt reconciles with the resultatrapport.
+- from_date and to_date must lie inside the period. Amounts are the activity inside that window, not balances accumulated from the period start.
 - Amounts booked without a tag on the dimension land in "(Utan dimension)", not spread over the values.
+- What the bokslut run posts (source year_end: tax, bokslut depreciation, dispositions, resultatavslut) is left out, tagged or not, exactly as in the resultatrapport.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
 | `companyId` | path | `string` | yes |  |
 | `period_id` | query | `string` | yes | The fiscal period (räkenskapsår) id, from GET /fiscal-periods. |
 | `dim_no` | query | `string` | no | SIE dimension number. Default "6" (projekt). |
-| `to_date` | query | `string` | no | YYYY-MM-DD inside the period. Default: the period end. |
+| `from_date` | query | `string` | no | YYYY-MM-DD inside the period. Default: the period start. |
+| `to_date` | query | `string` | no | YYYY-MM-DD inside the period, not before from_date. Default: the period end. |
 
 Response `200`:
 ```ts
@@ -556,8 +558,8 @@ Example response `200`:
     ],
     "net_total": 184200,
     "period": {
-      "start": "2026-01-01",
-      "end": "2026-12-31"
+      "start": "2026-07-01",
+      "end": "2026-09-30"
     }
   },
   "meta": {
