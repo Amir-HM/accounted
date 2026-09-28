@@ -4,7 +4,6 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { buildSupplierPaymentClearingLines } from '@/lib/bookkeeping/supplier-payment-lines'
 import { cashPartialBlockReason } from '@/lib/bookkeeping/booking-mode'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
@@ -288,10 +287,22 @@ export const POST = withRouteContext(
       })
     }
 
-    // Verifikat header description, shared by every booking branch below.
+    // Verifikat header description for user-edited lines; the entry generators
+    // below write their own.
     const desc = invoice.supplier?.name
       ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
       : `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}`
+
+    // One open-period gate for every booking shape below: the entry generators
+    // only return null for a date outside an open period, which this route
+    // could report as nothing better than a generic failure.
+    const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
+    if (!fiscalPeriodId) {
+      return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
+        requestId,
+        details: { paymentDate: transaction.date },
+      })
+    }
 
     let journalEntryId: string | null = null
 
@@ -303,13 +314,6 @@ export const POST = withRouteContext(
           return errorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
             requestId,
             details: { totalDebit, totalCredit },
-          })
-        }
-        const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
-        if (!fiscalPeriodId) {
-          return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
-            requestId,
-            details: { paymentDate: transaction.date },
           })
         }
         const sourceType = useCashEntry ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
@@ -344,32 +348,22 @@ export const POST = withRouteContext(
         )
         if (journalEntry) journalEntryId = journalEntry.id
       } else if (isPureSek) {
-        // SEK clearing through the shared builder: a sub-krona difference is
-        // booked to 3740 and 2440 is cleared in full (invoice → paid); an exact
-        // or ≥1 kr-short payment clears what moved. Byte-identical to the preview
-        // (same payment account + line descriptions). No FX here by definition.
-        const fiscalPeriodId = await findFiscalPeriod(supabase, companyId!, transaction.date)
-        if (!fiscalPeriodId) {
-          return errorResponseFromCode('INVOICE_PAID_NO_FISCAL_PERIOD', txLog, {
-            requestId,
-            details: { paymentDate: transaction.date },
-          })
-        }
-        const { lines } = buildSupplierPaymentClearingLines({
-          apSek: invoice.remaining_amount,
-          bankSek: roundOre(txAmountAbs - bankFeeSek),
+        // SEK clearing through the same generator the v1 door books with, in
+        // its clearing mode: the lines come from the preview's own builder, so
+        // a sub-krona difference is booked to 3740 and 2440 is cleared in full
+        // (invoice → paid); an exact or ≥1 kr-short payment clears what moved.
+        // The generator also carries the invoice's dimensions onto every leg,
+        // which the hand-built lines here used to drop. No FX by definition.
+        const journalEntry = await createSupplierInvoicePaymentEntry(
+          supabase, companyId, user.id, invoice as SupplierInvoice,
+          roundOre(txAmountAbs - bankFeeSek), transaction.date,
+          undefined, // no kursdifferens on a pure-SEK match
+          invoice.supplier?.name,
           paymentAccount,
+          transaction,
           bankFeeSek,
-        })
-        const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
-          fiscal_period_id: fiscalPeriodId,
-          entry_date: transaction.date,
-          description: desc,
-          source_type: 'supplier_invoice_paid',
-          source_id: invoice.id,
-          bank_booking_context: [bankBookingContext(transaction, paymentAccount)],
-          lines,
-        })
+          invoice.remaining_amount,
+        )
         if (journalEntry) journalEntryId = journalEntry.id
       } else {
         const journalEntry = await createSupplierInvoicePaymentEntry(

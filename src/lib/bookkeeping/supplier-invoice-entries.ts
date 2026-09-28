@@ -22,7 +22,12 @@ import { createLogger } from '@/lib/logger'
 import { roundOre } from '@/lib/money'
 import { creditNatural, debitNatural } from './line-side'
 import { isSupplierInvoiceRoundingItem } from '@/lib/supplier-invoices/rounding-item'
-import { addSupplierBankFeeLine, resolveSupplierCashSettlement, supplierOreRoundingLine } from './supplier-payment-lines'
+import {
+  addSupplierBankFeeLine,
+  buildSupplierPaymentClearingLines,
+  resolveSupplierCashSettlement,
+  supplierOreRoundingLine,
+} from './supplier-payment-lines'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExpenseClaimLineInput } from '@/lib/expenses/expense-claims-service'
 import type {
@@ -327,6 +332,12 @@ export async function buildSupplierInvoiceRegistrationEntryInput(
  *   Debit  2440 Leverantörsskulder   [original SEK amount]
  *   Credit 1930 Företagskonto        [actual SEK paid]
  *   Credit/Debit 3960/7960           [difference]
+ *
+ * SEK clearing of a matched bank row (`sekClearingDebt`): the lines come from
+ * buildSupplierPaymentClearingLines, the builder the match preview shows, so
+ * a sub-krona difference between the debt and the bank amount is booked on
+ * 3740 and 2440 clears in full. Every mode stamps the invoice's dimensions on
+ * every leg.
  */
 export async function createSupplierInvoicePaymentEntry(
   supabase: SupabaseClient,
@@ -341,7 +352,15 @@ export async function createSupplierInvoicePaymentEntry(
   bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>,
   // Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570.
   bankFeeSek?: number,
+  // Pure-SEK bank match: the SEK debt this payment clears off 2440 (the
+  // invoice's remaining). paymentAmount is then the SEK that left the bank
+  // for the invoice, net of any fee. There is no kursdifferens in SEK, so
+  // exchangeRateDifference must be omitted.
+  sekClearingDebt?: number,
 ): Promise<JournalEntry | null> {
+  if (sekClearingDebt !== undefined && exchangeRateDifference) {
+    throw new Error('createSupplierInvoicePaymentEntry: a SEK clearing has no exchange rate difference')
+  }
   const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
   if (!fiscalPeriodId) {
@@ -355,7 +374,18 @@ export async function createSupplierInvoicePaymentEntry(
   // default bag onto every leg (incl. FX result lines), see the stamp below.
   const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
 
-  if (exchangeRateDifference && exchangeRateDifference !== 0) {
+  if (sekClearingDebt !== undefined) {
+    // Matched SEK bank row: the preview's own builder, so the committed lines
+    // equal the previewed ones (3740 öresavrundning and 6570 bank fee included).
+    lines.push(
+      ...buildSupplierPaymentClearingLines({
+        apSek: sekClearingDebt,
+        bankSek: paymentAmount,
+        paymentAccount: creditAccount,
+        bankFeeSek,
+      }).lines,
+    )
+  } else if (exchangeRateDifference && exchangeRateDifference !== 0) {
     // Foreign currency with exchange rate difference
     const originalSekAmount = paymentAmount
     const actualSekPaid = paymentAmount - exchangeRateDifference
@@ -410,7 +440,8 @@ export async function createSupplierInvoicePaymentEntry(
       line_description: desc,
     })
   }
-  addSupplierBankFeeLine(lines, creditAccount, bankFeeSek)
+  // The clearing builder above books the fee itself.
+  if (sekClearingDebt === undefined) addSupplierBankFeeLine(lines, creditAccount, bankFeeSek)
 
   if (defaultDimensions) {
     // Copy per line: a shared bag object would let one line's mutation

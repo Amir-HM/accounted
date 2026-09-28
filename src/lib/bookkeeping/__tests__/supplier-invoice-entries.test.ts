@@ -79,6 +79,7 @@ const {
   largestExpenseAccount,
   SupplierInvoiceFxRateMissingError,
 } = await import('../supplier-invoice-entries')
+const { buildSupplierPaymentClearingLines } = await import('../supplier-payment-lines')
 
 function makeItem(overrides: Partial<SupplierInvoiceItem> = {}): SupplierInvoiceItem {
   // Mirror the API: vat_amount derives from line_total × vat_rate unless the
@@ -1176,6 +1177,76 @@ describe('createSupplierInvoicePaymentEntry', () => {
 
     const input = mockedCreateEntry.mock.calls[0][3]
     expect(input.entry_date).toBe('2024-08-15')
+  })
+
+  describe('SEK clearing of a matched bank row (sekClearingDebt)', () => {
+    const BAG = { '6': 'P1', '1': 'KS1' }
+
+    it('books the match preview builder lines: 2440 cleared in full, the öre on 3740, every leg tagged', async () => {
+      const invoice = makeSupplierInvoice({ total: 11231.25, default_dimensions: BAG })
+
+      await createSupplierInvoicePaymentEntry(
+        null as never, 'company-1', 'user-1', invoice, 11231, '2024-07-01',
+        undefined, undefined, '1930', undefined, undefined, 11231.25,
+      )
+
+      const input = mockedCreateEntry.mock.calls[0][3]
+      const preview = buildSupplierPaymentClearingLines({
+        apSek: 11231.25, bankSek: 11231, paymentAccount: '1930',
+      }).lines
+      expect(input.lines).toEqual(preview.map((line) => ({ ...line, dimensions: BAG })))
+      expect(findByAccount(input.lines, '3740')[0].credit_amount).toBe(0.25)
+      assertBalanced(input)
+      // One bag object per line: a shared object would let one line's edit
+      // leak into every other line.
+      expect(new Set(input.lines.map((line) => line.dimensions)).size).toBe(input.lines.length)
+    })
+
+    it('books a bank fee exactly once, tagged like the rest', async () => {
+      const invoice = makeSupplierInvoice({ total: 1000, default_dimensions: BAG })
+
+      await createSupplierInvoicePaymentEntry(
+        null as never, 'company-1', 'user-1', invoice, 1000, '2024-07-01',
+        undefined, undefined, '1930', undefined, 50, 1000,
+      )
+
+      const input = mockedCreateEntry.mock.calls[0][3]
+      expect(input.lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount, l.dimensions])).toEqual([
+        ['2440', 1000, 0, BAG],
+        ['1930', 0, 1050, BAG],
+        ['6570', 50, 0, BAG],
+      ])
+      assertBalanced(input)
+    })
+
+    it('leaves the lines untagged for an untagged invoice', async () => {
+      const invoice = makeSupplierInvoice({ total: 1000 })
+
+      await createSupplierInvoicePaymentEntry(
+        null as never, 'company-1', 'user-1', invoice, 400, '2024-07-01',
+        undefined, undefined, '1930', undefined, undefined, 1000,
+      )
+
+      const input = mockedCreateEntry.mock.calls[0][3]
+      // A 600 kr short partial is not öresavrundning: it clears what moved.
+      expect(input.lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+        ['2440', 400, 0],
+        ['1930', 0, 400],
+      ])
+      for (const line of input.lines) expect(line.dimensions).toBeUndefined()
+    })
+
+    it('refuses an exchange rate difference: a SEK clearing has none', async () => {
+      const invoice = makeSupplierInvoice()
+
+      await expect(
+        createSupplierInvoicePaymentEntry(
+          null as never, 'company-1', 'user-1', invoice, 1000, '2024-07-01',
+          20, undefined, '1930', undefined, undefined, 1000,
+        ),
+      ).rejects.toThrow('a SEK clearing has no exchange rate difference')
+      expect(mockedCreateEntry).not.toHaveBeenCalled()
+    })
   })
 })
 
