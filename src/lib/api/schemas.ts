@@ -1773,6 +1773,48 @@ export const CreateJournalEntrySchema = z.object({
   lines: z.array(CreateJournalEntryLineSchema).min(2, 'At least two lines are required for double-entry'),
 })
 
+/**
+ * source_type values a caller may put on a voucher it authors through a
+ * generic create door. Every other value belongs to a dedicated producer
+ * (invoices, supplier invoices, bank bookings, payroll, IB, year-end, storno,
+ * accruals, settlements), and the label is load-bearing, not decoration: it
+ * decides the dimension-rule and registry-validation exemptions
+ * (lib/bookkeeping/dimension-rules.ts), keeps 'vat_settlement' out of the VAT
+ * return, scopes SIE replacement to 'import' and gates storno/correction
+ * handling. A caller-chosen label let a business voucher claim an
+ * engine-owned exemption and show a false source in the ledger.
+ *
+ *   API (v1 POST /journal-entries and /journal-entries/batch-create):
+ *     'manual', plus 'import' for history replayed from another system (the
+ *     documented batch-create use; imported history is rule-exempt by
+ *     design, and the label says so in the ledger).
+ *   Dashboard (POST /api/bookkeeping/journal-entries): 'manual', plus
+ *     'vat_settlement' for the reviewed momsredovisning proposal and VAT
+ *     booking templates (lib/bookkeeping/template-source-type.ts).
+ */
+export const API_VOUCHER_SOURCE_TYPES = ['manual', 'import'] as const
+export const DASHBOARD_VOUCHER_SOURCE_TYPES = ['manual', 'vat_settlement'] as const
+
+/** POST /api/v1/companies/{companyId}/journal-entries (+ batch-create items). */
+export const CreateApiJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(API_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan bara vara "manual" eller "import" här. Övriga källtyper sätts av sina egna flöden (fakturor, leverantörsfakturor, transaktioner, ingående balans, momsredovisning, bokslut).',
+    })
+    .default('manual'),
+})
+
+/** POST /api/bookkeeping/journal-entries: what the dashboard's own forms send. */
+export const CreateDashboardJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(DASHBOARD_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan bara vara "manual" eller "vat_settlement" här. Övriga källtyper sätts av sina egna flöden.',
+    })
+    .default('manual'),
+})
+
 export const CorrectJournalEntrySchema = z.object({
   // Optional verifikationstext for the corrected entry. When omitted the
   // server falls back to "Rättelse: <original description>"; supplying it lets

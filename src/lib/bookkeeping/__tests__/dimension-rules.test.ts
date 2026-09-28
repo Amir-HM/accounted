@@ -22,7 +22,11 @@ import {
   isDimensionValidationExemptSource,
   type AccountDimensionRule,
 } from '../dimension-rules'
-import { JournalEntrySourceTypeSchema } from '@/lib/api/schemas'
+import {
+  API_VOUCHER_SOURCE_TYPES,
+  DASHBOARD_VOUCHER_SOURCE_TYPES,
+  JournalEntrySourceTypeSchema,
+} from '@/lib/api/schemas'
 import {
   MANDATORY_DIMENSION_MISSING,
   MandatoryDimensionMissingError,
@@ -327,6 +331,24 @@ describe('dimension rule policy per source type', () => {
   it('exempts accrual dissolutions from rules, not only from registry validation', () => {
     expect(isDimensionRuleExemptSource('accrual')).toBe(true)
     expect(isDimensionValidationExemptSource('accrual')).toBe(true)
+  })
+
+  it('lets a caller claim no exemption through a generic voucher door beyond the documented label', () => {
+    // The caller-authorable labels of the generic create doors (v1 POST and
+    // batch-create, the dashboard route). A caller never picks a
+    // validation-exempt label, and the only rule-exempt one per door is the
+    // documented, truthful case: 'import' for replayed history over the API,
+    // 'vat_settlement' for the reviewed momsredovisning in the dashboard.
+    for (const doorTypes of [API_VOUCHER_SOURCE_TYPES, DASHBOARD_VOUCHER_SOURCE_TYPES]) {
+      for (const sourceType of doorTypes) {
+        expect(JournalEntrySourceTypeSchema.options, sourceType).toContain(sourceType)
+        expect(isDimensionValidationExemptSource(sourceType), sourceType).toBe(false)
+      }
+    }
+    expect(API_VOUCHER_SOURCE_TYPES.filter((t) => isDimensionRuleExemptSource(t))).toEqual(['import'])
+    expect(DASHBOARD_VOUCHER_SOURCE_TYPES.filter((t) => isDimensionRuleExemptSource(t))).toEqual([
+      'vat_settlement',
+    ])
   })
 
   it('keeps the registry-validation exemption a narrow subset of the rule exemption', () => {

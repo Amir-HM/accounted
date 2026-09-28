@@ -28,7 +28,7 @@ import { v1ErrorResponse, v1ErrorResponseFromCode, v1ValidationError } from '@/l
 import { readV1JsonBody } from '@/lib/api/v1/body'
 import { checkPeriodLock } from '@/lib/api/v1/check-period-lock'
 import { ownsFiscalPeriod } from '@/lib/api/v1/owns-fiscal-period'
-import { CreateJournalEntrySchema } from '@/lib/api/schemas'
+import { CreateApiJournalEntrySchema } from '@/lib/api/schemas'
 import { createDraftEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
@@ -255,6 +255,7 @@ registerEndpoint({
     'Every account_number must resolve in the company\'s chart of accounts: a standard BAS 2026 account that is not in the chart yet is added automatically, but a deactivated account, or a non-BAS number the chart does not contain, fails with ACCOUNTS_NOT_IN_CHART.',
     'voucher_series defaults to "A" if omitted. Must be a single uppercase letter.',
     'This creates a DRAFT only: call POST /{id}/commit to assign the voucher_number and post atomically, or DELETE /{id} to discard it. A draft left uncommitted blocks the year-end close (DRAFT_ENTRIES).',
+    'source_type is "manual" (the default) or "import" (history replayed from another system). Every other source type belongs to its own endpoint (invoices, supplier invoices, transactions, opening balances, VAT settlement, year-end) and is refused with 400 VALIDATION_ERROR.',
   ],
   example: {
     request: {
@@ -276,7 +277,7 @@ registerEndpoint({
   idempotent: true,
   reversible: true,
   dryRunSupported: true,
-  request: { body: CreateJournalEntrySchema },
+  request: { body: CreateApiJournalEntrySchema },
   response: { success: dataEnvelope(JournalEntryDetail) },
 })
 
@@ -287,7 +288,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
     if (!rawBodyResult.ok) return rawBodyResult.response
     const rawBody = rawBodyResult.body
 
-    const parsed = CreateJournalEntrySchema.safeParse(rawBody)
+    // source_type is limited to the caller-authorable labels: an engine-owned
+    // one would claim its dimension-policy exemption and a false source.
+    const parsed = CreateApiJournalEntrySchema.safeParse(rawBody)
     if (!parsed.success) return v1ValidationError(ctx, parsed.error)
     const input = parsed.data
 
