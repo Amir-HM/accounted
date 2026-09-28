@@ -88,6 +88,7 @@ describe('MCP tool errors (getStructuredError)', () => {
       'Verifikatet bokför en lönekörning och kan inte raderas. Använd Korrigera lönekörning (storno) på lönekörningen i stället.',
     )
     expect(structured.remediation?.description).toMatch(/salary-runs\/\{id\}\/correct/)
+    expect(structured.remediation?.tool).toBe('gnubok_correct_salary_run')
     expect(structured.retryable).toBe(false)
   })
 

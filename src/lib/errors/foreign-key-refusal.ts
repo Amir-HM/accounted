@@ -28,8 +28,9 @@
  *     periodisering starts from. Crediting the invoice cancels the schedule
  *     and reverses its upplösningar (cancelSchedulesForSource).
  *   - salary_runs_*_entry_id_fkey: the four verifikat a booked payroll run
- *     posts (2 refusals). The run's own storno (Korrigera lönekörning, v1
- *     POST /salary-runs/{id}/correct) reverses all of them together.
+ *     posts (2 refusals). The run's own storno (Korrigera lönekörning,
+ *     gnubok_correct_salary_run, v1 POST /salary-runs/{id}/correct)
+ *     reverses all of them together.
  * The draft payroll run DELETE (dashboard and v1):
  *   - salary_payment_files_salary_run_id_fkey: a run that went back to draft
  *     after its payment file was generated. The file is räkenskapsinformation
@@ -122,7 +123,8 @@ const PAYROLL_VOUCHER: MappedRefusal = {
   en: 'This voucher posts a payroll run and cannot be deleted. Use Correct payroll run (storno) on the payroll run instead.',
   remediation: {
     description:
-      "Correct the payroll run as a whole: POST /api/v1/companies/{companyId}/salary-runs/{id}/correct (Korrigera lönekörning in the dashboard) reverses all of the run's verifikat together. Do not reverse one of them on its own.",
+      "Correct the payroll run as a whole: gnubok_correct_salary_run, or POST /api/v1/companies/{companyId}/salary-runs/{id}/correct (Korrigera lönekörning in the dashboard), reverses all of the run's verifikat together. Do not reverse one of them on its own.",
+    tool: 'gnubok_correct_salary_run',
   },
 }
 const PAYROLL_RUN_WITH_PAYMENT_FILE: MappedRefusal = {
