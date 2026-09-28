@@ -183,7 +183,7 @@ describe('gnubok_agi_submit', () => {
     enqueue({ data: null }) // no agi_declarations row
     await expect(
       agiSubmit.execute({ salary_run_id: 'sr-1' }, 'company-1', 'user-1', supabase as never, { type: 'api_key' }),
-    ).rejects.toThrow(/AGI-underlag saknas/)
+    ).rejects.toMatchObject({ code: 'AGI_SUBMIT_NOT_GENERATED' })
   })
 })
 

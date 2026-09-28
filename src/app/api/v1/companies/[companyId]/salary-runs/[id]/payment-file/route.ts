@@ -35,6 +35,7 @@ import {
   buildSalaryPaymentFile,
   SALARY_PAYMENT_FILE_ALLOWED_STATUSES,
   SALARY_PAYMENT_FILE_FORMATS,
+  salaryPaymentFileRefusal,
   type SalaryPaymentFileError,
 } from '@/lib/salary/payment/build-payment-file'
 
@@ -121,59 +122,30 @@ registerEndpoint({
   response: { success: dataEnvelope(SalaryPaymentFile) },
 })
 
-/** Map the shared builder's outcome onto the structured-error catalogue. */
+/**
+ * Map the shared builder's outcome onto the structured-error catalogue. The
+ * code per failure is salaryPaymentFileRefusal's, which the MCP operation
+ * shares, so both doors answer the same code for the same state.
+ */
 function paymentFileError(result: SalaryPaymentFileError, ctx: ApiV1Context) {
   const base = { requestId: ctx.requestId }
-  switch (result.code) {
-    case 'RUN_NOT_FOUND':
-      return v1ErrorResponseFromCode('SALARY_RUN_NOT_FOUND', ctx.log, base)
-    case 'RUN_NOT_READY':
-      return v1ErrorResponseFromCode('SALARY_RUN_PAYMENT_FILE_NOT_READY', ctx.log, {
-        ...base,
-        details: result.details,
-      })
-    case 'COMPANY_NOT_FOUND':
-      return v1ErrorResponseFromCode('COMPANY_NOT_FOUND', ctx.log, base)
-    case 'SETTINGS_MISSING':
-    case 'IBAN_MISSING':
-    case 'BIC_MISSING':
-    case 'BANKGIRO_MISSING':
-    case 'BANKGIRO_INVALID':
-      return v1ErrorResponseFromCode('SALARY_RUN_PAYMENT_FILE_MISSING_BANK_DETAILS', ctx.log, {
-        ...base,
-        reason: result.code,
-        details: { format: result.format, problem: result.code.toLowerCase(), ...result.details },
-      })
-    case 'NO_EMPLOYEES':
-      return v1ErrorResponseFromCode('SALARY_RUN_NO_EMPLOYEES', ctx.log, base)
-    case 'EMPLOYEE_BANK_MISSING':
-      return v1ErrorResponseFromCode('SALARY_RUN_PAYMENT_FILE_EMPLOYEE_BANK_MISSING', ctx.log, {
-        ...base,
-        details: { format: result.format, ...result.details },
-      })
-    case 'EMPLOYEE_BANK_INVALID':
-      return v1ErrorResponseFromCode('SALARY_RUN_PAYMENT_FILE_EMPLOYEE_BANK_INVALID', ctx.log, {
-        ...base,
-        reason: String(result.details.message ?? ''),
-        details: { format: result.format, ...result.details },
-      })
-    case 'GENERATOR_FAILED':
-      return v1ErrorResponseFromCode('SALARY_RUN_PAYMENT_FILE_GENERATION_FAILED', ctx.log, {
-        ...base,
-        reason: String(result.details.message ?? ''),
-        details: { format: result.format, ...result.details },
-      })
-    case 'ARCHIVE_FAILED':
-      // The file is räkenskapsinformation and is never handed out
-      // unarchived: the archive INSERT failure is the response.
-      ctx.log.error('payment file archive failed; file withheld', {
-        format: result.format,
-        error: result.cause,
-      })
-      return v1ErrorResponse(result.cause, ctx.log, base)
-    case 'DB_ERROR':
-      return v1ErrorResponse(result.cause, ctx.log, base)
+  const refusal = salaryPaymentFileRefusal(result)
+  if (refusal) {
+    return v1ErrorResponseFromCode(refusal.code, ctx.log, {
+      ...base,
+      ...(refusal.reason !== undefined ? { reason: refusal.reason } : {}),
+      ...(refusal.details ? { details: refusal.details } : {}),
+    })
   }
+  if (result.code === 'ARCHIVE_FAILED') {
+    // The file is räkenskapsinformation and is never handed out
+    // unarchived: the archive INSERT failure is the response.
+    ctx.log.error('payment file archive failed; file withheld', {
+      format: result.format,
+      error: result.cause,
+    })
+  }
+  return v1ErrorResponse(result.cause, ctx.log, base)
 }
 
 export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string }> }>(
