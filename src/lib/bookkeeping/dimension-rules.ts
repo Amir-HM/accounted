@@ -4,10 +4,12 @@
  * (20260703200000), one per (account, dimension):
  *
  *   'required'  the account cannot be POSTED without a value → enforced by
- *               assertMandatoryDimensions at commitEntry and the bulk-book
- *               route pre-check. Drafts may be incomplete by design; storno/
- *               correction paths never pass through commitEntry, so history
- *               always reverses regardless of policy.
+ *               assertMandatoryDimensions at commitEntry and, for the
+ *               bulk_book_transactions RPC that bypasses the engine, by
+ *               enforceBulkBookDimensionPolicy in every bulk-book door
+ *               (lib/transactions/bulk-book.ts). Drafts may be incomplete by
+ *               design; storno/correction paths never pass through
+ *               commitEntry, so history always reverses regardless of policy.
  *   'default'   pre-applied to the line bag at draft creation when the key
  *               is absent (user-overridable).
  *   'fixed'     ALWAYS applied at draft creation (overwrites the caller's

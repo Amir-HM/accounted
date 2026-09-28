@@ -20,6 +20,7 @@ import { commitArkivProposeFact } from '@/lib/arkiv/facts/propose'
 import { parseEntityType, resolveCompanyEntityType } from '@/lib/company/entity-type'
 import { eventBus } from '@/lib/events'
 import { bulkBookMatchedInboxItems, categorizeMatchedTransaction } from '@/lib/transactions/categorize-core'
+import { enforceBulkBookDimensionPolicy } from '@/lib/transactions/bulk-book'
 import { explainVatTreatment, getVatRules, getPermittedVatRates } from '@/lib/invoices/vat-rules'
 import { syncDraftVatHeadersForCustomer } from '@/lib/invoices/sync-draft-vat-headers'
 import {
@@ -6927,11 +6928,12 @@ async function commitBulkBookTransactions(
   //   - `auth.uid()` resolves the caller; membership checked against
   //     `company_members.company_id = p_company_id`.
   // The MCP execute() handler additionally pre-checks tx ownership +
-  // JE ownership at stage time to surface clean errors. This commit
-  // handler is a thin pass-through by design.
+  // JE ownership at stage time to surface clean errors. The one rule this
+  // handler runs itself is the dimension policy, which the RPC does not:
+  // rules may have changed and a value may have been archived since staging.
   const txIds = params.tx_ids
   const existingJeId = (params.existing_journal_entry_id as string | null | undefined) ?? null
-  const newEntry = (params.new_entry as Record<string, unknown> | null | undefined) ?? null
+  let newEntry = (params.new_entry as Record<string, unknown> | null | undefined) ?? null
   if (!Array.isArray(txIds) || txIds.length === 0) {
     return { error: 'tx_ids is required (non-empty array)', status: 400 }
   }
@@ -6940,6 +6942,17 @@ async function commitBulkBookTransactions(
       error: 'Provide exactly one of existing_journal_entry_id or new_entry',
       status: 400,
     }
+  }
+  if (newEntry && Array.isArray(newEntry.lines) && newEntry.lines.length > 0) {
+    // Throws the typed MandatoryDimensionMissingError / DimensionValidationError;
+    // the dispatcher maps a BookkeepingError like every ledger executor's.
+    const lines = await enforceBulkBookDimensionPolicy(
+      supabase,
+      companyId,
+      newEntry.lines as Array<{ account_number: string; dimensions?: Record<string, string> }>,
+      log,
+    )
+    newEntry = { ...newEntry, lines }
   }
   const { data, error } = await supabase.rpc('bulk_book_transactions', {
     p_tx_ids: txIds,

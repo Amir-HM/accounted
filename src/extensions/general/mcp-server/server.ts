@@ -388,6 +388,7 @@ import { agentBookingFor, businessAccount, whyTextSv } from '@/lib/bookkeeping/p
 import { booksWithoutReview } from '@/lib/transactions/direct-booking'
 import { detectBookingDuplicate } from '@/lib/transactions/booking-duplicate-detection'
 import { buildDuplicateBookingClaim } from '@/lib/transactions/categorize-core'
+import { enforceBulkBookDimensionPolicy } from '@/lib/transactions/bulk-book'
 import { findDuplicatePaymentCandidatesForInvoice } from '@/lib/invoices/duplicate-payment-candidates'
 import {
   describeExplainingSet,
@@ -13051,13 +13052,18 @@ export const tools: McpTool[] = [
           ),
         )
         dimensionResolutions = resolutions
+        const resolvedLines = rawLines.map((l, i) => {
+          const { dimensions: _rawDimensions, ...rest } = l
+          const bag = bags[i]
+          return bag && Object.keys(bag).length > 0 ? { ...rest, dimensions: bag } : rest
+        }) as Array<{ account_number: string; dimensions?: Record<string, string> }>
+        // The dimension policy every bulk-book door runs (account rules
+        // applied and asserted, registry validation), so the staged lines and
+        // the approval card carry what the executor will post. The executor
+        // runs it again at commit.
         stagedNewEntry = {
           ...newEntry,
-          lines: rawLines.map((l, i) => {
-            const { dimensions: _rawDimensions, ...rest } = l
-            const bag = bags[i]
-            return bag && Object.keys(bag).length > 0 ? { ...rest, dimensions: bag } : rest
-          }),
+          lines: await enforceBulkBookDimensionPolicy(supabase, companyId, resolvedLines, log),
         }
       } else if (defaultDimensions) {
         throw new Error(
