@@ -59,6 +59,12 @@ The first stable release of the public REST API. Six phases of development cover
 - **Reference pages**: each endpoint section shows its query parameters, request body fields and response fields. New pages: Bank accounts (\`/cash-accounts\`, \`/bank-connections\`), Skatteverket (filed VAT declarations) and Health; company settings are on Companies, vacation-year close on Salary runs.
 - Documentation only: no request or response changed, and the API version date is unchanged.
 
+### Reports and journal entries: dimensions (2026-09)
+
+- **Line dimensions on journal-entry reads** (2026-09-28): \`GET /journal-entries/{id}\` and the \`POST /journal-entries\` response carry each line's \`dimensions\` (\`{"<dim_no>": "<code>"}\`, \`{}\` when untagged), so dimension 2, 7-9 and custom dimensions 20+ are visible; \`cost_center\` and \`project\` stay as mirrors of keys \`1\` and \`6\`. The dry-run preview echoes the bag the engine stores. \`PATCH /journal-entries/{id}\` (draft edit) answers \`dimensions\` on every line.
+- **Dimension filter on reports** (2026-09-28): \`GET /reports/income-statement\`, \`/reports/general-ledger\` and \`/reports/monthly-breakdown\` accept \`dim_no\` + \`dim_code\` (together) and then answer \`dimension_filter\` and \`partial_view\` (\`complete: false\`; on the general ledger \`opening_balances_included: false\`, every \`opening_balance\` is 0 under a filter). The trial balance and the statutory reports refuse the pair.
+- **Behaviour change:** every \`GET /reports/*\` endpoint and the årsredovisning reads under \`/fiscal-periods/{id}/arsredovisning\` answer \`400 VALIDATION_ERROR\` (\`unknown_params\` + \`allowed_params\` in details) to a query parameter they do not document. Before, all but four report routes silently ignored it, so a filter such as \`dim_no\` on the trial balance returned the unfiltered report.
+
 ### Reconciliation, account-keyed (2026-08)
 
 - **Accounts**: \`GET /reconciliation/accounts\` lists every account with an outside truth (bank accounts as \`bank:<cash_account_id>\`, the skattekonto as \`skattekonto\`) with status; \`GET .../accounts/{accountKey}\` is the bridge (outside balance, ledger, difference, unexplained, explanatory lines, counts, latest sign-off); \`GET .../accounts/{accountKey}/items\` the rows behind it, bucketed (proposed, unmatched_external, unmatched_ledger, matched, ignored, upcoming).
