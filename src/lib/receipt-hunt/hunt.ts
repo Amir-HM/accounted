@@ -680,7 +680,9 @@ async function harvestReceiptsFromMail(
   // useful size, and so one bad reply costs a chunk rather than the run.
   const documents: Awaited<ReturnType<typeof extractMailDocuments>> = []
   for (let i = 0; i < toReview.length; i += MAILS_PER_EXTRACTION_CALL) {
-    documents.push(...(await extractMailDocuments(toReview.slice(i, i + MAILS_PER_EXTRACTION_CALL))))
+    documents.push(
+      ...(await extractMailDocuments(toReview.slice(i, i + MAILS_PER_EXTRACTION_CALL), companyId)),
+    )
   }
   if (documents.length === 0) return summary
 

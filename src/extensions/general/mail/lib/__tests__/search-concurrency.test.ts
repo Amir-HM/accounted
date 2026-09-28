@@ -3,7 +3,7 @@
  *
  * The search fanned out one request per message id at once. Gmail answers 429
  * "Too many concurrent requests for user" to that, and the catch turned the
- * refusal into an empty result — which is indistinguishable from a mailbox that
+ * refusal into an empty result, which is indistinguishable from a mailbox that
  * genuinely holds nothing. A real run against two connections produced
  * `mails=25 documents=0`, and the client loop read the zero as "nothing left to
  * find" and stopped. The user was told there were no receipts by a search that

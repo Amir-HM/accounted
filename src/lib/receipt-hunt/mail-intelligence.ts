@@ -22,19 +22,20 @@
  * every other underlag, so mail and Underlag get one matcher rather than two.
  */
 import { z } from 'zod'
-import { createAiClient, toProviderModelId, type AiClient } from '@/lib/ai/provider'
+import { getAiService } from '@/lib/ai'
 import { createLogger } from '@/lib/logger'
 
 const log = createLogger('receipt-hunt-intelligence')
 
 /**
- * Overridable so ops can move the hunt off the default without a deploy.
+ * The AI service's reading tier, and the feature every call is metered under
+ * (ai_usage_events). Through the service rather than the SDK, so a pass over
+ * someone's mailbox shows up in what AI costs per company, and the tier's
+ * model follows AI_EXTRACTION_MODEL (legacy BEDROCK_MODEL_ID) like every other
+ * reading job.
  */
-const MODEL = toProviderModelId(
-  process.env.RECEIPT_HUNT_MODEL_ID ||
-    process.env.BEDROCK_MODEL_ID ||
-    'claude-sonnet-5'
-)
+const TIER = 'extraction' as const
+const METER_FEATURE = 'receipt_hunt_mail'
 
 export interface CandidateForReview {
   messageId: string
@@ -140,31 +141,6 @@ is_receipt=false och lämna resten null. Ta hellre med en osäker faktura än
 missa ett kvitto: en handling utan matchande belopp faller bort av sig själv
 senare.`
 
-function client(): AiClient {
-  return createAiClient()
-}
-
-async function ask(
-  system: string,
-  user: string,
-  toolName: string,
-  inputSchema: Record<string, unknown>,
-  maxTokens: number,
-): Promise<unknown> {
-  const response = await client().messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system,
-    tools: [
-      { name: toolName, description: 'Return the result in this exact shape.', input_schema: inputSchema as never },
-    ],
-    tool_choice: { type: 'tool', name: toolName },
-    messages: [{ role: 'user', content: user }],
-  })
-  const block = response.content.find((c) => c.type === 'tool_use')
-  if (!block || block.type !== 'tool_use') throw new Error('model did not use the tool')
-  return block.input
-}
 
 /** ISO date or nothing: a malformed date must not become a matching signal. */
 function cleanDate(value: string | null): string | null {
@@ -183,6 +159,8 @@ function cleanDate(value: string | null): string | null {
  */
 export async function extractMailDocuments(
   candidates: readonly CandidateForReview[],
+  /** The company whose mailboxes these are: what the call is metered to. */
+  companyId: string | null = null,
 ): Promise<MailReceipt[]> {
   if (candidates.length === 0) return []
 
@@ -203,14 +181,21 @@ export async function extractMailDocuments(
   }
 
   try {
-    const raw = await ask(
-      EXTRACT_SYSTEM,
-      JSON.stringify(payload, null, 1),
-      'documents_in_mail',
-      EXTRACT_TOOL,
-      8192,
-    )
-    const parsed = ExtractionSchema.parse(raw)
+    // Forced tool use on the Anthropic family, a JSON schema elsewhere; the
+    // answer is not trusted either way and goes through the parse below.
+    const { value } = await getAiService().generateStructured({
+      tier: TIER,
+      meter: { feature: METER_FEATURE, companyId },
+      system: EXTRACT_SYSTEM,
+      prompt: JSON.stringify(payload, null, 1),
+      maxTokens: 8192,
+      schema: {
+        name: 'documents_in_mail',
+        description: 'Return the result in this exact shape.',
+        jsonSchema: EXTRACT_TOOL,
+      },
+    })
+    const parsed = ExtractionSchema.parse(value)
 
     const out: MailReceipt[] = []
     for (const d of parsed.documents) {

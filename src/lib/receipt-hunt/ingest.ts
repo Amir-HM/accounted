@@ -8,11 +8,23 @@
  * The hunt does NOT book anything and does not link anything by itself: it
  * stores the receipt, records where it came from, and stages the pairing. The
  * document becomes räkenskapsinformation only when a human approves.
+ *
+ * The mail door enters the same pipe as the other doors. uploadDocument
+ * archives the bytes (deduplicated on content) and announces them, which
+ * queues the Arkiv read and classification like any upload; once Arkiv has
+ * typed the document, the invoice inbox routes this item exactly like an
+ * emailed one (route-from-arkiv.ts), and its sweep catches a deduplicated
+ * document Arkiv had typed before. Extraction is left to the default owner,
+ * the document-extraction extension, awaited inside uploadDocument: core
+ * cannot run the inbox's own extraction ('invoice-inbox' owner), and unlike a
+ * Peppol invoice ('none') a mail attachment carries no structured data. The
+ * item stays source 'mail_hunt', with the provenance in channel_context.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { uploadDocument } from '@/lib/core/documents/document-service'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { getMailSearchService, type MailCandidate } from '@/lib/mail-search/service'
+import { matchSupplierId, supplierIdentityFrom } from '@/lib/suppliers/match-supplier'
 import { createLogger } from '@/lib/logger'
 
 const log = createLogger('receipt-hunt-ingest')
@@ -235,8 +247,14 @@ export async function ingestMailCandidate(
         .select('extracted_data')
         .eq('id', document.id)
         .maybeSingle()
-      const extracted = (extractedRow as { extracted_data?: Record<string, unknown> } | null)
-        ?.extracted_data
+      const extracted = (extractedRow as { extracted_data?: Record<string, unknown> | null } | null)
+        ?.extracted_data ?? null
+
+      // The supplier match every other door runs (org number, VAT number,
+      // then name), so a hunted receipt arrives linked like an uploaded one.
+      const matchedSupplierId = extracted
+        ? await matchSupplierId(supabase, companyId, supplierIdentityFrom(extracted.supplier))
+        : null
 
       const { data: item, error } = await supabase
         .from('invoice_inbox_items')
@@ -249,7 +267,11 @@ export async function ingestMailCandidate(
           email_from: candidate.from,
           email_subject: candidate.subject,
           email_received_at: candidate.receivedAt,
-          extracted_data: extracted ?? null,
+          extracted_data: extracted,
+          // As the Arkiv door files it: no reading on the document means none
+          // on the item, and the inbox offers the manual path instead.
+          extraction_skipped: extracted == null,
+          matched_supplier_id: matchedSupplierId,
           channel_context: {
             ...buildChannelContext(candidate, attachmentId),
             ...(receiptIdentity ? { receipt_identity: receiptIdentity } : {}),
@@ -264,10 +286,38 @@ export async function ingestMailCandidate(
         if (error.code === '23505') return null
         throw new Error(error.message)
       }
+      const inboxItemId = (item as { id: string }).id
+
+      // Behandlingshistorik, like the other doors: when the underlag arrived
+      // and through which channel. Pseudonymous ids only, never the mailbox
+      // address (it stays on the item's channel_context). Best effort: a
+      // history outage must not undo a receipt already filed.
+      try {
+        await appendProcessingHistory({
+          companyId,
+          correlationId: crypto.randomUUID(),
+          aggregateType: 'Document',
+          aggregateId: document.id,
+          eventType: 'DocumentIngested',
+          payload: {
+            channel: 'mail_hunt',
+            document_id: document.id,
+            inbox_item_id: inboxItemId,
+            mime_type: document.mime_type ?? null,
+            size_bytes: fetched.bytes.byteLength,
+          },
+          actor: { type: 'system', id: 'receipt-hunt' },
+          occurredAt: new Date(),
+        })
+      } catch (histErr) {
+        log.warn('could not append DocumentIngested', {
+          error: histErr instanceof Error ? histErr.message : String(histErr),
+        })
+      }
 
       return {
         documentId: document.id,
-        inboxItemId: (item as { id: string }).id,
+        inboxItemId,
         fileName,
         mailbox: candidate.mailbox,
       }

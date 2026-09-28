@@ -7,16 +7,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockCreate = vi.fn()
-vi.mock('@/lib/ai/provider', () => ({
-  createAiClient: () => ({ messages: { create: (...args: unknown[]) => mockCreate(...args) } }),
-  toProviderModelId: (id: string) => id,
+vi.mock('@/lib/ai', () => ({
+  getAiService: () => ({ generateStructured: (...args: unknown[]) => mockCreate(...args) }),
 }))
 
 import { extractMailDocuments, type CandidateForReview } from '../mail-intelligence'
 
-/** A reply in the shape forced tool use produces. */
+/** A reply in the shape the AI service's structured call returns (unvalidated). */
 function toolReply(input: unknown) {
-  return { content: [{ type: 'tool_use', name: 'x', id: 'tu', input }] }
+  return {
+    value: input,
+    model: 'eu.anthropic.claude-sonnet-5',
+    usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: null, cacheReadInputTokens: null },
+  }
 }
 
 function candidate(overrides: Partial<CandidateForReview> = {}): CandidateForReview {
@@ -151,5 +154,19 @@ describe('extractMailDocuments', () => {
   it('does not call the model when there is nothing to read', async () => {
     await expect(extractMailDocuments([])).resolves.toEqual([])
     expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('goes through the metered AI service, labelled with the company it read for', async () => {
+    // A direct SDK call is invisible in ai_usage_events: a pass over someone's
+    // mailbox would cost money nobody could attribute.
+    mockCreate.mockResolvedValue(toolReply({ documents: [doc()] }))
+    await extractMailDocuments([candidate()], 'company-1')
+
+    const [request] = mockCreate.mock.calls[0] as [Record<string, unknown>]
+    expect(request).toMatchObject({
+      tier: 'extraction',
+      meter: { feature: 'receipt_hunt_mail', companyId: 'company-1' },
+      schema: expect.objectContaining({ name: 'documents_in_mail' }),
+    })
   })
 })

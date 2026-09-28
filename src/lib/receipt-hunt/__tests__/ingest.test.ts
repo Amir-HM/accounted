@@ -16,6 +16,12 @@ vi.mock('@/lib/processing-history/append', () => ({
   appendProcessingHistory: (...args: unknown[]) => mockAppendHistory(...args),
 }))
 
+const mockMatchSupplierId = vi.fn()
+vi.mock('@/lib/suppliers/match-supplier', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/suppliers/match-supplier')>()),
+  matchSupplierId: (...args: unknown[]) => mockMatchSupplierId(...args),
+}))
+
 const mockFetchAttachment = vi.fn()
 vi.mock('@/lib/mail-search/service', () => ({
   getMailSearchService: () => ({
@@ -47,6 +53,8 @@ function mockSupabase(
   existing: { id: string } | null,
   insertResult: { data?: unknown; error?: unknown } = {},
   laterInboxAnswers: Array<{ id: string } | null> = [],
+  /** What the extraction on upload left on the document row. */
+  extractedData: Record<string, unknown> | null = { total_amount: 425 },
 ) {
   const inboxQueue: Array<{ id: string } | null> = [existing, ...laterInboxAnswers]
   const inserted: Array<Record<string, unknown>> = []
@@ -57,7 +65,7 @@ function mockSupabase(
       chain.maybeSingle = vi.fn(() =>
         Promise.resolve(
           table === 'document_attachments'
-            ? { data: { extracted_data: { total_amount: 425 } }, error: null }
+            ? { data: { extracted_data: extractedData }, error: null }
             : { data: inboxQueue.length ? inboxQueue.shift() ?? null : null, error: null },
         ),
       )
@@ -82,7 +90,8 @@ function mockSupabase(
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
+  mockMatchSupplierId.mockResolvedValue(null)
+  mockUploadDocument.mockResolvedValue({ id: 'doc-1', mime_type: 'application/pdf' })
   mockFetchAttachment.mockResolvedValue({
     filename: 'kvitto.pdf',
     mimeType: 'application/pdf',
@@ -237,6 +246,74 @@ describe('ingestMailCandidate', () => {
     mockUploadDocument.mockRejectedValue(new Error('File content does not match'))
     const { client } = mockSupabase(null)
     await expect(ingestMailCandidate(client, 'co-1', 'user-1', candidate())).resolves.toBeNull()
+  })
+})
+
+/**
+ * The mail door files an underlag the way the other doors do: the same
+ * supplier match, the same "no reading" flag, the same behandlingshistorik
+ * entry, and the same upload options (the ones above).
+ */
+describe('ingestMailCandidate, like every other door', () => {
+  it('records the arrival in behandlingshistorik, pseudonymously', async () => {
+    const { client } = mockSupabase(null)
+    await ingestMailCandidate(client, 'co-1', 'user-1', candidate())
+
+    expect(mockAppendHistory).toHaveBeenCalledTimes(1)
+    const event = mockAppendHistory.mock.calls[0]![0] as {
+      eventType: string
+      aggregateId: string
+      actor: Record<string, unknown>
+      payload: Record<string, unknown>
+    }
+    expect(event.eventType).toBe('DocumentIngested')
+    expect(event.aggregateId).toBe('doc-1')
+    expect(event.actor).toEqual({ type: 'system', id: 'receipt-hunt' })
+    expect(event.payload).toMatchObject({
+      channel: 'mail_hunt',
+      document_id: 'doc-1',
+      inbox_item_id: 'item-1',
+      mime_type: 'application/pdf',
+    })
+    // Never the mailbox address: the payload contract is ids only.
+    expect(JSON.stringify(event.payload)).not.toContain('@')
+  })
+
+  it('keeps the receipt filed when the history append fails', async () => {
+    mockAppendHistory.mockRejectedValueOnce(new Error('history down'))
+    const { client, inserted } = mockSupabase(null)
+    const result = await ingestMailCandidate(client, 'co-1', 'user-1', candidate())
+    expect(result).toMatchObject({ inboxItemId: 'item-1' })
+    expect(inserted).toHaveLength(1)
+  })
+
+  it('links the supplier the reading names, as an upload would be', async () => {
+    mockMatchSupplierId.mockResolvedValue('supplier-7')
+    const { client, inserted } = mockSupabase(null, {}, [], {
+      supplier: { name: 'Circle K Sverige AB', orgNumber: '5560000000' },
+      totals: { total: 425 },
+    })
+
+    await ingestMailCandidate(client, 'co-1', 'user-1', candidate())
+
+    expect(mockMatchSupplierId).toHaveBeenCalledWith(
+      client,
+      'co-1',
+      expect.objectContaining({ name: 'Circle K Sverige AB', orgNumber: '5560000000' }),
+    )
+    expect(inserted[0].matched_supplier_id).toBe('supplier-7')
+    expect(inserted[0].extraction_skipped).toBe(false)
+  })
+
+  it('flags an item whose document was never read, instead of filing it as read', async () => {
+    const { client, inserted } = mockSupabase(null, {}, [], null)
+
+    await ingestMailCandidate(client, 'co-1', 'user-1', candidate())
+
+    expect(inserted[0].extracted_data).toBeNull()
+    expect(inserted[0].extraction_skipped).toBe(true)
+    expect(inserted[0].matched_supplier_id).toBeNull()
+    expect(mockMatchSupplierId).not.toHaveBeenCalled()
   })
 })
 
