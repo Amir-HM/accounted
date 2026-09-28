@@ -140,6 +140,9 @@ describe('withApiV1 report query gate', () => {
     expect(body.error.details.allowed_params).toEqual(['period_id', 'to_date'])
     expect(handler).not.toHaveBeenCalled()
     expect(externalReportGuard).not.toHaveBeenCalled()
+    // Stamped like any handler answer (the in-route refusals it replaces were).
+    expect(res.headers.get('X-Request-Id')).toMatch(/^req_/)
+    expect(res.headers.get('X-Robots-Tag')).toBe('noai, noimageai')
   })
 
   it('lets the registered parameters and the wrapper\'s own dry_run through', async () => {

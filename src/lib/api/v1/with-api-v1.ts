@@ -562,7 +562,9 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         const allowed = registeredQueryParams(getEndpointByConcretePath(request.method, path))
         if (allowed) {
           const known = await assertKnownQueryParams(request, allowed, { requestId, log: userLog })
-          if (!known.ok) return known.response
+          // Stamped like a handler's answer: the routes that refused in
+          // their handler before sent the wrapped security headers too.
+          if (!known.ok) return stampHeaders(known.response, requestId)
         }
       }
 
