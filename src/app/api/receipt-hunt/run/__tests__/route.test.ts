@@ -53,7 +53,7 @@ beforeEach(() => {
     candidates: 20,
     poolSize: 5,
     proposed: 2,
-    mail: { searched: 8, withCandidates: 3, ingested: 3, candidates: [] },
+    mail: { searchable: 20, searched: 8, withCandidates: 3, ingested: 3, candidates: [] },
   })
 })
 
@@ -100,13 +100,31 @@ describe('POST /api/receipt-hunt/run', () => {
     expect(body.data.remaining).toBe(12)
   })
 
+  it('never counts purchases the search does not look for as left', async () => {
+    // 30 purchases lack a receipt, but 10 are salary and tax runs, which no
+    // mailbox holds a receipt for and the search skips.
+    mockHuntCompany.mockResolvedValue({
+      companyId: 'co-1',
+      candidates: 30,
+      poolSize: 0,
+      proposed: 0,
+      mail: { searchable: 20, searched: 8, withCandidates: 0, ingested: 0, candidates: [] },
+    })
+    const response = await POST(createMockRequest('http://localhost/api/receipt-hunt/run'), undefined as never)
+    const { body } = await parseJsonResponse<{ data: { remaining: number; purchasesWithoutReceipt: number } }>(
+      response,
+    )
+    expect(body.data.remaining).toBe(12)
+    expect(body.data.purchasesWithoutReceipt).toBe(30)
+  })
+
   it('never reports negative work remaining', async () => {
     mockHuntCompany.mockResolvedValue({
       companyId: 'co-1',
       candidates: 3,
       poolSize: 0,
       proposed: 0,
-      mail: { searched: 8, withCandidates: 0, ingested: 0, candidates: [] },
+      mail: { searchable: 3, searched: 8, withCandidates: 0, ingested: 0, candidates: [] },
     })
     const response = await POST(createMockRequest('http://localhost/api/receipt-hunt/run'), undefined as never)
     const { body } = await parseJsonResponse<{ data: { remaining: number } }>(response)

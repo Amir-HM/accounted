@@ -82,6 +82,10 @@ export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) =
   })
 
   const searched = result.mail?.searched ?? 0
+  // Only purchases the search can look for at all: salary and tax runs, the
+  // largest rows on a real ledger, are never searched, so counting them as
+  // "left" promised a press work it would never do.
+  const searchable = result.mail?.searchable ?? 0
   const searchFailures = result.mail?.searchFailures ?? 0
   if (searchFailures > 0) {
     log.warn('manual receipt hunt: some mailboxes refused the search', {
@@ -106,7 +110,7 @@ export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) =
       searched,
       fetched: result.mail?.ingested ?? 0,
       proposed: result.proposed,
-      remaining: Math.max(0, result.candidates - searched),
+      remaining: Math.max(0, searchable - searched),
       // Non-zero means a mailbox could not be read. Zero fetched then means
       // "we could not look", not "there is nothing there", and the caller must
       // neither say the second nor treat the run as finished.

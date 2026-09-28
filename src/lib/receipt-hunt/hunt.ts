@@ -122,6 +122,12 @@ export interface HuntCompanyResult {
 }
 
 export interface MailHuntSummary {
+  /**
+   * Purchases the mailbox search can look for at all: not a salary or tax
+   * run (canHaveEmailReceipt), with an amount and a date. What is left after
+   * a pass is this minus `searched`, never the raw candidate count.
+   */
+  searchable: number
   /** Purchases whose merchant we searched the mailboxes for. */
   searched: number
   /** Documents the model judged to be an underlag. */
@@ -617,18 +623,26 @@ async function harvestReceiptsFromMail(
   maxMails: number,
 ): Promise<MailHuntSummary> {
   const service = getMailSearchService()
-  const summary: MailHuntSummary = { searched: 0, withCandidates: 0, ingested: 0, searchFailures: 0, candidates: [] }
+  const summary: MailHuntSummary = {
+    searchable: 0,
+    searched: 0,
+    withCandidates: 0,
+    ingested: 0,
+    searchFailures: 0,
+    candidates: [],
+  }
   if (!service.isConfigured() || purchases.length === 0) return summary
 
   // Salary and tax runs are a company's largest outgoing rows, so without this
   // they eat the whole search budget hunting receipts that cannot exist.
-  const searchable = [...purchases]
+  const eligible = [...purchases]
     .filter((t) => canHaveEmailReceipt(t.merchant_name || t.description))
-    .sort((a, b) => Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0))
-    .slice(0, limit)
     .filter((t): t is HuntTransaction & { amount: number; date: string } =>
       t.amount != null && Boolean(t.date),
     )
+    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+  summary.searchable = eligible.length
+  const searchable = eligible.slice(0, limit)
   if (searchable.length === 0) return summary
   summary.searched = searchable.length
 
