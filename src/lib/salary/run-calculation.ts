@@ -37,7 +37,12 @@ import {
   doubleBenefitAdjustmentWarning,
   resolveTaxableBenefits,
 } from './benefit-payments'
-import { loadPayrollConfig, serializePayrollConfig } from './payroll-config'
+import {
+  loadPayrollConfig,
+  PayrollConfigMissingError,
+  serializePayrollConfig,
+  type PayrollConfig,
+} from './payroll-config'
 import { fetchAllTaxTableRatesForRun, TaxTableUnavailableError } from './tax-tables'
 import { loadAndDeriveAbsence } from './derive-absence-line-items'
 import { monthWindow, runDeviationWindow } from './deviation-period'
@@ -160,8 +165,18 @@ export async function runSalaryCalculation(
 
   const paymentYear = parseInt(run.payment_date.split('-')[0])
 
-  // 2. Load year config.
-  const config = await loadPayrollConfig(supabase, paymentYear)
+  // 2. Load year config. A year without rates is a known state (the row ships
+  //    when the figures are official), reported by name like a missing tax
+  //    table; anything else is a real failure and propagates.
+  let config: PayrollConfig
+  try {
+    config = await loadPayrollConfig(supabase, paymentYear)
+  } catch (err) {
+    if (err instanceof PayrollConfigMissingError) {
+      return { ok: false, code: err.code, details: { paymentYear } }
+    }
+    throw err
+  }
 
   // 2b. Company-level öresavrundning toggle: round each net payout up to a
   //     whole krona (banks that reject öre in salary files). maybeSingle: a

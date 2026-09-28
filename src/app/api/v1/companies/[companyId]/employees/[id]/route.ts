@@ -14,7 +14,8 @@
  *          personnummer attribute on the master row: a future GDPR
  *          Art.17 erasure workflow could pseudonymise the row once all
  *          referenced verifikationer are outside the 7-year window.)
- *          Hard delete is never exposed from v1.
+ *          Hard delete is never exposed from v1. The rule lives in
+ *          lib/salary/employee-soft-delete.ts.
  */
 
 import { z } from 'zod'
@@ -38,6 +39,7 @@ import {
   validateEmployeeUpdate,
   type EmployeeUpdateIssue,
 } from '@/lib/salary/employee-update-rules'
+import { softDeleteEmployee } from '@/lib/salary/employee-soft-delete'
 
 const EmploymentType = z.enum(['employee', 'company_owner', 'board_member'])
 const SalaryType = z.enum(['monthly', 'hourly'])
@@ -455,41 +457,27 @@ export const DELETE = withApiV1<{ params: Promise<{ companyId: string; id: strin
       })
     }
 
-    const { data: existing, error: fetchErr } = await ctx.supabase
-      .from('employees')
-      .select('id, is_active')
-      .eq('company_id', ctx.companyId!)
-      .eq('id', idParse.data)
-      .maybeSingle()
-    if (fetchErr) {
-      return v1ErrorResponse(fetchErr, ctx.log, { requestId: ctx.requestId })
-    }
-    if (!existing) {
-      return v1ErrorResponseFromCode('EMPLOYEE_NOT_FOUND', ctx.log, { requestId: ctx.requestId })
+    // The rule (soft delete only, idempotent) lives in the service, shared
+    // with the MCP tool gnubok_delete_employee.
+    const result = await softDeleteEmployee(ctx.supabase, {
+      companyId: ctx.companyId!,
+      employeeId: idParse.data,
+      dryRun: ctx.dryRun,
+    })
+    if (!result.ok) {
+      return result.code === 'EMPLOYEE_NOT_FOUND'
+        ? v1ErrorResponseFromCode('EMPLOYEE_NOT_FOUND', ctx.log, { requestId: ctx.requestId })
+        : v1ErrorResponse(result.cause, ctx.log, { requestId: ctx.requestId })
     }
 
-    if (ctx.dryRun) {
+    if (!result.data.committed) {
       return dryRunPreview(
-        { ...(existing as object), is_active: false },
+        { id: result.data.employee.id, is_active: false },
         { requestId: ctx.requestId, log: ctx.log },
       )
     }
 
-    // Already inactive → no-op (idempotent).
-    if (!(existing as { is_active: boolean }).is_active) {
-      return noContent({ requestId: ctx.requestId })
-    }
-
-    const { error } = await ctx.supabase
-      .from('employees')
-      .update({ is_active: false })
-      .eq('company_id', ctx.companyId!)
-      .eq('id', idParse.data)
-
-    if (error) {
-      return v1ErrorResponse(error, ctx.log, { requestId: ctx.requestId })
-    }
-
+    // Deactivated now, or already inactive (idempotent): 204 either way.
     return noContent({ requestId: ctx.requestId })
   },
 )
