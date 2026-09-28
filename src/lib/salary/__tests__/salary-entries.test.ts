@@ -21,20 +21,54 @@ import {
 
 const mockedCreateEntry = vi.mocked(createJournalEntry)
 
-// Supabase mock only needs the chart_of_accounts existence check in
-// ensureSalaryAccountsExist: pretend every account already exists.
-function makeSupabase() {
+interface CashAccountFixture {
+  ledger_account: string
+  enabled: boolean
+  currency: string
+}
+
+/** A seeded company: 1930 Företagskonto, enabled SEK, primary. */
+const PRIMARY_1930: CashAccountFixture = { ledger_account: '1930', enabled: true, currency: 'SEK' }
+
+/**
+ * Supabase mock for the two reads createSalaryRunEntries makes:
+ *   - cash_accounts (resolvePrimaryBankAccount): the primary row, then, when
+ *     the primary cannot carry the payment, the enabled SEK candidates;
+ *   - chart_of_accounts (ensureSalaryAccountsExist): every account exists,
+ *     and the account numbers asked for are recorded in `ensured`.
+ * The default is a company whose bank account IS 1930, so every test written
+ * before issue #3097 keeps asserting the 1930 leg.
+ */
+function makeSupabase(
+  cash: { primary?: CashAccountFixture | null; enabledSek?: string[] } = { primary: PRIMARY_1930 },
+  ensured: string[] = [],
+) {
+  const cashChain = () => {
+    const chain = {
+      select: () => chain,
+      eq: () => chain,
+      maybeSingle: async () => ({ data: cash.primary ?? null, error: null }),
+      limit: async () => ({
+        data: (cash.enabledSek ?? []).map((ledger_account) => ({ ledger_account })),
+        error: null,
+      }),
+    }
+    return chain
+  }
   return {
-    from: vi.fn(() => ({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          in: vi.fn(async (_col: string, accounts: string[]) => ({
-            data: accounts.map((account_number) => ({ account_number })),
-            error: null,
+    from: vi.fn((table: string) => {
+      if (table === 'cash_accounts') return cashChain()
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            in: vi.fn(async (_col: string, accounts: string[]) => {
+              ensured.push(...accounts)
+              return { data: accounts.map((account_number) => ({ account_number })), error: null }
+            }),
           })),
         })),
-      })),
-    })),
+      }
+    }),
   } as never
 }
 
@@ -827,7 +861,7 @@ describe('salary entries: one line builder for booking and preview (feedback seq
         ],
       }),
     ])
-    const { salaryLines } = buildSalaryRunEntryLines(run, 'Lön 2026-06')
+    const { salaryLines } = buildSalaryRunEntryLines(run, 'Lön 2026-06', '1930')
     // The bilförmån raises the tax base, not the cost: no 7385 line, and no
     // orphan debit for the preview to be off by.
     expect(salaryLines.some((l) => l.account_number === '7385')).toBe(false)
@@ -841,7 +875,7 @@ describe('salary entries: one line builder for booking and preview (feedback seq
     const run = makeRun([
       makeEmployee({ line_items: [benefitCar], vacation_accrual: 1200, vacation_accrual_avgifter: 377.04 }),
     ])
-    const built = buildSalaryRunEntryLines(run, 'Lön 2026-06')
+    const built = buildSalaryRunEntryLines(run, 'Lön 2026-06', '1930')
     await createSalaryRunEntries(makeSupabase(), 'co-1', 'user-1', run)
     expect(mockedCreateEntry.mock.calls.map((c) => c[3].lines)).toEqual([
       built.salaryLines,
@@ -913,5 +947,63 @@ describe('salary entries: one line builder for booking and preview (feedback seq
       avgifter_amount_overridden: false,
       default_dimensions: undefined,
     })
+  })
+})
+
+// Issue #3097: the net pay left the company's real bank account (1931, the
+// primary) while the verifikat credited 1930, so the bank row could never be
+// matched and the voucher needed a storno.
+describe("salary entries: net pay on the company's own bank account", () => {
+  const run = () => makeRun([makeEmployee()])
+
+  it('credits the net pay on the primary cash account when it is not 1930', async () => {
+    const ensured: string[] = []
+    await createSalaryRunEntries(
+      makeSupabase({ primary: { ledger_account: '1931', enabled: true, currency: 'SEK' } }, ensured),
+      'company-1',
+      'user-1',
+      run(),
+    )
+    const salary = entryByDescription('Lön 2026-06')
+
+    expect(linesOn(salary, '1931')).toEqual([
+      expect.objectContaining({ debit_amount: 0, credit_amount: 23000, line_description: 'Lön 2026-06: Nettolön' }),
+    ])
+    expect(linesOn(salary, '1930')).toEqual([])
+    assertBalanced(salary)
+    // The chart check covers the account actually booked, not a constant 1930.
+    expect(ensured).toContain('1931')
+    expect(ensured).not.toContain('1930')
+    // No other entry of the run touches a bank account.
+    for (const call of mockedCreateEntry.mock.calls) {
+      if (call[3].description === 'Lön 2026-06') continue
+      expect(call[3].lines.some((l) => /^19/.test(l.account_number))).toBe(false)
+    }
+  })
+
+  it('never credits a disabled 1930: the only enabled SEK account carries the net pay', async () => {
+    // The reported shape: 1930 under "Avstängda bankkonton" and still flagged
+    // primary, the PSD2 account on 1931 enabled.
+    await createSalaryRunEntries(
+      makeSupabase({ primary: { ledger_account: '1930', enabled: false, currency: 'SEK' }, enabledSek: ['1931'] }),
+      'company-1',
+      'user-1',
+      run(),
+    )
+    const salary = entryByDescription('Lön 2026-06')
+    expect(linesOn(salary, '1931')[0].credit_amount).toBe(23000)
+    expect(linesOn(salary, '1930')).toEqual([])
+  })
+
+  it('keeps 1930 for a legacy company with no cash accounts at all', async () => {
+    await createSalaryRunEntries(makeSupabase({ primary: null, enabledSek: [] }), 'company-1', 'user-1', run())
+    expect(linesOn(entryByDescription('Lön 2026-06'), '1930')[0].credit_amount).toBe(23000)
+  })
+
+  it('the builder books the net pay on whatever account the caller resolved', () => {
+    const { salaryLines } = buildSalaryRunEntryLines(run(), 'Lön 2026-06', '1931')
+    expect(salaryLines.filter((l) => /^19/.test(l.account_number))).toEqual([
+      expect.objectContaining({ account_number: '1931', debit_amount: 0, credit_amount: 23000 }),
+    ])
   })
 })

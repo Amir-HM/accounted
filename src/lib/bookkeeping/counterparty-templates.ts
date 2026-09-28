@@ -5,7 +5,9 @@ import {
 } from '@/lib/documents/core-receipt-matcher'
 import {
   generateInputVatLine,
-  generateReverseChargeLines,
+  generateReverseChargePurchaseLines,
+  costAccountReportsRcBasis,
+  DEFAULT_REVERSE_CHARGE_KIND,
   getVatRate,
   isReverseChargeVatAccount,
 } from './vat-entries'
@@ -516,6 +518,22 @@ export function patternDirection(pattern: LinePatternEntry[]): TemplateDirection
 }
 
 /**
+ * The reverse-charge lines a legacy (single-pair) template replays: the
+ * complete set from generateReverseChargePurchaseLines, so a learned
+ * reverse-charge counterparty books the basis pair (ruta 20-24) too. The
+ * template stores no supplier country, so the basis lands on EU services
+ * (the mapping-rule default); a template whose business account is itself a
+ * basis account gets no pair.
+ */
+function learnedReverseChargeLines(tmpl: CategorizationTemplate, absAmount: number) {
+  return generateReverseChargePurchaseLines({
+    base: absAmount,
+    kind: DEFAULT_REVERSE_CHARGE_KIND,
+    basisBase: costAccountReportsRcBasis(tmpl.debit_account) ? 0 : absAmount,
+  })
+}
+
+/**
  * Convert a counterparty template match into a MappingResult
  * (same shape the mapping engine expects).
  *
@@ -566,8 +584,7 @@ export function buildMappingResultFromCounterpartyTemplate(
   const vatLines: VatJournalLine[] = []
   if (isExpense && vatTreatment) {
     if (vatTreatment === 'reverse_charge') {
-      const rcLines = generateReverseChargeLines(absAmount)
-      for (const rcl of rcLines) {
+      for (const rcl of learnedReverseChargeLines(tmpl, absAmount)) {
         vatLines.push({
           account_number: rcl.account_number,
           debit_amount: rcl.debit_amount,
@@ -620,7 +637,8 @@ export function buildMappingResultFromCounterpartyTemplate(
  * accounts swap sides; a refund of an expense also mirrors the VAT legs so
  * the moms follows the correction: deductible input VAT flips to a 2641
  * credit, and a reverse-charge credit note flips both fiktiv legs (credit
- * 2645 / debit 2614) so Ruta 30/48 net back to zero. Income-learned
+ * 2645 / debit 2614) and the basis pair (credit 45xx / debit 4598) so Ruta
+ * 20-24, 30 and 48 net back to zero. Income-learned
  * mismatches book gross; the entry is review-gated either way.
  */
 function buildLegacyMismatchResult(
@@ -634,7 +652,9 @@ function buildLegacyMismatchResult(
   const vatLines: VatJournalLine[] = []
   if (!isExpense && vatTreatment) {
     if (vatTreatment === 'reverse_charge') {
-      for (const rcl of generateReverseChargeLines(absAmount)) {
+      // Both pairs flip, so the refund also takes the basis back out of
+      // ruta 20-24, not only the moms out of ruta 30/48.
+      for (const rcl of learnedReverseChargeLines(tmpl, absAmount)) {
         vatLines.push({
           account_number: rcl.account_number,
           debit_amount: rcl.credit_amount,

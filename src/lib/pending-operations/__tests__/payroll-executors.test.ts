@@ -817,6 +817,73 @@ describe('commitPendingOperation: update_employee', () => {
     expect(result.data).toMatchObject({ employee_id: 'emp-1' })
   })
 
+  it('writes an explicit null so a cleared slutdatum reaches the row (#3008)', async () => {
+    const { encryptPersonnummer } = await import('@/lib/salary/personnummer')
+    const encrypted = encryptPersonnummer('190001010000')
+
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({
+      data: {
+        id: 'emp-1',
+        first_name: 'Anna',
+        last_name: 'Andersson',
+        personnummer: encrypted,
+        employment_start: '2024-01-15',
+        employment_end: '2026-06-30',
+        salary_type: 'monthly',
+        monthly_salary: 35000,
+        tax_table_number: 33,
+        is_sidoinkomst: false,
+        f_skatt_status: 'a_skatt',
+        vaxa_stod_eligible: false,
+        jamkning_percentage: null,
+        is_active: true,
+      },
+    }) // fetch existing
+    enqueue({
+      data: { id: 'emp-1', first_name: 'Anna', last_name: 'Andersson', personnummer: encrypted, is_active: true },
+    }) // update
+    enqueue({ data: null, error: null }) // finalize
+
+    const op = makePendingOp({
+      operation_type: 'update_employee',
+      params: { employee_id: 'emp-1', patch: { employment_end: null } },
+    })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(findCall('employees', 'update')).toEqual([{ employment_end: null }])
+  })
+
+  it('refuses clearing only one bank field on the merged row, with the bank sentence', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({
+      data: {
+        id: 'emp-1',
+        salary_type: 'monthly',
+        monthly_salary: 35000,
+        tax_table_number: 33,
+        is_sidoinkomst: false,
+        f_skatt_status: 'a_skatt',
+        vaxa_stod_eligible: false,
+        clearing_number: '6000',
+        bank_account_number: '12345678',
+      },
+    }) // fetch existing
+    enqueue({ data: null, error: null }) // finalize
+
+    const op = makePendingOp({
+      operation_type: 'update_employee',
+      params: { employee_id: 'emp-1', patch: { bank_account_number: null } },
+    })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).not.toBe('committed')
+    expect(result.error).toBe('Kontonummer krävs när clearingnummer har angetts')
+  })
+
   it('upserts opening balances atomically (set_employee_opening_balances)', async () => {
     const CURRENT_YEAR = new Date().getFullYear()
     const { supabase, enqueue } = createQueuedMockSupabase()

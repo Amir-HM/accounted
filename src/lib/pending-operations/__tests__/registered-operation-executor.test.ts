@@ -114,4 +114,26 @@ describe('commitPendingOperation: an operation from the registry', () => {
     expect(result.code).toBe('VALIDATION_ERROR')
     expect(supabase.rpc).not.toHaveBeenCalled()
   })
+  it('refuses at commit a sub-dimension whose parent left the registry after staging', async () => {
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // ensure rpc
+    enqueue({ data: [{ sie_dim_no: 1 }, { sie_dim_no: 6 }], error: null }) // taken: 30 is gone
+    enqueue({ data: null, error: null }) // dispatcher reject update
+
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp({ params: { name: 'Kampanj', parent_sie_dim_no: 30 } }),
+    )
+
+    // A 400 lands as 'failed' with the op closed as rejected (only 404/409 auto-reject).
+    expect(result.status).toBe('failed')
+    expect(result.operation_status).toBe('rejected')
+    expect(result.code).toBe('DIMENSION_PARENT_INVALID')
+    expect(result.http_status).toBe(400)
+    expect(result.error).toMatch(/Överordnad dimension 30/)
+    expect(findCall('dimensions', 'insert')).toBeUndefined()
+  })
 })

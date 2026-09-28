@@ -3544,7 +3544,30 @@ export const CreateEmployeeSchema = EmployeeSchemaBase.superRefine((data, ctx) =
 // (salary_type materializes as 'monthly' without monthly_salary present) and
 // (b) leak default values into routes that spread the parsed body into the
 // UPDATE (silently resetting e.g. is_sidoinkomst on unrelated edits).
+//
+// The update contract (#3008): an absent key leaves the column unchanged and
+// an explicit null clears it. Every column that is nullable in the database
+// accepts null here; before, only vacation_pay_rate and jämkning did, so an
+// emptied slutdatum (or email, bank account, ...) had no way to reach the
+// UPDATE and the stored value came back after save. NOT NULL columns keep
+// rejecting null. Cross-field rules on the merged row (a monthly employee
+// needs a salary, A-skatt needs a table, Växa-stöd needs a start date) are
+// checked by every door through lib/salary/employee-update-rules.ts.
 const EmployeeSchemaPatchBase = EmployeeSchemaBase.extend({
+  employment_end: EmployeeSchemaBase.shape.employment_end.nullable(),
+  monthly_salary: EmployeeSchemaBase.shape.monthly_salary.nullable(),
+  hourly_rate: EmployeeSchemaBase.shape.hourly_rate.nullable(),
+  tax_table_number: EmployeeSchemaBase.shape.tax_table_number.nullable(),
+  tax_municipality: EmployeeSchemaBase.shape.tax_municipality.nullable(),
+  clearing_number: EmployeeSchemaBase.shape.clearing_number.nullable(),
+  bank_account_number: EmployeeSchemaBase.shape.bank_account_number.nullable(),
+  email: EmployeeSchemaBase.shape.email.nullable(),
+  phone: EmployeeSchemaBase.shape.phone.nullable(),
+  address_line1: EmployeeSchemaBase.shape.address_line1.nullable(),
+  postal_code: EmployeeSchemaBase.shape.postal_code.nullable(),
+  city: EmployeeSchemaBase.shape.city.nullable(),
+  vaxa_stod_start: EmployeeSchemaBase.shape.vaxa_stod_start.nullable(),
+  vaxa_stod_end: EmployeeSchemaBase.shape.vaxa_stod_end.nullable(),
   employment_type: EmploymentTypeSchema,
   employment_degree: z.number().min(1).max(100),
   hours_per_week: z.number().positive().max(80),
@@ -3561,15 +3584,16 @@ const EmployeeSchemaPatchBase = EmployeeSchemaBase.extend({
 })
 
 export const UpdateEmployeeSchema = EmployeeSchemaPatchBase.partial().superRefine((data, ctx) => {
-  // Only validate salary when salary_type is being changed in this update
-  if (data.salary_type === 'monthly' && data.monthly_salary !== undefined && data.monthly_salary <= 0) {
+  // Only validate salary when salary_type is being changed in this update.
+  // A null amount (clear) counts as missing: the new salary type needs one.
+  if (data.salary_type === 'monthly' && data.monthly_salary !== undefined && (data.monthly_salary ?? 0) <= 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Månadslön måste vara större än 0 för månadslöneform',
       path: ['monthly_salary'],
     })
   }
-  if (data.salary_type === 'hourly' && data.hourly_rate !== undefined && data.hourly_rate <= 0) {
+  if (data.salary_type === 'hourly' && data.hourly_rate !== undefined && (data.hourly_rate ?? 0) <= 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Timlön måste vara större än 0 för timlöneform',
@@ -3594,17 +3618,15 @@ export const UpdateEmployeeSchema = EmployeeSchemaPatchBase.partial().superRefin
   }
 
   // Växa-stöd schema-level consistency check. The schema can only see what
-  // the PATCH body carries; the route layer is responsible for merged-
-  // state validation (i.e. an existing employee with vaxa_stod_start
-  // already set can have vaxa_stod_eligible flipped on without also
-  // sending start in the body). What the schema CAN enforce:
+  // the PATCH body carries; merged-state validation (an existing employee
+  // with vaxa_stod_start already set can have vaxa_stod_eligible flipped on
+  // without also sending start in the body, or have start cleared while the
+  // stored flag stays on) is lib/salary/employee-update-rules.ts, run by
+  // every door. What the schema CAN enforce:
   //   - If the body enables vaxa_stod AND clears vaxa_stod_start explicitly
   //     (sending null), reject: that would orphan the eligibility flag.
-  //   - If the body sets vaxa_stod_eligible=true AND vaxa_stod_start is
-  //     present in the body but invalid relative to vaxa_stod_end, reject.
-  // The first case isn't currently expressible via .partial() (null != absent),
-  // so the practical schema-level check is the second one. The route
-  // layer will add a merged-state check when needed.
+  //   - If both dates are in the body, the end may not precede the start
+  //     (a null date skips the ordering check).
   if (
     data.vaxa_stod_eligible === true &&
     'vaxa_stod_start' in data &&
