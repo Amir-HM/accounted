@@ -11807,9 +11807,18 @@ export const tools: McpTool[] = [
       // reads (lib/invoices/batch-allocation-preview.ts mirrors the migration).
       // An API review flow approves konto, debet, kredit and date, not a
       // count; the /pending card renders the same rows (GenericPreview picks
-      // up any kontering-shaped array in preview_data).
+      // up any kontering-shaped array in preview_data). The bank leg is the
+      // row's own cash account, as the RPC books it (issue #3097).
+      const bankAccount = await resolveSettlementAccount(
+        supabase,
+        companyId,
+        transaction.cash_account_id,
+        log,
+        transaction.currency ?? 'SEK',
+      )
       const expected = buildBatchAllocationPreview({
         transaction: { amount: transaction.amount, currency: transaction.currency, date: transaction.date },
+        bankAccount,
         allocations,
         invoices: previewInvoices,
       })
