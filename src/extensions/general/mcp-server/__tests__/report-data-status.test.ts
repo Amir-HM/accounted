@@ -108,9 +108,34 @@ describe('report tools carry data_status', () => {
   })
 
   it('gnubok_get_kpi_report: status over the whole period', async () => {
-    // One extra slot: the paid-invoices read for avg_payment_days.
-    const { result, supabase } = await run('gnubok_get_kpi_report', { period_id: 'fp-1' }, 1)
+    // Extra slots: the KPI account overrides and the paid-invoices read.
+    const { result, supabase } = await run('gnubok_get_kpi_report', { period_id: 'fp-1' }, 2)
     expect(buildReportDataStatus).toHaveBeenCalledWith(supabase, 'company-1', { periodId: 'fp-1' })
+    expect(result.data_status).toEqual(STATUS)
+  })
+
+  it('gnubok_get_kpi_report: status over the from/to range the figures cover', async () => {
+    const { result, supabase } = await run(
+      'gnubok_get_kpi_report',
+      { period_id: 'fp-1', from_date: '2026-03-01', to_date: '2026-03-31' },
+      2,
+    )
+    expect(buildReportDataStatus).toHaveBeenCalledWith(supabase, 'company-1', {
+      periodId: 'fp-1',
+      fromDate: '2026-03-01',
+      toDate: '2026-03-31',
+    })
+    expect(result.data_status).toEqual(STATUS)
+  })
+
+  it('gnubok_get_kpi_report: a metrics filter keeps data_status', async () => {
+    const { result } = await run(
+      'gnubok_get_kpi_report',
+      { period_id: 'fp-1', metrics: ['cash_position'] },
+      2,
+    )
+    expect(result).toHaveProperty('cash_position')
+    expect(result).not.toHaveProperty('gross_margin')
     expect(result.data_status).toEqual(STATUS)
   })
 
