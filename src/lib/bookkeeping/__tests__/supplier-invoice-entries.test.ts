@@ -38,30 +38,14 @@ vi.mock('../currency-utils', () => ({
   ),
 }))
 
-// Mock vat-entries: keep the real pure helpers (resolveReverseChargeRate,
-// isReverseChargeBasisAccount, RC_BASIS_ACCOUNTS) and stub only the two
-// line-builders with simplified logic the assertions below rely on.
+// Mock vat-entries: keep the real helpers, including the complete
+// reverse-charge set (generateReverseChargePurchaseLines) the registration and
+// cash entries book, and stub only the basis-pair builder the credit note
+// mirrors, with simplified logic the assertions below rely on.
 vi.mock('../vat-entries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../vat-entries')>()
   return {
     ...actual,
-    generateReverseChargeLines: vi.fn().mockImplementation(
-    (baseAmount: number, vatRate: number = 0.25, isDomestic: boolean = false) => {
-      const vatAmount = Math.round(baseAmount * vatRate * 100) / 100
-      const inputAccount = isDomestic ? '2647' : '2645'
-      let outputAccount: string
-      switch (vatRate) {
-        case 0.12: outputAccount = '2624'; break
-        case 0.06: outputAccount = '2634'; break
-        default: outputAccount = '2614'; break
-      }
-      const context = isDomestic ? 'omvänd skattskyldighet i Sverige' : 'omvänd skattskyldighet'
-      return [
-        { account_number: inputAccount, debit_amount: vatAmount, credit_amount: 0, line_description: `Fiktiv ingående moms ${vatRate * 100}% (${context})` },
-        { account_number: outputAccount, debit_amount: 0, credit_amount: vatAmount, line_description: `Fiktiv utgående moms ${vatRate * 100}% (${context})` },
-      ]
-    }
-  ),
   generateReverseChargeBasisLines: vi.fn().mockImplementation(
     (baseAmount: number, vatRate: number = 0.25, supplierType: 'eu_business' | 'non_eu_business' | 'swedish_business') => {
       if (baseAmount <= 0) return []

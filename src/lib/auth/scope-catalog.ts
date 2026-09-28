@@ -208,6 +208,14 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_list_companies:                  'companies:read',
   gnubok_create_company:                  'companies:write',
   gnubok_lookup_company:                  'companies:read',
+  // Multi-company (one connection, every company): the scoped read tools
+  // need companies:read for the scope itself; run_across_companies then
+  // checks the inner tool's own scope per call, and stage_across_companies
+  // requires the inner write tool's scope on top of this one.
+  gnubok_client_overview:                 'companies:read',
+  gnubok_portfolio_readiness:             'reports:read',
+  gnubok_run_across_companies:            'companies:read',
+  gnubok_stage_across_companies:          'companies:read',
   gnubok_connect_bank:                    'companies:read',
   gnubok_sync_bank:                       'transactions:write',
   gnubok_connect_skatteverket:            'companies:read',
@@ -280,6 +288,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_get_vat_report:                  'reports:read',
   gnubok_vat_review_widget:               'reports:read',
   gnubok_vat_close_check:                 'reports:read',
+  gnubok_list_vat_filings:                'reports:read',
   gnubok_get_kpi_report:                  'reports:read',
   gnubok_get_income_statement:            'reports:read',
   gnubok_list_accounts:                   'reports:read',
@@ -338,6 +347,8 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_get_bokslutsbilagor: 'reports:read',
   gnubok_get_vat_settlement_proposal: 'reports:read',
   gnubok_book_vat_settlement: 'bookkeeping:write',
+  gnubok_mark_vat_period_filed: 'bookkeeping:write',
+  gnubok_unmark_vat_period_filed: 'bookkeeping:write',
   // Operation registry, wave 2: booking, payment files, utlägg, payroll.
   gnubok_send_payslips: 'payroll:write',
   gnubok_revert_salary_run: 'payroll:write',

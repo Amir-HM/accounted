@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { communitySlug, githubNewFileUrl, isReservedCommunitySlug, parseCommunitySkillMd, privacyFindings, publicBody, toCommunitySkillMd } from '../community-repo'
+import { communitySlug, detectConnections, githubNewFileUrl, isReservedCommunitySlug, parseCommunitySkillMd, privacyFindings, publicBody, toCommunitySkillMd } from '../community-repo'
 
 const submission = {
   slug: 'manadsavstamning-bank', title: 'Månadsavstämning av banken', description: 'Stämmer av bankkontot varje månad.',
@@ -51,5 +51,20 @@ describe('community-repo', () => {
   it('opens GitHub\'s editor with the file, or hands over when it is too long', () => {
     expect(githubNewFileUrl('x', 'short')).toBe('https://github.com/erp-mafia/accounted-skills/new/main?filename=community%2Fx%2FSKILL.md&value=short')
     expect(githubNewFileUrl('x', 'å'.repeat(5000))).toBeNull()
+  })
+
+  it('guesses what an instruction touches from its words, tool names included', () => {
+    expect(detectConnections('Sök kvittot i Gmail och matcha mot banktransaktionen.')).toEqual(['gmail', 'bank'])
+    expect(detectConnections('Anropa gmail_search_threads för varje verifikat.')).toEqual(['gmail'])
+    expect(detectConnections('Läs inkorgen och skicka ett mejl till kunden.')).toEqual(['mail'])
+    expect(detectConnections('Stäm av skattekontot innan momsdeklarationen.')).toEqual(['skatteverket'])
+    expect(detectConnections('Föreslå konto för varje rad i huvudboken. Ingen email.')).toEqual([])
+  })
+
+  it('writes the guessed connections into the file the reviewer opens, and leaves them out when there are none', () => {
+    const touching = toCommunitySkillMd({ ...submission, body: '# Kvitton\n\nSök i Gmail och koppla till banktransaktionen.' })
+    expect(touching).toContain('connections:\n  - gmail\n  - bank\n')
+    expect(parseCommunitySkillMd(submission.slug, touching)).not.toHaveProperty('error')
+    expect(toCommunitySkillMd({ ...submission, title: 'Kontoplanen', description: 'Följer BAS.', body: '# Regler\n\nFölj BAS-kontoplanen.' })).not.toContain('connections:')
   })
 })

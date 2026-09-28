@@ -125,6 +125,11 @@ function buildInvoiceDescription(
  * rate+account but different tags stay on separate lines. VAT lines carry
  * the default only (the VAT account is a function of the treatment, never of
  * a specific item).
+ *
+ * options.goodsDeliveryCountry (#2906): the invoice's delivery_country. The
+ * zero-rated reverse_charge / export lines of an invoice that stated a goods
+ * delivery abroad book the goods accounts (3108 / 3105, rutor 35 / 36)
+ * instead of the services ones (getRevenueAccount).
  */
 function generatePerRateLines(
   items: InvoiceItem[],
@@ -133,8 +138,9 @@ function generatePerRateLines(
   invoiceTagText: string,
   currency?: string | null,
   exchangeRate?: number | null,
-  options?: { deferAccruals?: boolean; defaultDimensions?: LineDimensions }
+  options?: { deferAccruals?: boolean; defaultDimensions?: LineDimensions; goodsDeliveryCountry?: string | null }
 ): CreateJournalEntryLineInput[] {
+  const goodsDeliveryCountry = options?.goodsDeliveryCountry ?? null
   const lines: CreateJournalEntryLineInput[] = []
   const isForeign = currency != null && currency !== 'SEK'
 
@@ -155,7 +161,7 @@ function generatePerRateLines(
     // Legacy fallback: single rate from invoice level. All items collapse
     // into one revenue line, so only the invoice default can apply here:
     // legacy rows predate per-item tagging anyway.
-    const revenueAccount = getRevenueAccount(invoiceVatTreatment, entityType)
+    const revenueAccount = getRevenueAccount(invoiceVatTreatment, entityType, goodsDeliveryCountry)
     const subtotal = items.reduce((sum, item) => sum + item.line_total, 0)
     const subtotalSek = toSek(subtotal)
     lines.push({
@@ -216,13 +222,14 @@ function generatePerRateLines(
     const treatment = rate === 0 && (invoiceVatTreatment === 'reverse_charge' || invoiceVatTreatment === 'export')
       ? invoiceVatTreatment
       : getVatTreatmentForRate(rate)
-    // reverse_charge / export force the statutory revenue account (3308/3305);
-    // a per-line override only applies to ordinary domestic rates so EU/export
-    // sales keep landing in the right VAT-declaration ruta.
+    // reverse_charge / export force the statutory revenue account (3308/3305,
+    // or 3108/3105 for goods delivered abroad); a per-line override only
+    // applies to ordinary domestic rates so EU/export sales keep landing in
+    // the right VAT-declaration ruta.
     const isSpecialTreatment = treatment === 'reverse_charge' || treatment === 'export'
     const plAccount = !isSpecialTreatment && item.revenue_account
       ? item.revenue_account
-      : getRevenueAccount(treatment, entityType)
+      : getRevenueAccount(treatment, entityType, goodsDeliveryCountry)
     // Periodiserade lines credit the 29xx interim account (förutbetalda
     // intäkter) instead of revenue; the schedule dissolves it monthly. Output
     // VAT below is untouched. Moms is never deferred. Special treatments are
@@ -459,13 +466,13 @@ export async function buildInvoiceJournalEntryInput(
       invoice.currency, invoice.exchange_rate,
       // Schedules are created right after this entry commits (send/mark-sent
       // flows), so deferring to 29xx here is safe.
-      { deferAccruals: true, defaultDimensions }
+      { deferAccruals: true, defaultDimensions, goodsDeliveryCountry: invoice.delivery_country }
     ))
   } else {
     // Fallback: no items available, use invoice-level amounts. Strict
     // conversion: a rate-less foreign header must refuse exactly like the
     // item-driven path, not post the raw foreign number as kronor.
-    const revenueAccount = getRevenueAccount(invoice.vat_treatment, entityType)
+    const revenueAccount = getRevenueAccount(invoice.vat_treatment, entityType, invoice.delivery_country)
     const subtotalSek = headerToSekOrThrow(invoice.subtotal, invoice.subtotal_sek, invoice.currency, invoice.exchange_rate)
 
     creditLines.push({
@@ -765,8 +772,9 @@ export async function createCreditNoteJournalEntry(
       creditNote.currency, creditNote.exchange_rate,
       // Credit-note items carry the original's accrual fields so the reversal
       // hits the same 29xx interim account; the original's schedule is
-      // cancelled/stornoed by the credit flow.
-      { deferAccruals: true, defaultDimensions }
+      // cancelled/stornoed by the credit flow. delivery_country is copied
+      // from the original too, so goods revenue reverses on 3105 / 3108.
+      { deferAccruals: true, defaultDimensions, goodsDeliveryCountry: creditNote.delivery_country }
     )
     // Every caller hands us items negated with -Math.abs (build-credit-note-
     // item.ts), so generatePerRateLines lands every line on the debit side
@@ -787,7 +795,7 @@ export async function createCreditNoteJournalEntry(
     // Fallback: invoice-level amounts. Same strict conversion as the
     // createInvoiceJournalEntry fallback: a rate-less foreign credit note
     // must refuse, not reverse the receivable with a mislabelled number.
-    const revenueAccount = getRevenueAccount(creditNote.vat_treatment, entityType)
+    const revenueAccount = getRevenueAccount(creditNote.vat_treatment, entityType, creditNote.delivery_country)
     const absSubtotal = Math.abs(headerToSekOrThrow(creditNote.subtotal, creditNote.subtotal_sek, creditNote.currency, creditNote.exchange_rate))
     const absVat = Math.abs(headerToSekOrThrow(creditNote.vat_amount, creditNote.vat_amount_sek, creditNote.currency, creditNote.exchange_rate))
 
@@ -892,12 +900,12 @@ export async function createInvoiceCashEntry(
     creditLines.push(...generatePerRateLines(
       invoice.items, invoice.vat_treatment, entityType, tag,
       invoice.currency, invoice.exchange_rate,
-      { defaultDimensions }
+      { defaultDimensions, goodsDeliveryCountry: invoice.delivery_country }
     ))
   } else {
     // Fallback: invoice-level amounts. Strict conversion, same rationale as
     // the createInvoiceJournalEntry fallback above.
-    const revenueAccount = getRevenueAccount(invoice.vat_treatment, entityType)
+    const revenueAccount = getRevenueAccount(invoice.vat_treatment, entityType, invoice.delivery_country)
     const subtotalSek = headerToSekOrThrow(invoice.subtotal, invoice.subtotal_sek, invoice.currency, invoice.exchange_rate)
 
     creditLines.push({

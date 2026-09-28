@@ -62,8 +62,28 @@ export interface CommunitySubmission {
   submissionId: string
 }
 
+/** What a shared instruction touches, shown on its post image on accounted.se. */
+export const COMMUNITY_CONNECTIONS = ['gmail', 'mail', 'bank', 'skatteverket'] as const
+export type CommunityConnection = (typeof COMMUNITY_CONNECTIONS)[number]
+
+/**
+ * A first guess at what an instruction touches, from its words. It lands in
+ * the file the reviewer opens on GitHub, where they correct it before the
+ * merge; a wrong guess only mislabels the picture, it changes no access.
+ */
+export function detectConnections(body: string): CommunityConnection[] {
+  const found: CommunityConnection[] = []
+  const gmail = /gmail/i.test(body)
+  if (gmail) found.push('gmail')
+  if (!gmail && /\b(e-?post|mejl\w*|mail\w*|inkorg\w*|outlook)\b/i.test(body)) found.push('mail')
+  if (/bank|kontoutdrag/i.test(body)) found.push('bank')
+  if (/skatteverket|skattekonto\w*|momsdeklaration\w*|arbetsgivardeklaration\w*|\bagi\b/i.test(body)) found.push('skatteverket')
+  return found
+}
+
 /** The SKILL.md a reviewer opens as a pull request for a submission. */
 export function toCommunitySkillMd(s: CommunitySubmission): string {
+  const connections = detectConnections(`${s.title}\n${s.description}\n${s.body}`)
   const frontmatter = yaml.dump({
     name: s.slug,
     description: s.description,
@@ -71,6 +91,7 @@ export function toCommunitySkillMd(s: CommunitySubmission): string {
     kind: REPO_KIND[s.kind],
     author: s.author,
     industries: [],
+    ...(connections.length > 0 ? { connections } : {}),
     language: 'sv',
     submission: s.submissionId,
   }, { lineWidth: -1 })

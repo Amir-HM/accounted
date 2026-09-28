@@ -90,9 +90,9 @@ Ask one explicit question: "Stämmer beloppen? När jag bokför skapas ett verif
 
 ### Step 7: Book
 
-\`gnubok_book_salary_run({ salary_run_id })\` stages the booking; every employee must be calculated first. The approval is high risk and needs \`confirmed: true\` on \`gnubok_approve_pending_operation\` (or the user approves in Granskning). On commit the run becomes booked and the lön verifikat is posted: salary cost 7210 (7220 for company owners), withheld tax 2710, avgifter 7510 against 2731, vacation accrual to 2920 and 2940, net pay against 1930.
+\`gnubok_book_salary_run({ salary_run_id })\` stages the booking; every employee must be calculated first. The approval is high risk and needs \`confirmed: true\` on \`gnubok_approve_pending_operation\` (or the user approves in Granskning). On commit the run becomes booked and the lön verifikat is posted: salary cost 7210 (7220 for company owners), withheld tax 2710, avgifter 7510 against 2731, vacation accrual to 2920 and 2940, net pay against the company's bank account (the ledger account of its primary cash account, 1930 unless the company moved it).
 
-That verifikat already credits 1930 and books the tax and avgift liabilities. When the bank payment and the skattekonto draw show up, they are matched against it, never booked a second time (\`bank-reconciliation\`).
+That verifikat already credits the bank account and books the tax and avgift liabilities. When the bank payment and the skattekonto draw show up, they are matched against it, never booked a second time (\`bank-reconciliation\`).
 
 ### Step 8: AGI
 

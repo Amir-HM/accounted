@@ -1,8 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   generateInputVatLine,
-  generateReverseChargeLines,
-  generateReverseChargeBasisLines,
+  generateReverseChargePurchaseLines,
+  costAccountReportsRcBasis,
+  DEFAULT_REVERSE_CHARGE_KIND,
 } from './vat-entries'
 // Aliased: this file already has a local resolveSekAmountOrNull(transaction)
 // for account-selection decisions, which refuses when unconvertible.
@@ -379,13 +380,17 @@ function buildResult(
   const vatLines: VatJournalLine[] = []
   if (isExpense && !rule.default_private && vatTreatment) {
     if (vatTreatment === 'reverse_charge') {
-      // Reverse charge: emit BOTH the fiktiv-moms pair (2645/2614) AND the
-      // basbelopp pair (44xx|45xx / 4598). The basbelopp pair populates
-      // momsdeklaration rutor 20-24; without it Skatteverket rejects with
-      // FK004. Mapping rules don't carry supplier-country today, so we
-      // default to EU services: the most common reverse-charge scenario.
-      const rcRate = 0.25
-      const rcLines = generateReverseChargeLines(absSekAmount, rcRate, false)
+      // Reverse charge: the complete set, fiktiv moms (2645/2614) AND the
+      // basbelopp pair (44xx|45xx / 4598) for rutor 20-24 (FK004 without it).
+      // Mapping rules don't carry supplier-country today, so we default to EU
+      // services: the most common reverse-charge scenario. A rule that already
+      // books to a basis account gets no pair (it would double-count).
+      const rcLines = generateReverseChargePurchaseLines({
+        base: absSekAmount,
+        rate: 0.25,
+        kind: DEFAULT_REVERSE_CHARGE_KIND,
+        basisBase: costAccountReportsRcBasis(debitAccount) ? 0 : absSekAmount,
+      })
       for (const rcl of rcLines) {
         vatLines.push({
           account_number: rcl.account_number,
@@ -393,19 +398,6 @@ function buildResult(
           credit_amount: rcl.credit_amount,
           description: rcl.line_description || '',
         })
-      }
-
-      // Skip basbelopp emission if the rule already books to a basis account.
-      if (!/^4[45]\d{2}$/.test(debitAccount)) {
-        const basisLines = generateReverseChargeBasisLines(absSekAmount, rcRate, 'eu_business')
-        for (const bl of basisLines) {
-          vatLines.push({
-            account_number: bl.account_number,
-            debit_amount: bl.debit_amount,
-            credit_amount: bl.credit_amount,
-            description: bl.line_description || '',
-          })
-        }
       }
     } else if (vatTreatment === 'standard_25' || vatTreatment === 'reduced_12' || vatTreatment === 'reduced_6') {
       const vatRate =

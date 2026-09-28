@@ -30,6 +30,7 @@ import { readV1JsonBody } from '@/lib/api/v1/body'
 import { checkPeriodLock } from '@/lib/api/v1/check-period-lock'
 import { CategorizeTransactionSchema } from '@/lib/api/schemas'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
+import { reconcileRcBasisWithCostAccount } from '@/lib/bookkeeping/account-override'
 import {
   getTemplateById,
   buildMappingResultFromTemplate,
@@ -273,7 +274,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     ) {
       const { data: accountExists } = await ctx.supabase
         .from('chart_of_accounts')
-        .select('account_number, account_class')
+        .select('account_number, account_class, default_vat_treatment')
         .eq('company_id', ctx.companyId!)
         .eq('account_number', body.account_override)
         .eq('is_active', true)
@@ -300,6 +301,14 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       if (accountExists.account_class === 2 && !isMomsLineAccount) {
         mappingResult.vat_lines = []
       }
+      // A reverse-charge cost line moved onto an account that reports ruta
+      // 20-24 itself must not keep the category's basis pair (#2919).
+      mappingResult = reconcileRcBasisWithCostAccount(
+        mappingResult,
+        transaction.amount,
+        body.account_override,
+        accountExists.default_vat_treatment ?? null,
+      )
     }
 
     // Dimensions: an explicitly supplied bag tags the business lines of the
