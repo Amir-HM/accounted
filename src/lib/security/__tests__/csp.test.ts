@@ -70,16 +70,19 @@ describe('buildContentSecurityPolicy', () => {
     ['unconfigured', UNCONFIGURED],
   ] as const)('%s origins', (_label, origins) => {
     it.each([false, true])(
-      'keeps every directive but script-src identical to the previous policy (isDev=%s)',
+      'keeps every directive but script-src identical to the previous policy, plus base-uri (isDev=%s)',
       (isDev) => {
         const before = directives(previousPolicy(origins, isDev))
         for (const nonce of [NONCE, undefined]) {
           const after = directives(buildContentSecurityPolicy({ origins, nonce, isDev }))
-          expect([...after.keys()]).toEqual([...before.keys()])
+          expect([...after.keys()]).toEqual([...before.keys(), 'base-uri'])
           for (const [name, value] of before) {
             if (name === 'script-src') continue
             expect(after.get(name), name).toBe(value)
           }
+          // Without it an injected <base> would re-point the nonce-carrying
+          // relative script URLs at another host.
+          expect(after.get('base-uri')).toBe("base-uri 'self'")
         }
       },
     )

@@ -167,6 +167,10 @@ export function buildContentSecurityPolicy({
     "object-src 'self' blob:",
     `frame-src 'self' blob: ${supabaseUrl}${turnstileOrigin}`,
     "frame-ancestors 'none'",
+    // A nonce only protects scripts whose URL the page chose: an injected
+    // <base href> would re-point every nonce-carrying relative src
+    // (/_next/static/...) at another host. No page sets a <base> element.
+    "base-uri 'self'",
   ].join('; ')
 }
 
