@@ -91,6 +91,35 @@ beforeEach(() => {
 })
 
 describe('commitPendingOperation: create_supplier_invoice_from_inbox', () => {
+  // Issue #2980: a credit note is never a payable of its own, whichever way
+  // the operation was staged (before the item read as one, or by hand).
+  it.each([
+    ['the item reads as a credit note', { documentKind: 'credit_note', totals: { total: 1250 } }, {}],
+    ['the item has a negative net and VAT', { documentKind: 'supplier_invoice', totals: { subtotal: -1000, vatAmount: -250, total: 1250 } }, {}],
+    ['the staged amounts are negative', { documentKind: 'supplier_invoice', totals: { total: 1250 } }, { subtotal: -1000, vat_amount: -250, total: -1250 }],
+  ])('refuses the commit when %s, and registers nothing', async (_label, extracted, paramOverrides) => {
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // dispatcher CAS claim
+    enqueue({
+      data: { id: 'inbox-1', created_supplier_invoice_id: null, status: 'ready', kind_hint: null, extracted_data: extracted },
+      error: null,
+    }) // inbox fetch
+    enqueue({ data: null, error: null }) // dispatcher's reject update
+
+    const base = makePendingOp()
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp({ params: { ...base.params, ...paramOverrides } }),
+    )
+
+    expect(result.status).not.toBe('committed')
+    expect(result.code).toBe('INBOX_ITEM_IS_CREDIT_NOTE')
+    expect(findCall('supplier_invoices', 'insert')).toBeUndefined()
+    expect(createSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
+  })
+
   it('happy path (accrual): inserts invoice + items + JE, links document, marks inbox confirmed', async () => {
     vi.mocked(createSupplierInvoiceRegistrationEntry).mockResolvedValueOnce(
       makeJournalEntry({ id: 'je-100', voucher_number: 7, voucher_series: 'L' })

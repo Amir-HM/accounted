@@ -27,7 +27,7 @@ export const VOUCHER_TYPES = new Set(['receipt', 'supplier_invoice', 'credit_not
 export function inboxSawABill(extracted: Record<string, unknown> | null | undefined, arkivType: string): boolean {
   if (!extracted) return false
   const kind = typeof extracted.documentKind === 'string' ? extracted.documentKind : null
-  if (kind === 'receipt' || kind === 'supplier_invoice') return true
+  if (kind === 'receipt' || kind === 'supplier_invoice' || kind === 'credit_note') return true
   const totals = extracted.totals as { total?: unknown } | null | undefined
   const total = typeof totals?.total === 'number' ? totals.total : Number(totals?.total ?? 0)
   if (!(Number.isFinite(total) && total > 0)) return false
@@ -102,7 +102,13 @@ export async function routeClassifiedDocument(
       source: 'upload',
       document_id: input.documentId,
       kind_hint: input.docType === 'receipt' ? 'receipt' : 'supplier_invoice',
-      extracted_data: d.extracted_data ?? null,
+      // A credit note is a supplier document (the hint) that credits an
+      // invoice: the reading carries what Arkiv says it is, so the inbox
+      // offers Kreditera instead of a new payable (issue #2980).
+      extracted_data:
+        input.docType === 'credit_note' && d.extracted_data
+          ? { ...d.extracted_data, documentKind: 'credit_note' }
+          : (d.extracted_data ?? null),
       extraction_skipped: d.extracted_data == null,
     })
     if (error) throw new Error(`inbox item insert failed: ${error.message}`)
