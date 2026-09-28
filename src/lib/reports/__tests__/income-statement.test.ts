@@ -466,13 +466,13 @@ describe('statutory RR lines', () => {
     expect(report.ovriga_rorelseintakter).toBe(1200.55)
     expect(report.total_revenue).toBe(111700.15)
     expect(
-      roundOre(report.nettoomsattning + report.aktiverat_arbete + report.ovriga_rorelseintakter),
+      roundOre(report.nettoomsattning! + report.aktiverat_arbete! + report.ovriga_rorelseintakter!),
     ).toBe(report.total_revenue)
     expect(report.total_expenses).toBe(71000)
     expect(report.rorelseresultat).toBe(40700.15)
     expect(report.net_result).toBe(32000.15)
-    expect(report.definitions.nettoomsattning.accounts).toBe('3000-3799')
-    expect(report.definitions.total_revenue.accounts).toBe('3000-3999')
+    expect(report.definitions!.nettoomsattning.accounts).toBe('3000-3799')
+    expect(report.definitions!.total_revenue.accounts).toBe('3000-3999')
   })
 
   it('uses period movements for ranged reports', async () => {
