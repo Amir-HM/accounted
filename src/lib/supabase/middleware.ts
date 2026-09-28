@@ -11,7 +11,7 @@ import {
   timed,
   type ProxyTimings,
 } from '@/lib/supabase/proxy-timing'
-import { shouldEnforceMfa } from '@/lib/auth/mfa'
+import { mfaStepUpApplies, shouldEnforceMfa } from '@/lib/auth/mfa'
 import { claimsPinned } from '@/lib/auth/claims'
 import { isMultiUserEnforced } from '@/lib/entitlements/multi-user'
 import { MULTI_USER_GRACE_DAYS } from '@/lib/entitlements/multi-user-state'
@@ -267,14 +267,15 @@ async function updateSessionInner(
     )
     // `user` is the getUser() result above: server-authenticated, so its
     // factor list is trustworthy. Only a session with something to step up
-    // TO is gated here; forcing enrolment stays the page branch's job, as
+    // TO is gated here, whatever NEXT_PUBLIC_REQUIRE_MFA says (see
+    // mfaStepUpApplies); forcing enrolment stays the page branch's job, as
     // before. The assurance level itself comes from the signature-verified
     // claims and fails CLOSED (see resolveVerifiedAal), never from the
     // cookie's session object.
     if (
       !skipMfaGate &&
       user &&
-      shouldEnforceMfa(user) &&
+      mfaStepUpApplies(user) &&
       userHasVerifiedFactor(user)
     ) {
       const aal = await timed(timing, 'mfaMs', () =>
@@ -471,8 +472,16 @@ async function updateSessionInner(
       resolveCompanyForMiddleware(supabase, user.id, request),
     ))
 
-  // MFA enforcement (application-side only, not RLS)
-  if (shouldEnforceMfa(user)) {
+  // MFA enforcement (application-side only, not RLS). Two obligations: a
+  // user with a verified factor is stepped up to AAL2 whatever
+  // NEXT_PUBLIC_REQUIRE_MFA says (mfaStepUpApplies), and a user without one
+  // is sent to enrol only while the flag requires MFA (shouldEnforceMfa).
+  // The factor list is read off the server-authenticated getUser() result
+  // above, never off the cookie session.
+  const hasVerifiedFactor = userHasVerifiedFactor(user)
+  const stepUpOwed = hasVerifiedFactor && mfaStepUpApplies(user)
+  const enrolmentOwed = !hasVerifiedFactor && shouldEnforceMfa(user)
+  if (stepUpOwed || enrolmentOwed) {
     const aal = await timed(timing, 'mfaMs', () => resolveVerifiedAal(supabase))
 
     // Nothing below applies at AAL2: reaching it requires having verified a
@@ -482,14 +491,13 @@ async function updateSessionInner(
     // instead of the next click (unchanged from the listFactors-era gate,
     // PR #1922).
     if (aal !== 'aal2') {
-      // The factor list is read off the server-authenticated getUser()
-      // result above, never off the cookie session. A cookie edited to hide
-      // the factor used to sail past this bounce, and because the enrolment
-      // check below then found the factor server-side, straight onto the
-      // page at AAL1. Reading it here also drops the listFactors() round
-      // trip that check used to pay: auth-js implements listFactors() as
-      // that very getUser() call.
-      if (userHasVerifiedFactor(user)) {
+      // A cookie edited to hide the factor used to sail past this bounce, and
+      // because the enrolment check below then found the factor server-side,
+      // straight onto the page at AAL1: hence the server-side factor list.
+      // Reading it off getUser() also drops the listFactors() round trip
+      // that check used to pay: auth-js implements listFactors() as that very
+      // getUser() call.
+      if (stepUpOwed) {
         return bounceToAuth(request, supabaseResponse, '/mfa/verify')
       }
 
