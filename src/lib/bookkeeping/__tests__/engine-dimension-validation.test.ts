@@ -35,7 +35,15 @@ interface TableResult {
  * to the configured result for that table. insert payloads are captured per
  * table so tests can assert what would have been written.
  */
-function buildSupabase(tables: Record<string, TableResult>) {
+function buildSupabase(
+  tables: Record<string, TableResult>,
+  /**
+   * projectSelect: a `.select('a, b')` of plain columns narrows the row that
+   * `.single()` / `.maybeSingle()` resolve to, like PostgREST does. Off by
+   * default; on where a test must prove the code SELECTS what it reads.
+   */
+  options: { projectSelect?: boolean } = {}
+) {
   const inserts: Record<string, unknown[]> = {}
   const updates: Record<string, unknown[]> = {}
 
@@ -77,8 +85,33 @@ function buildSupabase(tables: Record<string, TableResult>) {
       ;(updates[table] ??= []).push(payload)
       return chain
     })
-    chain.single = vi.fn().mockResolvedValue(resolved)
-    chain.maybeSingle = vi.fn().mockResolvedValue(resolved)
+    let selected: string | undefined
+    chain.select = vi.fn().mockImplementation((columns?: string) => {
+      selected = columns
+      return chain
+    })
+    const singleRow = () => {
+      const row = resolved.data
+      if (
+        !options.projectSelect ||
+        !selected ||
+        /[*(]/.test(selected) ||
+        row === null ||
+        typeof row !== 'object' ||
+        Array.isArray(row)
+      ) {
+        return resolved
+      }
+      const picked: Record<string, unknown> = {}
+      for (const column of selected.split(',').map((c) => c.trim())) {
+        if (column in (row as Record<string, unknown>)) {
+          picked[column] = (row as Record<string, unknown>)[column]
+        }
+      }
+      return { data: picked, error: resolved.error }
+    }
+    chain.single = vi.fn().mockImplementation(() => Promise.resolve(singleRow()))
+    chain.maybeSingle = vi.fn().mockImplementation(() => Promise.resolve(singleRow()))
     chain.then = (resolve: (v: unknown) => void) => resolve(resolved)
     return chain
   })
@@ -609,6 +642,85 @@ describe('accrual dissolutions: exempt from account dimension rules', () => {
     expect(queriedTables()).not.toContain('account_dimension_rules')
     const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
     expect(lineRows[0].dimensions).toEqual({})
+    expect(lineRows[1].dimensions).toEqual({})
+  })
+})
+
+/**
+ * updateDraftEntry gates both exemptions on the STORED source_type (the v1
+ * update operation passes a 'manual' placeholder). The mock projects the
+ * selected columns, so these tests prove the engine selects source_type and
+ * does not read a field its query never asked for.
+ */
+describe('updateDraftEntry: dimension policy follows the stored source type', () => {
+  const storedDraft = (sourceType: string) => ({
+    journal_entries: {
+      data: { id: 'entry-1', status: 'draft', voucher_series: 'A', source_type: sourceType, lines: [] },
+    },
+  })
+
+  it('updates a stored accrual draft tagged with an archived value (validation exemption)', async () => {
+    const { supabase, inserts, queriedTables } = buildSupabase(
+      {
+        ...BASE_TABLES,
+        ...DIMENSION_TABLES,
+        ...storedDraft('accrual'),
+        dimension_values: {
+          data: [{ dimension_id: 'dim-proj', code: 'P001', is_active: false }],
+        },
+      },
+      { projectSelect: true }
+    )
+
+    const entry = await updateDraftEntry(
+      supabase as never,
+      'company-1',
+      'user-1',
+      'entry-1',
+      makeInput({ '6': 'P001' })
+    )
+
+    expect(entry.id).toBe('entry-1')
+    expect(queriedTables()).not.toContain('dimensions')
+    expect(queriedTables()).not.toContain('dimension_values')
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({ '6': 'P001' })
+  })
+
+  it('never applies rules to a stored rule-exempt draft', async () => {
+    const { supabase, inserts, queriedTables } = buildSupabase(
+      {
+        ...BASE_TABLES,
+        ...storedDraft('system'),
+        account_dimension_rules: {
+          data: [makeRuleRow({ rule_type: 'fixed', dimension_values: { code: 'PLOCK' } })],
+        },
+      },
+      { projectSelect: true }
+    )
+
+    await updateDraftEntry(supabase as never, 'company-1', 'user-1', 'entry-1', makeInput())
+
+    expect(queriedTables()).not.toContain('account_dimension_rules')
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({})
+  })
+
+  it('still applies rules and validation to a stored manual draft', async () => {
+    const { supabase, inserts } = buildSupabase(
+      {
+        ...BASE_TABLES,
+        ...DIMENSION_TABLES,
+        ...storedDraft('manual'),
+        account_dimension_rules: { data: [makeRuleRow()] },
+      },
+      { projectSelect: true }
+    )
+
+    await updateDraftEntry(supabase as never, 'company-1', 'user-1', 'entry-1', makeInput())
+
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({ '6': 'P001' })
     expect(lineRows[1].dimensions).toEqual({})
   })
 })
