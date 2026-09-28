@@ -4,9 +4,12 @@
  * Payroll is calculated in the payment year: a run paid on 25 January uses
  * that year's arbetsgivaravgifter, prisbasbelopp, statslåneränta and tax
  * tables. Runs for January are prepared in December, so a year's figures must
- * ship before the year turns. They cannot ship much earlier either: some are
- * only set late in the year before (the statslåneränta for bilförmån is the
- * rate at the end of November).
+ * ship before the year turns. They cannot ship much earlier either: the last
+ * inputs are set late in the year before (checked 2026-09-28 against the
+ * official sources): inkomstbasbelopp in early November, the statslåneränta
+ * for bilförmån on 30 November, the skiktgräns for statlig skatt with
+ * Skatteverket's SKV 433 (2025-12-10 for 2026), and the tax tables with it.
+ * Hence mid-December for the rates and a few days later for the tables.
  *
  * Payroll refuses a year without rates by name (SALARY_PAYROLL_CONFIG_MISSING);
  * the capitalization threshold in lib/bookkeeping/mapping-engine.ts falls back
@@ -23,7 +26,7 @@ export interface DueDay {
 }
 
 /** Next year's salary_payroll_config row (a migration). */
-export const PAYROLL_RATES_DUE: DueDay = { month: 12, day: 10 }
+export const PAYROLL_RATES_DUE: DueDay = { month: 12, day: 15 }
 
 /**
  * Next year's bundled tax tables (lib/salary/tax-tables-fallback.ts, from
