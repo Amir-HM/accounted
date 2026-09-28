@@ -138,6 +138,18 @@ describe('upgradeLegacyAuthCookies', () => {
     expect(response.cookies.get(KEY)?.httpOnly).toBe(true)
   })
 
+  it('does not rewrite on a state-changing request (a sign-out must not race a re-emit)', async () => {
+    const value = encodeSession(NOW / 1000 + 3600)
+    const post = new NextRequest('https://app.accounted.se/api/auth/logout', {
+      method: 'POST',
+      headers: { cookie: `${KEY}=${value}` },
+    })
+    const response = NextResponse.next()
+    await upgradeLegacyAuthCookies(post, response, 'https', NOW)
+    expect(response.cookies.get(KEY)).toBeUndefined()
+    expect(response.cookies.get(AUTH_COOKIE_FLAGS_MARKER)).toBeUndefined()
+  })
+
   it('leaves a cookie close to expiry alone: the imminent refresh writes it with the new attributes', async () => {
     const request = requestWith({ [KEY]: encodeSession(NOW / 1000 + 120) })
     const response = NextResponse.next()

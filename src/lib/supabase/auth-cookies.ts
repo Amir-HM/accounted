@@ -156,16 +156,17 @@ async function fingerprint(value: string): Promise<string> {
  *   marker follows the new value (or goes, with the session).
  * - The browser holds a cookie the marker vouches for: nothing to do.
  * - Otherwise the cookie predates the switch (or was written by an old tab's
- *   script): it is re-emitted verbatim with the new attributes and the
- *   marker is set, unless the access token is close enough to expiry that a
- *   refresh is imminent (see UPGRADE_MIN_REMAINING_MS).
+ *   script): on a GET or HEAD it is re-emitted verbatim with the new
+ *   attributes and the marker is set, unless the access token is close
+ *   enough to expiry that a refresh is imminent (see
+ *   UPGRADE_MIN_REMAINING_MS).
  *
  * Old tabs still running the previous script cannot overwrite the HttpOnly
  * cookie afterwards (browsers refuse a script write over an HttpOnly cookie
  * of the same name, domain and path).
  */
 export async function upgradeLegacyAuthCookies(
-  request: { cookies: CookieReader },
+  request: { cookies: CookieReader; method?: string },
   response: { cookies: CookieWriter },
   requestProtocol: string | null,
   now: number = Date.now(),
@@ -191,6 +192,12 @@ export async function upgradeLegacyAuthCookies(
   if (marker === currentFingerprint) return
 
   if (!writtenThisRequest) {
+    // Only on reads (page loads, API GETs). A state-changing request may be
+    // the one that ends or replaces the session (sign-out, sign-in): a
+    // rewrite of the old value there would race the route's own write of
+    // the same cookie in one response. The next GET does the upgrade.
+    if (request.method && request.method !== 'GET' && request.method !== 'HEAD') return
+
     const expiresAt = authCookieExpiresAt(current)
     if (expiresAt === null || expiresAt * 1000 - now < UPGRADE_MIN_REMAINING_MS) return
 
