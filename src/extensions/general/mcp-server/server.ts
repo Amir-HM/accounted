@@ -10900,12 +10900,16 @@ export const tools: McpTool[] = [
     name: 'gnubok_list_dimensions',
     keywords: ['dimensioner', 'kostnadsställe', 'projekt', 'resultatenhet'],
     title: 'List Dimensions (Kostnadsställe/Projekt)',
-    description: 'List the dimension registry with values: 1 = kostnadsställe, 6 = projekt, plus custom dims. Call before tagging voucher lines via the dimensions bag on gnubok_create_voucher. System dims are seeded on first call.',
+    description: 'List the dimension registry with values: 1 = kostnadsställe, 6 = projekt, plus custom dims. Call before tagging voucher lines via the dimensions bag on gnubok_create_voucher.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {},
     },
+    // The item schemas are open (no additionalProperties: false): a client
+    // validates against the tools/list it cached, and a closed item would
+    // make every session connected before a new field shipped refuse the
+    // response (output-schema.test.ts has the incident).
     outputSchema: {
       type: 'object',
       properties: {
@@ -10914,12 +10918,12 @@ export const tools: McpTool[] = [
           description: 'Registry entries keyed by sie_dim_no (the dims-bag key), each with its values. code = what goes in the bag; is_active false = archived (unusable on new lines).',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'Deprecated: read dimension_id instead' },
               dimension_id: { type: 'string' },
               sie_dim_no: { type: 'number' },
               name: { type: 'string' },
+              parent_sie_dim_no: { type: 'number', description: 'Sub-dimensions (#UNDERDIM) only.' },
               resets_annually: { type: 'boolean' },
               is_system: { type: 'boolean' },
               is_active: { type: 'boolean' },
@@ -10928,7 +10932,6 @@ export const tools: McpTool[] = [
                 type: 'array',
                 items: {
                   type: 'object',
-                  additionalProperties: false,
                   properties: {
                     id: { type: 'string', description: 'Deprecated: read dimension_value_id instead' },
                     dimension_value_id: { type: 'string' },
@@ -10958,12 +10961,16 @@ export const tools: McpTool[] = [
       openWorldHint: false,
     },
     async execute(_args, companyId, _userId, supabase) {
-      await ensureCompanyDimensions(supabase, companyId)
+      // The dashboard's and v1's registry read: seeds the system dims and
+      // pages the values past PostgREST's 1000-row cap.
       const dimensions = await fetchDimensionRegistry(supabase, companyId)
       return {
-        dimensions: dimensions.map((d) => ({
+        dimensions: dimensions.map(({ parent_sie_dim_no, ...d }) => ({
           ...d,
           dimension_id: d.id,
+          // Only on a sub-dimension: a session that cached the old, closed
+          // item schema keeps accepting every top-level dimension.
+          ...(parent_sie_dim_no != null ? { parent_sie_dim_no } : {}),
           values: d.values.map((v) => ({ ...v, dimension_value_id: v.id })),
         })),
       }
@@ -10983,7 +10990,8 @@ export const tools: McpTool[] = [
         sie_dim_no: { type: 'number', description: '1 = kostnadsställe, 6 = projekt, or a custom dim from gnubok_list_dimensions.' },
         query: { type: 'string', description: 'Optional fuzzy search over code + name, ranked by confidence.' },
         include_inactive: { type: 'boolean', description: 'Include archived values (default false).' },
-        limit: { type: 'number', description: 'Max results, 1-200 (default 50).' },
+        limit: { type: 'number', description: 'Page size, 1-200 (default 50).' },
+        offset: { type: 'integer', minimum: 0, description: 'Values to skip (next_offset of the previous page).' },
       },
       required: ['sie_dim_no'],
     },
@@ -11021,9 +11029,9 @@ export const tools: McpTool[] = [
             required: ['id', 'dimension_value_id', 'code', 'name', 'is_active', 'start_date', 'end_date'],
           },
         },
-        count: { type: 'number' },
+        ...PAGINATION_PROPS,
       },
-      required: ['dimension', 'values', 'count'],
+      required: ['dimension', 'values', 'count', 'total_count', 'has_more'],
     },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, _userId, supabase) {
@@ -11033,6 +11041,7 @@ export const tools: McpTool[] = [
       }
       const includeInactive = args.include_inactive === true
       const limit = Math.min(Math.max(1, Number(args.limit) || 50), 200)
+      const offset = Math.max(0, Math.floor(Number(args.offset) || 0))
       const query = typeof args.query === 'string' ? args.query.trim() : ''
 
       await ensureCompanyDimensions(supabase, companyId)
@@ -11050,44 +11059,44 @@ export const tools: McpTool[] = [
         )
       }
 
-      let valuesQuery = supabase
-        .from('dimension_values')
-        .select('id, code, name, is_active, start_date, end_date')
-        .eq('company_id', companyId)
-        .eq('dimension_id', dimension.id)
-        .order('code', { ascending: true })
-      if (!includeInactive) valuesQuery = valuesQuery.eq('is_active', true)
-
-      const { data: rows, error: valuesError } = await valuesQuery
-      if (valuesError) throw dbError(valuesError)
-      const all = (rows ?? []) as Array<{
+      // Every value of the dimension, paged past PostgREST's 1000-row cap: the
+      // fuzzy ranking needs the whole set, and a plain listing must not stop
+      // silently at row 1000. The page is cut from the ordered or ranked set.
+      type ValueRow = {
         id: string
         code: string
         name: string
         is_active: boolean
         start_date: string | null
         end_date: string | null
-      }>
-
-      const qualifiedDimension = { ...dimension, dimension_id: dimension.id }
-
-      if (!query) {
-        const values = all.slice(0, limit).map((v) => ({ ...v, dimension_value_id: v.id }))
-        return { dimension: qualifiedDimension, values, count: values.length }
       }
+      const all = await fetchAllRows<ValueRow>(({ from, to }) => {
+        let valuesQuery = supabase
+          .from('dimension_values')
+          .select('id, code, name, is_active, start_date, end_date')
+          .eq('company_id', companyId)
+          .eq('dimension_id', dimension.id)
+        if (!includeInactive) valuesQuery = valuesQuery.eq('is_active', true)
+        return valuesQuery.order('code', { ascending: true }).order('id', { ascending: true }).range(from, to)
+      })
 
       // Fuzzy ranking: same fuse.js setup as the resolve step so what this
       // tool shows matches what a dims bag would resolve to.
-      const fuse = new Fuse(all, { keys: ['code', 'name'], includeScore: true, threshold: 0.4 })
-      const values = fuse
-        .search(query)
-        .slice(0, limit)
-        .map((hit) => ({
-          ...hit.item,
-          dimension_value_id: hit.item.id,
-          confidence: roundOre(1 - (hit.score ?? 1)),
-        }))
-      return { dimension: qualifiedDimension, values, count: values.length }
+      const matches: Array<ValueRow & { confidence?: number }> = query
+        ? new Fuse(all, { keys: ['code', 'name'], includeScore: true, threshold: 0.4 })
+            .search(query)
+            .map((hit) => ({ ...hit.item, confidence: roundOre(1 - (hit.score ?? 1)) }))
+        : all
+      const values = matches.slice(offset, offset + limit).map((v) => ({ ...v, dimension_value_id: v.id }))
+      const hasMore = offset + values.length < matches.length
+      return {
+        dimension: { ...dimension, dimension_id: dimension.id },
+        values,
+        count: values.length,
+        total_count: matches.length,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: offset + values.length } : {}),
+      }
     },
   },
 
