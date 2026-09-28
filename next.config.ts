@@ -77,6 +77,9 @@ const cspDirectives = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // No `X-Powered-By: Next.js`: it only tells a scanner which framework (and
+  // which set of known issues) to try.
+  poweredByHeader: false,
   // Standalone output feeds the Docker image (Dockerfile copies
   // .next/standalone). Vercel never reads it: its build adapter
   // (onBuildComplete) traces and packages functions itself, and as of Next
