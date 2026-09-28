@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { X } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
@@ -41,9 +42,11 @@ interface Props {
  * When active it shows a persistent "Filtrerad …, ej fullständig rapport"
  * chip: a dimension-scoped view is a partial view and must never be read as
  * the complete report. Strings are hardcoded Swedish per the report-surface
- * convention (same as DimensionCombobox).
+ * convention (same as DimensionCombobox); the archived-value marker reuses
+ * the register's translated status label.
  */
 export function DimensionFilter({ value, onChange }: Props) {
+  const tDimensions = useTranslations('dimensions')
   const { settings } = useCompanySettings()
   // Registry from the session cache (lib/reference-data).
   const { dimensions: dims } = useDimensions()
@@ -91,6 +94,11 @@ export function DimensionFilter({ value, onChange }: Props) {
               onChange(code ? { dimNo: activeDimNo, code } : null)
             }
             className={TOOLBAR_FIELD_CLASS}
+            // A filter reads the registry: nothing to create here, and an
+            // archived value (a finished project) must stay reportable.
+            allowCreate={false}
+            includeArchived
+            archivedLabel={tDimensions('status_archived')}
           />
         </div>
         {value && (
