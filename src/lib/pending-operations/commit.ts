@@ -6469,6 +6469,12 @@ async function commitBookSalaryRun(
       },
     }
   } catch (err) {
+    // Posted vouchers of the run that the booking would not post
+    // (SalaryRunPartiallyBookedError): the Swedish message names them, and a
+    // retry cannot succeed until they are reversed, so it is not a 500.
+    if ((err as { code?: unknown } | null)?.code === 'SALARY_RUN_PARTIALLY_BOOKED') {
+      return { error: (err as Error).message, errorCode: 'SALARY_RUN_PARTIALLY_BOOKED', status: 409 }
+    }
     return {
       error: err instanceof Error ? err.message : 'Failed to book salary run',
       status: 500,

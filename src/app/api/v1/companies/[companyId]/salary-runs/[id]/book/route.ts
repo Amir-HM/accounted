@@ -12,9 +12,13 @@
  * later edit.
  *
  * Strict-mode v1: an engine throw aborts BEFORE the salary_runs status
- * mutation. There is no partial-state recovery banner; the caller sees a
- * clean error and the run remains in `paid` so they can fix the underlying
- * cause (e.g. unlock the period) and retry.
+ * mutation, and every verifikat passes the engine's checks before the first
+ * one is numbered (createJournalEntries), so a refusal posts nothing: the run
+ * remains in `paid` and the caller fixes the cause (e.g. unlock the period)
+ * and retries. A posting that stops partway on a transient failure leaves the
+ * vouchers posted so far; the retry adopts them instead of posting them twice,
+ * and a posted voucher of the run that does not match is refused as
+ * SALARY_RUN_PARTIALLY_BOOKED.
  *
  * Period-lock pre-check: we check `payment_date` against the company's lock
  * date and fiscal period status BEFORE invoking the engine, so the response
@@ -35,6 +39,7 @@ import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { checkPeriodLock } from '@/lib/api/v1/check-period-lock'
 import {
   createSalaryRunEntries,
+  SalaryRunPartiallyBookedError,
   salaryRunDataFromRows,
   type SalaryRosterRow,
   type SalaryRunRow,
@@ -71,7 +76,7 @@ registerEndpoint({
   path: '/api/v1/companies/:companyId/salary-runs/:id/book',
   summary: 'Post the verifikationer for a paid salary run.',
   description:
-    'Creates 2-4 journal entries (1: salary brutto/tax/net; 2: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip: the run stays in `paid` so the caller can fix the cause (locked period, missing BAS account, etc.) and retry.',
+    'Creates 2-4 journal entries (1: salary brutto/tax/net; 2: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip, and all entries are validated before the first is posted, so a refusal (locked period, missing BAS account, required or archived dimension value, etc.) posts nothing: the run stays in `paid` so the caller can fix the cause and retry.',
   useWhen:
     'You\'ve marked a salary run as paid and want to post the BFL-required verifikationer. This is the final lifecycle verb before AGI generation; after :book, the run can no longer be edited and corrections must use the (forthcoming) `:correct` verb.',
   doNotUseFor:
@@ -81,7 +86,7 @@ registerEndpoint({
     'payment_date must fall in an open fiscal period: locked period returns 400 PERIOD_LOCKED with `fiscal_period_id` and a hint of what unlock action is needed.',
     'BFL 5 kap immutability: once `:book` succeeds the verifikationer cannot be edited or deleted. Corrections require `:correct` (Phase 5 PR-3) which does a storno-then-rebook.',
     'The salary verifikation is the primary one; its voucher_number appears in the response audit block. The avgifter, vacation, and pension entries get separate voucher numbers (returned as `entry_ids`).',
-    'Strict-mode: if the engine fails partway, the salary_runs row stays in `paid`. There is no "partial booking": the engine either commits all entries or the entire booking fails.',
+    'Strict-mode: every entry is validated before the first is posted, so a refusal posts nothing and the run stays in `paid`. If posting stops partway on a transient failure, calling :book again adopts the entries already posted (when they match the run exactly) and posts only the missing ones, never twice. A posted entry of the run that does not match returns 409 SALARY_RUN_PARTIALLY_BOOKED with details.voucher_numbers: reverse those, then retry.',
   ],
   example: {
     response: {
@@ -226,7 +231,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
               ? ['pension provision and SLP']
               : []),
           ],
-          note: 'A live call posts 2-4 verifikationer atomically via createSalaryRunEntries. Voucher numbers are assigned at commit time.',
+          note: 'A live call validates all 2-4 verifikationer before posting the first (createSalaryRunEntries). Voucher numbers are assigned at commit time.',
         },
         { requestId: ctx.requestId, log: ctx.log },
       )
@@ -258,6 +263,12 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     } catch (err) {
       if (isBookkeepingError(err)) {
         return v1ErrorResponse(err, ctx.log, { requestId: ctx.requestId })
+      }
+      if (err instanceof SalaryRunPartiallyBookedError) {
+        return v1ErrorResponseFromCode(err.code, ctx.log, {
+          requestId: ctx.requestId,
+          details: err.details,
+        })
       }
       ctx.log.error('salary booking failed', err as Error, {
         salaryRunId,

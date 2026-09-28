@@ -7,6 +7,9 @@
  * forbids zero vouchers), otherwise post 2-4 verifikationer via
  * `createSalaryRunEntries()`, advance `paid` → `booked`, emit
  * `salary_run.booked`, and sync the vacation ledger (non-fatal).
+ * `createSalaryRunEntries()` posts all of the run's vouchers or none, and a
+ * retry after an interrupted posting adopts what is already in the ledger
+ * instead of posting it twice, so a run left `paid` is safe to book again.
  *
  * `advanceAndBookSalaryRun` is the pending-operation executor path for the
  * MCP tool `gnubok_book_salary_run`: the human approval of the staged
@@ -17,9 +20,10 @@
  * force-approve path): the payment-file generators hard-block on them where
  * it actually matters.
  *
- * Bookkeeping-engine errors (period locks, unbalanced entries) THROW out of
- * both functions: callers map them via their own envelope, exactly like the
- * route did before extraction. The v1 route keeps its own strict-mode mirror
+ * Bookkeeping-engine errors (period locks, unbalanced entries) and
+ * SalaryRunPartiallyBookedError THROW out of both functions: callers map them
+ * via their own envelope, exactly like the route did before extraction. The
+ * v1 route keeps its own strict-mode mirror
  * (optimistic locking, period pre-check) on purpose.
  */
 

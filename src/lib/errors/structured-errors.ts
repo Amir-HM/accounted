@@ -4651,6 +4651,24 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     message_sv: 'Lönekörningen är redan bokförd.',
     message_en: 'Salary run is already booked.',
   },
+  // lib/salary/salary-entries.ts: a retried booking resumes by adopting the
+  // run's already-posted vouchers that are exactly what it would post, and
+  // stops here on any other posted voucher of the run (a duplicate, or one
+  // booked from data that has changed since) instead of posting it twice.
+  SALARY_RUN_PARTIALLY_BOOKED: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen har redan bokförda verifikationer från ett tidigare försök som inte stämmer med körningen. Återför dem och bokför sedan lönekörningen igen.',
+    message_en:
+      'The salary run already has posted vouchers from an earlier attempt that do not match the run (details.voucher_numbers). Reverse them, then book the run again.',
+    remediation: {
+      description:
+        'Reverse each voucher in details.entry_ids with storno (gnubok_reverse_journal_entry), then book the run again. Posted vouchers that match the run exactly are reused by the next booking, never posted twice.',
+      tool: 'gnubok_reverse_journal_entry',
+    },
+    retryable: false,
+    thrown_message_sv: true,
+  },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,
     message_sv: 'Lönespecifikationer kan bara skickas efter godkännande.',

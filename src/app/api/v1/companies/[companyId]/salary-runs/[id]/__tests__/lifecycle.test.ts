@@ -73,6 +73,7 @@ import { POST as approve } from '../approve/route'
 import { refreshRunYtd } from '@/lib/salary/ytd'
 import { POST as markPaid } from '../mark-paid/route'
 import { POST as book } from '../book/route'
+import { SalaryRunPartiallyBookedError } from '@/lib/salary/salary-entries'
 import { POST as generateAgi } from '../generate-agi/route'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
@@ -667,6 +668,33 @@ describe('POST /salary-runs/:id/book', () => {
     expect(res.status).toBe(500)
     const body = await res.json()
     expect(body.error.code).toBe('SALARY_RUN_BOOK_FAILED')
+  })
+
+  it('answers 409 SALARY_RUN_PARTIALLY_BOOKED with the vouchers to reverse when the run has posted vouchers that do not match', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        salary_runs: { data: paidRun, error: null },
+        salary_run_employees: { data: [employeeRow], error: null },
+        idempotency_keys: { data: null, error: null },
+      }),
+    )
+    mocks.checkPeriodLock.mockResolvedValue({ locked: false })
+    mocks.createSalaryRunEntries.mockRejectedValue(
+      new SalaryRunPartiallyBookedError([{ id: 'je_stale', voucher_series: 'L', voucher_number: 7 }]),
+    )
+
+    const res = await book(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/salary-runs/${RUN_ID}/book`, {
+        method: 'POST',
+      }),
+      detailParams(COMPANY_ID, RUN_ID),
+    )
+
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.error.code).toBe('SALARY_RUN_PARTIALLY_BOOKED')
+    expect(body.error.details).toEqual({ voucher_numbers: ['L7'], entry_ids: ['je_stale'] })
   })
 
   it('refuses to book a non-paid run', async () => {
