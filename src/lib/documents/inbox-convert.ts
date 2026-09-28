@@ -18,6 +18,10 @@
  *     rate is given, and is refused when none can be had (never a NULL rate);
  *   - the item's document becomes the supplier invoice's underlag, and the
  *     registration verifikat's when one is booked (BFL 5 kap 6 §);
+ *   - the invoice's default_dimensions and each line's dimensions are stored
+ *     on the invoice and its items, the same columns the MCP door
+ *     (create_supplier_invoice_from_inbox) writes, so the registration
+ *     verifikat, its periodisering and the later payment carry the tags;
  *   - a company that books on issue gets the registration verifikat through
  *     the engine at once; if that fails the invoice is removed again, so the
  *     item is never marked converted against an unbooked invoice;
@@ -48,6 +52,8 @@ import { createSchedulesForSupplierInvoice } from '@/lib/bookkeeping/accruals/fr
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { resolveInboxKind } from '@/lib/documents/inbox-kind'
 import { resolveInboxCreditTarget } from '@/lib/supplier-invoices/credit-target'
+import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
+import type { ComputedSupplierInvoiceItem } from '@/lib/supplier-invoices/create'
 import type { InboxChannelContext, InvoiceInboxItem, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 export type ConvertInboxItemInput = z.infer<typeof CreateSupplierInvoiceSchema>
@@ -158,7 +164,15 @@ export async function convertInboxItemToSupplierInvoice(
   // to (#2553): exempt, export and reverse_charge carry no Swedish moms.
   const vatTreatment = body.vat_treatment || 'standard_25'
 
-  const items = body.items.map((line, index) => {
+  // Kostnadsställe/projekt (dimensions PR7): the invoice-level bag lands on
+  // every generated line, a line's own bag merges over it on the expense
+  // line that item books to. Normalized through the same gate the MCP door
+  // uses; the registry itself is checked when the verifikat is booked.
+  const defaultDimensions = coerceDimensionsBag(body.default_dimensions) ?? {}
+
+  // Typed as the create path's computed row: a supplier_invoice_items field
+  // that path writes (dimensions among them) cannot be left out here again.
+  const items: ComputedSupplierInvoiceItem[] = body.items.map((line, index) => {
     const vatRate = line.vat_rate ?? defaultVatRateForTreatment(vatTreatment)
     const lineTotal = line.amount != null
       ? roundOre(line.amount)
@@ -180,11 +194,12 @@ export async function convertInboxItemToSupplierInvoice(
       reverse_charge_rate: body.reverse_charge ? (line.reverse_charge_rate ?? null) : null,
       // Periodisering frozen onto the line; the balance account defaults
       // from the cost account's BAS convention.
-      accrual_period_start: accrues ? line.accrual_period_start : null,
-      accrual_period_end: accrues ? line.accrual_period_end : null,
+      accrual_period_start: accrues ? (line.accrual_period_start ?? null) : null,
+      accrual_period_end: accrues ? (line.accrual_period_end ?? null) : null,
       accrual_balance_account: accrues
         ? (line.accrual_balance_account ?? suggestBalanceAccount('expense', line.account_number))
         : null,
+      dimensions: coerceDimensionsBag(line.dimensions) ?? {},
       apply_slp: line.apply_slp === true,
     }
   })
@@ -235,6 +250,7 @@ export async function convertInboxItemToSupplierInvoice(
         total_sek: totalSek,
         document_id: item.document_id || null,
         notes,
+        default_dimensions: defaultDimensions,
         items,
         would_create_registration_journal_entry: booksInvoicesOnIssue(settings),
       },
@@ -277,6 +293,9 @@ export async function convertInboxItemToSupplierInvoice(
       remaining_amount: total,
       document_id: item.document_id || null,
       notes,
+      // Invoice-level bag; the registration, periodisering and payment
+      // generators apply it to every line they book.
+      default_dimensions: defaultDimensions,
     })
     .select()
     .single()

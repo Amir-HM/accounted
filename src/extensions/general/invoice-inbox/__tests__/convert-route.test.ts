@@ -439,6 +439,70 @@ describe('POST /items/:id/convert', () => {
     expect(body.data.registration_journal_entry_id).toBe('je-1')
     expect(createSupplierInvoiceRegistrationEntry).toHaveBeenCalled()
   })
+
+  // The "Skapa leverantörsfaktura" form (and a converted Peppol e-invoice)
+  // posts default_dimensions and per-line bags: they used to be parsed,
+  // answered with a 200 and dropped, leaving the verifikat and the later
+  // payment untagged.
+  it('carries default_dimensions onto the invoice and each line\'s bag onto its item and the registration verifikat', async () => {
+    const { createSupplierInvoiceRegistrationEntry } = await import('@/lib/bookkeeping/supplier-invoice-entries')
+
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
+    enqueue({ data: makeSupplier({ id: SUPPLIER_UUID }) })
+    enqueue({ data: 42 })
+    enqueue({ data: { id: 'invoice-1', status: 'registered', default_dimensions: { '1': 'KS01', '6': 'P001' } } })
+    enqueue({ data: null, error: null })
+    enqueue({ data: makeCompanySettings({ accounting_method: 'accrual' }) })
+
+    const ctx = buildCtx(supabase)
+    const request = createMockRequest('/items/item-1/convert', {
+      method: 'POST',
+      body: {
+        ...VALID_CONVERT_BODY,
+        default_dimensions: { '1': 'KS01', '6': 'P001' },
+        items: [
+          { description: 'Konsulttjänster', amount: 8000, account_number: '6200', vat_rate: 0.25, dimensions: { '6': 'P002', '20': 'KUND42' } },
+          { description: 'Material', amount: 2000, account_number: '4010', vat_rate: 0.25 },
+        ],
+      },
+      searchParams: { _id: 'item-1' },
+    })
+    const res = await route.handler(request, ctx)
+    const { status } = await parseJsonResponse(res)
+
+    expect(status).toBe(200)
+    expect(findCall('supplier_invoices', 'insert')?.[0]).toMatchObject({
+      default_dimensions: { '1': 'KS01', '6': 'P001' },
+    })
+    const itemRows = findCall('supplier_invoice_items', 'insert')?.[0] as Array<{
+      account_number: string
+      dimensions: Record<string, string>
+    }>
+    expect(itemRows.map((row) => [row.account_number, row.dimensions])).toEqual([
+      ['6200', { '6': 'P002', '20': 'KUND42' }],
+      ['4010', {}],
+    ])
+    const registered = vi.mocked(createSupplierInvoiceRegistrationEntry).mock.calls.at(-1)!
+    const bookedItems = registered[4] as Array<{ account_number: string; dimensions: Record<string, string> }>
+    expect(bookedItems.map((row) => row.dimensions)).toEqual([{ '6': 'P002', '20': 'KUND42' }, {}])
+  })
+
+  it('refuses a malformed dimensions bag with 400 before anything is written', async () => {
+    const { supabase, findCall } = createQueuedMockSupabase()
+
+    const ctx = buildCtx(supabase)
+    const request = createMockRequest('/items/item-1/convert', {
+      method: 'POST',
+      body: { ...VALID_CONVERT_BODY, default_dimensions: { projekt: 'P001' } },
+      searchParams: { _id: 'item-1' },
+    })
+    const res = await route.handler(request, ctx)
+    const { status } = await parseJsonResponse(res)
+
+    expect(status).toBe(400)
+    expect(findCall('supplier_invoices', 'insert')).toBeUndefined()
+  })
 })
 
 // ── Exchange rate + SEK amounts on convert ───────────────────
