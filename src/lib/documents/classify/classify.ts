@@ -158,10 +158,11 @@ async function verifikatOf(supabase: SupabaseClient, row: DocumentRow): Promise<
  * invoices addressed to the company typed customer_invoice, in 23
  * companies, because Swedish invoices are headed "Kundfaktura").
  */
-export function kindFromInbox(extracted: Record<string, unknown> | null | undefined): 'supplier_invoice' | 'receipt' | null {
+export function kindFromInbox(extracted: Record<string, unknown> | null | undefined): 'supplier_invoice' | 'receipt' | 'credit_note' | null {
   const kind = extracted && typeof extracted === 'object' ? (extracted as { documentKind?: unknown }).documentKind : null
   if (kind === 'supplier_invoice' || kind === 'invoice') return 'supplier_invoice'
   if (kind === 'receipt') return 'receipt'
+  if (kind === 'credit_note') return 'credit_note'
   return null
 }
 

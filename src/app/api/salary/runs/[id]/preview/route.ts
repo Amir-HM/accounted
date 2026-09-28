@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { withRouteContext } from '@/lib/api/with-route-context'
+import { resolvePrimaryBankAccount } from '@/lib/bookkeeping/settlement-account'
 import {
   buildSalaryRunEntryLines,
   salaryRunDataFromRows,
@@ -21,7 +22,7 @@ export const GET = withRouteContext<{ params: Promise<{ id: string }> }>(
   'salary.run.preview',
   async (_request, ctx, { params }) => {
     const { id } = await params
-    const { supabase, companyId } = ctx
+    const { supabase, companyId, log } = ctx
 
     const { data: run, error: runError } = await supabase
       .from('salary_runs')
@@ -127,11 +128,14 @@ export const GET = withRouteContext<{ params: Promise<{ id: string }> }>(
     // (it debited 7385 for a bilförmån with no counter line, so the previewed
     // voucher was off by exactly the benefit, feedback seq 384229). A rule
     // now lives in one place or nowhere.
+    // The net pay's bank account comes from the resolver the booking calls
+    // (createSalaryRunEntries), so the previewed bank leg is the posted one.
     const runRow = run as SalaryRunRow
     const desc = salaryRunDescription(runRow)
     const built = buildSalaryRunEntryLines(
       salaryRunDataFromRows(runRow, employees as SalaryRosterRow[]),
       desc,
+      await resolvePrimaryBankAccount(supabase, companyId, log),
     )
 
     // Each entry is null when it has nothing to post: a nollkörning posts

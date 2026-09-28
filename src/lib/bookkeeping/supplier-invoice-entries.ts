@@ -4,10 +4,11 @@ import { resolveSekAmount, buildCurrencyMetadata } from './currency-utils'
 import { resolveBookingAccount } from './accruals/account-suggestions'
 import { buildSupplierDescription } from './supplier-invoice-description'
 import {
-  generateReverseChargeLines,
+  generateReverseChargePurchaseLines,
   generateReverseChargeBasisLines,
   isReverseChargeBasisAccount,
   resolveReverseChargeRate,
+  reverseChargeKindForSupplierType,
 } from './vat-entries'
 import { generateSlpLines, isSlpPensionAccount } from './slp-lines'
 import { treatmentDeductsInputVat } from '@/lib/vat/supplier-invoice-line-checks'
@@ -225,7 +226,6 @@ export async function buildSupplierInvoiceRegistrationEntryInput(
   lines.push(...debitLines)
 
   const isReverseCharge = (supplierType === 'eu_business' || supplierType === 'non_eu_business' || supplierType === 'swedish_business') && invoice.reverse_charge
-  const isDomesticRC = supplierType === 'swedish_business' && invoice.reverse_charge
 
   if (isReverseCharge) {
     // Reverse charge: fiktiv moms entries per rate group
@@ -254,13 +254,13 @@ export async function buildSupplierInvoiceRegistrationEntryInput(
     const rcSupplierType = supplierType as 'eu_business' | 'non_eu_business' | 'swedish_business'
     for (const [rate, baseAmount] of baseByRate) {
       if (rate > 0 && baseAmount > 0) {
-        const rcLines = generateReverseChargeLines(baseAmount, rate, isDomesticRC)
+        const rcLines = generateReverseChargePurchaseLines({
+          base: baseAmount,
+          rate,
+          kind: reverseChargeKindForSupplierType(rcSupplierType),
+          basisBase: nonBasisBaseByRate.get(rate) || 0,
+        })
         lines.push(...rcLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
-        const nonBasisBase = nonBasisBaseByRate.get(rate) || 0
-        if (nonBasisBase > 0) {
-          const basisLines = generateReverseChargeBasisLines(nonBasisBase, rate, rcSupplierType)
-          lines.push(...basisLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
-        }
       }
     }
   } else if (itemsHaveVat(items, invoice.vat_treatment)) {
@@ -527,7 +527,6 @@ export function buildSupplierInvoiceCashLines(
   }
 
   const isReverseCharge = (supplierType === 'eu_business' || supplierType === 'non_eu_business' || supplierType === 'swedish_business') && invoice.reverse_charge
-  const isDomesticRC = supplierType === 'swedish_business' && invoice.reverse_charge
 
   if (isReverseCharge) {
     // Reverse charge: fiktiv moms entries per rate group
@@ -548,13 +547,13 @@ export function buildSupplierInvoiceCashLines(
     const rcSupplierType = supplierType as 'eu_business' | 'non_eu_business' | 'swedish_business'
     for (const [rate, baseAmount] of baseByRate) {
       if (rate > 0 && baseAmount > 0) {
-        const rcLines = generateReverseChargeLines(baseAmount, rate, isDomesticRC)
+        const rcLines = generateReverseChargePurchaseLines({
+          base: baseAmount,
+          rate,
+          kind: reverseChargeKindForSupplierType(rcSupplierType),
+          basisBase: nonBasisBaseByRate.get(rate) || 0,
+        })
         lines.push(...rcLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
-        const nonBasisBase = nonBasisBaseByRate.get(rate) || 0
-        if (nonBasisBase > 0) {
-          const basisLines = generateReverseChargeBasisLines(nonBasisBase, rate, rcSupplierType)
-          lines.push(...basisLines.map((l) => ({ ...l, dimensions: defaultDimensions })))
-        }
       }
     }
   } else if (itemsHaveVat(items, invoice.vat_treatment)) {

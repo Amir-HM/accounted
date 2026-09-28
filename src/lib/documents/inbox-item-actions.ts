@@ -30,6 +30,7 @@ import {
   type UnderlagAnchoring,
 } from '@/lib/transactions/inbox-underlag'
 import type { InvoiceExtractionResult } from '@/types'
+import { INBOX_DOCUMENT_KINDS } from '@/lib/documents/inbox-kind'
 
 type Failure = Extract<OperationOutcome<never>, { ok: false }>
 
@@ -409,6 +410,10 @@ const NullableNumber = z.number().nullable()
  * breakdown stay with the reading and survive the merge.
  */
 export const UpdateInboxItemFieldsSchema = z.object({
+  // What the document is, as a person decides it: a reading that took a
+  // normal invoice for a credit note (or the reverse) is corrected here.
+  // Negative totals still read as a credit note until they are corrected.
+  documentKind: z.enum(INBOX_DOCUMENT_KINDS).nullable().optional(),
   supplier: z
     .object({
       name: NullableString,
@@ -426,6 +431,8 @@ export const UpdateInboxItemFieldsSchema = z.object({
       invoiceDate: NullableDate,
       dueDate: NullableDate,
       paymentReference: NullableString,
+      // On a credit note: the invoice number it credits (issue #2980).
+      creditedInvoiceNumber: NullableString,
       // ISO 4217: a loose string would flow into the supplier invoice and
       // produce a faktura with an invalid currency (ML 17 kap 24 § p.9).
       currency: z.string().regex(/^[A-Z]{3}$/, 'Currency must be a 3-letter ISO 4217 code'),
@@ -465,6 +472,9 @@ export function mergeInboxItemFields(
   }
   if (body.totals && 'total' in body.totals) {
     merged.totalSource = null
+  }
+  if (body.documentKind !== undefined) {
+    merged.documentKind = body.documentKind
   }
   return merged
 }

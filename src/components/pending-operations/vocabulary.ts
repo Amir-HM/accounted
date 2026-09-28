@@ -55,6 +55,8 @@ export const OPERATION_LABEL_KEYS: Record<string, string> = {
   redate_entry: 'type_redate_entry',
   mark_no_document_required: 'type_mark_no_document_required',
   book_vat_settlement: 'type_book_vat_settlement',
+  mark_vat_period_filed: 'type_mark_vat_period_filed',
+  unmark_vat_period_filed: 'type_unmark_vat_period_filed',
   send_payslips: 'type_send_payslips',
   revert_salary_run: 'type_revert_salary_run',
   unapprove_salary_run: 'type_unapprove_salary_run',

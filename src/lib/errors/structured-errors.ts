@@ -1049,8 +1049,55 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   INVOICE_CREATE_VAT_RULE_VIOLATION: {
     httpStatus: 400,
-    message_sv: 'Momssatsen är inte tillåten för denna kundtyp.',
-    message_en: 'The VAT rate is not allowed for this customer type.',
+    message_sv: 'Momssatsen är inte tillåten för denna kundtyp eller för fakturans momsbehandling.',
+    message_en: "The VAT rate is not allowed for this customer type or for the invoice's VAT treatment.",
+  },
+  // Per-invoice VAT treatment (#2906): resolveInvoiceVatRules refuses a
+  // treatment the stated facts do not support, instead of issuing 0 %
+  // without them. details carry vat_treatment, delivery_country and why.
+  INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_REQUIRED: {
+    httpStatus: 400,
+    message_sv:
+      'Ange leveransland (delivery_country) för varor som lämnar Sverige. Utan leveransland gäller export och omvänd skattskyldighet bara tjänster, och bara när kunden redan har den behandlingen.',
+    message_en:
+      'Set delivery_country for goods leaving Sweden. Without a delivery country, export and reverse_charge only mean the services treatment, and only where the customer already has it.',
+    remediation: {
+      description:
+        'For goods, send delivery_country (the ISO code of the country the goods are transported to). For services, omit vat_treatment: the customer record decides. See details.customer_vat_treatment.',
+    },
+  },
+  INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Leveranslandet stämmer inte med momsbehandlingen. Export kräver att varorna transporteras ut ur EU; unionsintern leverans kräver transport till ett annat EU-land.',
+    message_en:
+      'The delivery country does not match the VAT treatment. Export requires the goods to leave the EU; an intra-EU supply requires transport to another EU member state.',
+    remediation: {
+      description:
+        'Check delivery_country. Goods to another EU member state: vat_treatment reverse_charge (needs the buyer VAT number). Goods leaving the EU: export. Goods staying in Sweden: standard. details.required names what the treatment needs.',
+    },
+  },
+  INVOICE_VAT_TREATMENT_BUYER_VAT_NUMBER_REQUIRED: {
+    httpStatus: 400,
+    message_sv:
+      'Unionsintern leverans (0 %) kräver köparens momsregistreringsnummer i ett annat EU-land än Sverige, kontrollerat mot VIES (ML 10 kap. 42-43 §§). Utan det ska fakturan ha svensk moms.',
+    message_en:
+      "An intra-EU supply (0 %) requires the buyer's VAT number from an EU member state other than Sweden, validated against VIES (ML 10 kap. 42-43 §§). Without it the invoice carries Swedish VAT.",
+    remediation: {
+      description:
+        'Add the buyer EU VAT number to the customer (it is validated against VIES when saved), or send vat_treatment standard for Swedish VAT (for example a consumer under the distance-sales threshold). details.reason: private_person, missing, not_another_member_state or not_validated.',
+      tool: 'gnubok_update_customer',
+    },
+  },
+  INVOICE_VAT_TREATMENT_NOT_VAT_REGISTERED: {
+    httpStatus: 400,
+    message_sv:
+      'Företaget är inte momsregistrerat, så fakturan kan inte ange egen momsbehandling. Alla rader blir momsfria.',
+    message_en:
+      'The company is not VAT-registered, so the invoice cannot state its own VAT treatment. Every line is VAT-free.',
+    remediation: {
+      description: 'Omit vat_treatment and delivery_country.',
+    },
   },
   INVOICE_CREATE_REVENUE_ACCOUNT_INVALID: {
     httpStatus: 400,
@@ -2984,6 +3031,20 @@ const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
     message_sv: 'En SIE-import för ett överlappande räkenskapsår finns redan.',
     message_en: 'An SIE import for an overlapping fiscal period already exists.',
   },
+  // start_sie_import_job's guard 'Existing SIE import requires reviewed
+  // replacement or reconciliation' (55000), mapped by jobDatabaseError. The
+  // guard also counts a posted ingående balans, so the sentence names both.
+  SIE_IMPORT_PERIOD_ALREADY_IMPORTED: {
+    httpStatus: 409,
+    message_sv: 'Räkenskapsåret har redan en import eller en bokförd ingående balans. Öppna importhistoriken och ångra den tidigare importen innan du importerar året igen.',
+    message_en: 'This fiscal year already has an import or a posted opening balance. Open import history and undo the earlier import before importing the year again.',
+    retryable: false,
+    remediation: {
+      description: 'Read gnubok_sie_import_status for the earlier import of this fiscal year, undo it (gnubok_undo_sie_import or import history in the app), then import the year again.',
+      tool: 'gnubok_sie_import_status',
+      resource: '/import?mode=sie',
+    },
+  },
   SIE_IMPORT_UNMAPPED_ACCOUNTS: {
     httpStatus: 400,
     message_sv: 'Vissa konton saknar mappning. Gå tillbaka till kontomappningssteget och koppla alla konton.',
@@ -3796,6 +3857,19 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Posten är redan kopplad till en leverantörsfaktura.',
     message_en: 'The inbox item is already linked to a supplier invoice.',
   },
+  // Issue #2980: a credit note never becomes a payable of its own.
+  INBOX_ITEM_IS_CREDIT_NOTE: {
+    httpStatus: 409,
+    message_sv:
+      'Posten är en kreditfaktura. Kreditera fakturan den avser i stället för att registrera en ny leverantörsfaktura.',
+    message_en:
+      'The inbox item is a credit note. Credit the invoice it refers to instead of registering a new supplier invoice.',
+    remediation: {
+      description:
+        'details.credit_target says which invoice it credits (status matched, partial, amount_differs, already_credited, ambiguous or none, with candidates). For a matched one, credit it with the inbox item: POST /supplier-invoices/{id}/credit with inbox_item_id. If the reading is wrong (it is a normal invoice), correct documentKind and the totals on the inbox item first.',
+      tool: 'gnubok_credit_supplier_invoice',
+    },
+  },
   INBOX_ITEM_EDIT_LOCKED: {
     httpStatus: 409,
     message_sv: 'Posten är redan kopplad till en leverantörsfaktura och kan inte ändras.',
@@ -4131,6 +4205,35 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     httpStatus: 500,
     message_sv: 'Kunde inte kreditera leverantörsfakturan.',
     message_en: 'Failed to credit supplier invoice.',
+  },
+  // Issue #2980: a supplier's credit note from the inbox credits the invoice
+  // it references, and only when it is for all of it.
+  SI_CREDIT_PARTIAL: {
+    httpStatus: 400,
+    message_sv:
+      'Kreditfakturan gäller bara en del av fakturan. Kreditera krediterar alltid hela fakturan, så den kan inte användas här. Bokför kreditfakturan som en egen verifikation, eller kreditera hela fakturan och registrera en ny för det som återstår.',
+    message_en:
+      'The credit note covers only part of the invoice. Crediting always reverses the whole invoice, so it cannot be used here. Book the credit note as a verifikat of its own, or credit the whole invoice and register a new one for what remains.',
+    remediation: {
+      description:
+        'details carries credit_total and invoice_total. Do not credit the whole invoice for a partial credit note. Hand over to the user: book the credit note as its own verifikat (reverse the credited part on 2440, the cost account and 2641), or credit the whole invoice and register a corrected invoice for the rest.',
+    },
+  },
+  SI_CREDIT_DOCUMENT_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Kreditfakturan stämmer inte med fakturan: leverantör, valuta eller belopp skiljer sig, eller så saknas beloppet. Kontrollera uppgifterna i inkorgen.',
+    message_en:
+      'The credit note does not fit the invoice: the supplier, the currency or the amount differs, or the amount was not read. Check the reading in the inbox.',
+    remediation: {
+      description:
+        'details.reason is supplier, currency, exceeds or amount_missing. Correct the reading (PATCH /inbox-items/{id}) or pick the invoice the credit note actually references.',
+    },
+  },
+  SI_CREDIT_DOCUMENT_UNAVAILABLE: {
+    httpStatus: 409,
+    message_sv: 'Kreditfakturans dokument hittades inte eller hör redan till en annan verifikation.',
+    message_en: 'The credit note document was not found or already belongs to another verifikat.',
   },
   SI_BATCH_NOT_FOUND: {
     httpStatus: 404,

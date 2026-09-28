@@ -57,6 +57,11 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   redate_entry: 'high',
   mark_no_document_required: 'medium',
   book_vat_settlement: 'high',
+  // Momsdeklaration filing record: completes or reopens the period's moms
+  // deadline and nothing else (no verifikat, nothing sent to Skatteverket).
+  // A Skatteverket-confirmed filing is never relabelled or reopened.
+  mark_vat_period_filed: 'low',
+  unmark_vat_period_filed: 'low',
   // Operation registry, wave 2: booking, payment files, utlägg, payroll.
   send_payslips: 'medium',
   revert_salary_run: 'low',
