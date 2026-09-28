@@ -46,7 +46,6 @@ import DimensionValueForm, {
   type DimensionValueFormInput,
 } from '@/components/dimensions/DimensionValueForm'
 import {
-  PROJECT_DIM_NO,
   type DimensionDto,
   type DimensionValueDto,
 } from '@/components/dimensions/types'
@@ -118,7 +117,9 @@ export default function DimensionsManager() {
     () => dimensions.find((d) => d.id === activeDimId) ?? null,
     [dimensions, activeDimId],
   )
-  const isProjectTab = activeDim?.sie_dim_no === PROJECT_DIM_NO
+  // Values carry start/end dates on accumulating dimensions only, the same
+  // rule DimensionValueForm and the API apply.
+  const showDates = activeDim ? !activeDim.resets_annually : false
 
   // Parent (#UNDERDIM) of the active tab's dimension, when it has one.
   const parentDimName = useMemo(() => {
@@ -482,7 +483,7 @@ export default function DimensionsManager() {
               <tr>
                 <SortableHeader column="code" label={t('col_code')} />
                 <SortableHeader column="name" label={t('col_name')} className="w-full" />
-                {isProjectTab && (
+                {showDates && (
                   <>
                     <SortableHeader
                       column="start_date"
@@ -512,7 +513,7 @@ export default function DimensionsManager() {
                   <td className={cn(TD_CLASS, 'max-w-0 w-full')}>
                     <span className="block truncate">{value.name}</span>
                   </td>
-                  {isProjectTab && (
+                  {showDates && (
                     <>
                       <td className={cn(TD_CLASS, 'hidden whitespace-nowrap text-right tabular-nums text-muted-foreground sm:table-cell')}>
                         {value.start_date ? formatDate(value.start_date) : ''}
