@@ -79,7 +79,7 @@ export function getGoogleOAuthEnv(origin: string): GoogleOAuthEnv {
   }
 }
 
-export function buildAuthorizationUrl(env: GoogleOAuthEnv, state: string): string {
+export function buildAuthorizationUrl(env: GoogleOAuthEnv, state: string, codeChallenge?: string): string {
   const params = new URLSearchParams({
     client_id: env.clientId,
     redirect_uri: env.redirectUri,
@@ -96,6 +96,12 @@ export function buildAuthorizationUrl(env: GoogleOAuthEnv, state: string): strin
     // carry more authority than the consent screen showed.
     prompt: 'consent',
   })
+  // PKCE (RFC 7636): the code is only redeemable with the verifier sealed in
+  // the state. Changes nothing about the scope Google reviews.
+  if (codeChallenge) {
+    params.set('code_challenge', codeChallenge)
+    params.set('code_challenge_method', 'S256')
+  }
   return `${AUTH_ENDPOINT}?${params.toString()}`
 }
 
@@ -120,6 +126,8 @@ export class MailTokenRefreshError extends Error {
 export async function exchangeCodeForTokens(
   env: GoogleOAuthEnv,
   code: string,
+  /** The PKCE verifier from the state; null for a flow started without one. */
+  codeVerifier: string | null = null,
 ): Promise<GoogleTokens> {
   const response = await fetch(TOKEN_ENDPOINT, {
     method: 'POST',
@@ -131,6 +139,7 @@ export async function exchangeCodeForTokens(
       client_secret: env.clientSecret,
       redirect_uri: env.redirectUri,
       grant_type: 'authorization_code',
+      ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
     }),
   })
   const body = (await response.json()) as {

@@ -7,7 +7,7 @@ import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { createLogger } from '@/lib/logger'
 import { GmailSearchService } from './lib/search-service'
 import { getMailboxAddress } from './lib/gmail-client'
-import { createOAuthState, verifyOAuthState } from './lib/crypto'
+import { createOAuthFlow, verifyOAuthState } from './lib/crypto'
 import {
   buildAuthorizationUrl,
   exchangeCodeForTokens,
@@ -94,9 +94,9 @@ export const mailExtension: Extension = {
         try {
           const url = new URL(request.url)
           const origin = resolveCallbackOrigin(url.origin)
-          const state = createOAuthState(ctx.userId, ctx.companyId)
+          const { state, codeChallenge } = createOAuthFlow(ctx.userId, ctx.companyId)
           const env = getGoogleOAuthEnv(origin)
-          return NextResponse.json({ url: buildAuthorizationUrl(env, state) })
+          return NextResponse.json({ url: buildAuthorizationUrl(env, state, codeChallenge) })
         } catch (err) {
           ctx.log.error('mail oauth start failed', err)
           return jsonError(err instanceof Error ? err.message : 'Could not start OAuth', 500)
@@ -154,7 +154,7 @@ export const mailExtension: Extension = {
         try {
           const origin = resolveCallbackOrigin(url.origin)
           const env = getGoogleOAuthEnv(origin)
-          const tokens = await exchangeCodeForTokens(env, code)
+          const tokens = await exchangeCodeForTokens(env, code, verified.codeVerifier)
           // What Google granted decides, not what was asked for. Its consent
           // screen lets a person untick Gmail and still approve, and such a
           // grant used to be saved as an active mailbox that failed every

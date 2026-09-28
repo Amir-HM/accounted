@@ -48,7 +48,36 @@ describe('buildAuthorizationUrl', () => {
   })
 })
 
+describe('buildAuthorizationUrl with PKCE', () => {
+  it('adds the S256 challenge and leaves the reviewed scope untouched', () => {
+    const url = new URL(buildAuthorizationUrl(env, 'state-token', 'challenge-abc'))
+    expect(url.searchParams.get('code_challenge')).toBe('challenge-abc')
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+    expect(url.searchParams.get('scope')).toBe(GMAIL_READONLY_SCOPE)
+  })
+
+  it('sends no PKCE parameters without a challenge', () => {
+    const url = new URL(buildAuthorizationUrl(env, 'state-token'))
+    expect(url.searchParams.has('code_challenge')).toBe(false)
+    expect(url.searchParams.has('code_challenge_method')).toBe(false)
+  })
+})
+
 describe('exchangeCodeForTokens', () => {
+  it('sends the PKCE verifier when the flow has one, and none otherwise', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'at', refresh_token: 'rt', scope: GMAIL_READONLY_SCOPE }),
+    })
+    await exchangeCodeForTokens(env, 'auth-code', 'the-verifier')
+    await exchangeCodeForTokens(env, 'auth-code')
+
+    const withVerifier = new URLSearchParams(String((mockFetch.mock.calls[0][1] as RequestInit).body))
+    const without = new URLSearchParams(String((mockFetch.mock.calls[1][1] as RequestInit).body))
+    expect(withVerifier.get('code_verifier')).toBe('the-verifier')
+    expect(without.has('code_verifier')).toBe(false)
+  })
+
   it('returns the tokens and granted scopes without needing an id_token', async () => {
     mockFetch.mockResolvedValue({
       ok: true,

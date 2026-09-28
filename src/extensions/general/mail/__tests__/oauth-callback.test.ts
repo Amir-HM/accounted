@@ -357,6 +357,24 @@ describe('mail GET /oauth/callback: what Google returned decides what is saved',
     expect(saveConnection).not.toHaveBeenCalled()
   })
 
+  it('redeems the code with the PKCE verifier sealed in the state', async () => {
+    const withVerifier = createOAuthState('user-1', 'company-1', 'verifier-from-start')
+    grant([GMAIL_READONLY_SCOPE])
+
+    await callbackRoute().handler(callbackRequest(withVerifier))
+
+    expect(exchangeCodeForTokens).toHaveBeenCalledWith(expect.anything(), 'google-code', 'verifier-from-start')
+  })
+
+  it('still completes a flow started before PKCE, without a verifier', async () => {
+    grant([GMAIL_READONLY_SCOPE])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=connected`)
+    expect(exchangeCodeForTokens).toHaveBeenCalledWith(expect.anything(), 'google-code', null)
+  })
+
   it('answers failed when the code exchange itself fails, saving nothing', async () => {
     ;(exchangeCodeForTokens as Mock).mockRejectedValue(new Error('invalid_grant'))
 

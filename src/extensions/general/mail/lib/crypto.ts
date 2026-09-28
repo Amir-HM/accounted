@@ -61,18 +61,42 @@ interface StatePayload {
   u: string
   c: string
   e: number
+  /** PKCE code verifier. Absent from states minted before PKCE. */
+  v?: string
 }
 
-export function createOAuthState(userId: string, companyId: string): string {
-  const payload: StatePayload = { u: userId, c: companyId, e: Date.now() + STATE_TTL_MS }
+export function createOAuthState(userId: string, companyId: string, codeVerifier?: string): string {
+  const payload: StatePayload = {
+    u: userId,
+    c: companyId,
+    e: Date.now() + STATE_TTL_MS,
+    ...(codeVerifier ? { v: codeVerifier } : {}),
+  }
   return encryptToken(JSON.stringify(payload))
 }
 
-export function verifyOAuthState(state: string): { userId: string; companyId: string } | null {
+/**
+ * A new consent flow: the signed state, carrying a fresh PKCE verifier
+ * (RFC 7636) inside its encryption, and the S256 challenge for the
+ * authorization URL. The verifier never leaves the server in the clear: the
+ * browser only ever holds the encrypted state, so an intercepted code is
+ * worthless without the state it was issued with.
+ */
+export function createOAuthFlow(userId: string, companyId: string): { state: string; codeChallenge: string } {
+  const codeVerifier = crypto.randomBytes(32).toString('base64url')
+  return {
+    state: createOAuthState(userId, companyId, codeVerifier),
+    codeChallenge: crypto.createHash('sha256').update(codeVerifier).digest('base64url'),
+  }
+}
+
+export function verifyOAuthState(
+  state: string,
+): { userId: string; companyId: string; codeVerifier: string | null } | null {
   try {
     const payload = JSON.parse(decryptToken(state)) as StatePayload
     if (Date.now() > payload.e) return null
-    return { userId: payload.u, companyId: payload.c }
+    return { userId: payload.u, companyId: payload.c, codeVerifier: payload.v ?? null }
   } catch {
     return null
   }

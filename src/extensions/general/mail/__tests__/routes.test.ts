@@ -8,6 +8,7 @@
  * redirect must not be answered with a JSON 401. It binds the completion to
  * the initiator's own session instead (oauth-callback.test.ts).
  */
+import { createHash } from 'node:crypto'
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 
 const COMPANY = '11111111-1111-4111-8111-111111111111'
@@ -153,10 +154,13 @@ describe('POST /api/extensions/ext/mail/oauth/start', () => {
     // Registered in the Google console: the slug and the path are pinned.
     expect(url.searchParams.get('redirect_uri')).toBe(`${APP_URL}/api/extensions/ext/mail/oauth/callback`)
     expect(url.searchParams.get('scope')).toBe(GMAIL_READONLY_SCOPE)
-    expect(verifyOAuthState(url.searchParams.get('state') as string)).toEqual({
-      userId: USER,
-      companyId: COMPANY,
-    })
+    const verified = verifyOAuthState(url.searchParams.get('state') as string)
+    expect(verified).toMatchObject({ userId: USER, companyId: COMPANY })
+    // PKCE: the challenge is the S256 of the verifier sealed in the state.
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+    expect(url.searchParams.get('code_challenge')).toBe(
+      createHash('sha256').update(verified!.codeVerifier as string).digest('base64url'),
+    )
   })
 })
 
