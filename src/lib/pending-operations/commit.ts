@@ -75,6 +75,7 @@ import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 import { ISO_DATE_RE } from '@/lib/invariants/iso-date'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
+import { isReverseChargeKind } from '@/lib/bookkeeping/vat-entries'
 import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { runWithActor } from '@/lib/bookkeeping/actor-context-node'
 import type { CommitActor } from '@/lib/bookkeeping/actor-context'
@@ -621,9 +622,23 @@ async function commitCategorizeTransaction(
     }
   }
 
+  // Same tamper/drift gate for the reverse-charge basis box: the approver saw
+  // the ruta the staged kind puts the basis in, so a present but unknown kind
+  // must not silently fall back to the EU-services default.
+  const rawReverseChargeKind = params.reverse_charge_kind
+  if (rawReverseChargeKind != null && !isReverseChargeKind(rawReverseChargeKind)) {
+    return {
+      error:
+        'Ogiltig reverse_charge_kind i den stagade operationen. ' +
+        'Avvisa operationen och stagea om kategoriseringen.',
+      status: 400,
+    }
+  }
+
   return categorizeMatchedTransaction(supabase, userId, companyId, txId, {
     category,
     vatTreatment,
+    reverseChargeKind: rawReverseChargeKind ?? undefined,
     vatAmount,
     notes,
     allowDuplicate: params.allow_duplicate === true,

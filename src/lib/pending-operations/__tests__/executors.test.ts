@@ -2013,6 +2013,80 @@ describe('commitPendingOperation: categorize_transaction account_override', () =
   })
 })
 
+// ─── categorize_transaction: reverse-charge basis box (#2919) ────────────────
+
+describe('commitPendingOperation: categorize_transaction reverse_charge_kind', () => {
+  it('threads the staged kind into the core opts so the approved ruta is the posted one', async () => {
+    vi.mocked(categorizeMatchedTransaction).mockResolvedValueOnce({
+      data: { journal_entry_id: 'je-1' },
+    })
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: {
+        transaction_id: 'tx-1',
+        category: 'expense_software',
+        vat_treatment: 'reverse_charge',
+        reverse_charge_kind: 'non_eu_services',
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    const opts = vi.mocked(categorizeMatchedTransaction).mock.calls[0][4]
+    expect(opts.vatTreatment).toBe('reverse_charge')
+    expect(opts.reverseChargeKind).toBe('non_eu_services')
+  })
+
+  it('passes undefined for an operation staged before the kind existed (plain reverse_charge)', async () => {
+    vi.mocked(categorizeMatchedTransaction).mockResolvedValueOnce({
+      data: { journal_entry_id: 'je-1' },
+    })
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: { transaction_id: 'tx-1', category: 'expense_software', vat_treatment: 'reverse_charge' },
+    })
+
+    await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    const opts = vi.mocked(categorizeMatchedTransaction).mock.calls[0][4]
+    expect(opts.reverseChargeKind).toBeUndefined()
+  })
+
+  it('rejects loudly when a stored kind is present but unknown (tamper/drift)', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's rejected update
+
+    const op = makePendingOp({
+      operation_type: 'categorize_transaction',
+      params: {
+        transaction_id: 'tx-1',
+        category: 'expense_software',
+        vat_treatment: 'reverse_charge',
+        reverse_charge_kind: 'import_goods',
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('failed')
+    expect(result.http_status).toBe(400)
+    expect(result.error).toContain('reverse_charge_kind')
+    expect(categorizeMatchedTransaction).not.toHaveBeenCalled()
+  })
+})
+
 describe('commitPendingOperation: mark_invoice_sent honours defer_invoice_booking (#967)', () => {
   it('marks the invoice sent WITHOUT booking when the company defers invoice booking', async () => {
     const invoiceEntries = await import('@/lib/bookkeeping/invoice-entries')

@@ -564,6 +564,13 @@ describe('tools/list payload size guard', () => {
     //     restated their property names, and get_task no longer saying "the
     //     skills to load" (agent runs and analyses arrive whole). Measured
     //     63 486. Ceiling unchanged.
+    //   * Reverse-charge basis on the MCP surface (#2919):
+    //     gnubok_categorize_transaction takes reverse_charge_eu_services /
+    //     _non_eu_services / _eu_goods, and the VAT report schema (counted
+    //     twice: get_vat_report and vat_review_widget) declares rutor 20-24.
+    //     Paid for by one shared RC note instead of per-box prose, account
+    //     numbers without the word "account", and a shorter vat_treatment
+    //     text. Measured 63 496. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(63_500)
   })
 
