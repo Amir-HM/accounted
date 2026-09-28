@@ -91,6 +91,23 @@ describe('GET /api/arkiv/documents', () => {
     expect(rows.find((r) => r.document_id === 'doc-booked')?.linked).toMatchObject({ unclassified: false, voucher: 'A9' })
   })
 
+  it('dates a booked document by its verifikat, not by the upload day', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({
+      data: [
+        { id: 'doc-2024', created_at: '2026-05-20T10:00:00Z', file_name: 'kvitto-2024.pdf', doc_type: null, admission_state: 'admitted', journal_entry_id: 'je-2024' },
+        { id: 'doc-loose', created_at: '2026-05-21T10:00:00Z', file_name: 'brev.pdf', doc_type: 'other', admission_state: 'admitted', journal_entry_id: null },
+      ],
+    })
+    // The booked untyped document is looked up on the classification first (locked-period fallback), then its verifikat.
+    enqueue({ data: [] })
+    enqueue({ data: [{ id: 'je-2024', voucher_series: 'A', voucher_number: 17, entry_date: '2024-03-15' }] })
+    const { body } = await parseJsonResponse(await call('?year=2024'))
+    const rows = (body as { data: Array<{ document_id: string; document_date: string | null; linked: { voucher: string | null } }> }).data
+    expect(rows.map((r) => r.document_id)).toEqual(['doc-2024'])
+    expect(rows[0]).toMatchObject({ document_date: '2024-03-15', linked: { voucher: 'A17' } })
+  })
+
   it('rejects an unknown folder', async () => {
     expect((await parseJsonResponse(await call('?folder=attic'))).status).toBe(400)
   })
