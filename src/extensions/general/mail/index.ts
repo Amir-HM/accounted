@@ -26,6 +26,7 @@ import {
 import { resolveCallbackOrigin } from './lib/callback-origin'
 import { isMailConnectEnabled } from './lib/connect-gate'
 import { requireFlowInitiator } from '@/lib/auth/oauth-flow-binding'
+import { createClient } from '@/lib/supabase/server'
 
 // Registered as soon as the extension loads, so the receipt hunt can search
 // mail without core ever importing from @/extensions.
@@ -47,6 +48,21 @@ function jsonError(message: string, status = 500): Response {
 async function refuseViewer(ctx: ExtensionContext): Promise<Response | null> {
   const check = await requireWritePermission(ctx.supabase, ctx.userId, { companyId: ctx.companyId })
   return check.ok ? null : check.response
+}
+
+/**
+ * The start route's checks, repeated when Google redirects back: the connect
+ * gate, the company being visible to the person (RLS hides an archived one),
+ * and their role in it. Read through their own session, like the start.
+ */
+async function mayStillConnect(userId: string, companyId: string): Promise<boolean> {
+  if (!isMailConnectEnabled(companyId)) return false
+  const supabase = await createClient()
+  const { data: company } = await supabase.from('companies').select('id').eq('id', companyId).maybeSingle()
+  if (!company) return false
+  const writer = await requireWritePermission(supabase, userId, { companyId })
+  if (!writer.ok) log.warn('mail consent completed by someone who may no longer connect', { companyId })
+  return writer.ok
 }
 
 const ConnectionId = z.string().uuid()
@@ -124,6 +140,15 @@ export const mailExtension: Extension = {
           // and state (the state is stateless and still within its TTL).
           if (initiator.reason === 'no_session') return initiator.response
           return NextResponse.redirect(`${settingsUrl}?mail=mismatch`)
+        }
+
+        // Up to ten minutes pass between the start and this redirect, and the
+        // grant is saved on the service role, so what the start route checked
+        // is checked again for the company in the state: still open for new
+        // consents, still a company this person can see (an archived one is
+        // hidden by RLS), and still one they may write to.
+        if (!(await mayStillConnect(verified.userId, verified.companyId))) {
+          return NextResponse.redirect(`${settingsUrl}?mail=failed`)
         }
 
         try {

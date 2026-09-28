@@ -60,13 +60,32 @@ const callbackRoute = () =>
   mailExtension.apiRoutes!.find((r) => r.method === 'GET' && r.path === '/oauth/callback')!
 
 /** The browser completing the callback is signed in as `userId` (or nobody). */
-function useSession(userId: string | null) {
+/**
+ * The browser completing the callback is signed in as `userId` (or nobody),
+ * with `role` in the state's company, which RLS shows unless it is archived.
+ */
+function useSession(
+  userId: string | null,
+  { role = 'owner', companyVisible = true }: { role?: string; companyVisible?: boolean } = {},
+) {
   mockCreateClient.mockResolvedValue({
     auth: {
       getUser: vi.fn().mockResolvedValue({
         data: { user: userId ? { id: userId } : null },
         error: null,
       }),
+    },
+    from: (table: string) => {
+      const chain: Record<string, unknown> = {}
+      chain.select = () => chain
+      chain.eq = () => chain
+      chain.maybeSingle = () =>
+        Promise.resolve(
+          table === 'companies'
+            ? { data: companyVisible ? { id: 'company-1' } : null, error: null }
+            : { data: { role }, error: null },
+        )
+      return chain
     },
   })
 }
@@ -86,6 +105,8 @@ describe('mail GET /oauth/callback: the completing session must be the initiator
     vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL)
     // 32 bytes of hex so createOAuthState/verifyOAuthState use a real key.
     vi.stubEnv('MAIL_TOKEN_ENCRYPTION_KEY', '00'.repeat(32))
+    vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'false')
+    vi.stubEnv('GOOGLE_MAIL_CONNECT_COMPANY_IDS', 'company-1')
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'error').mockImplementation(() => {})
     state = createOAuthState('user-1', 'company-1')
@@ -184,6 +205,8 @@ describe('mail GET /oauth/callback: what Google returned decides what is saved',
     vi.clearAllMocks()
     vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL)
     vi.stubEnv('MAIL_TOKEN_ENCRYPTION_KEY', '00'.repeat(32))
+    vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED', 'false')
+    vi.stubEnv('GOOGLE_MAIL_CONNECT_COMPANY_IDS', 'company-1')
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -296,6 +319,40 @@ describe('mail GET /oauth/callback: what Google returned decides what is saved',
       const res = await callbackRoute().handler(new Request(url.toString()))
       expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=invalid`)
     }
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('re-checks the connect gate at completion: a company taken off it gets nothing saved', async () => {
+    vi.stubEnv('GOOGLE_MAIL_CONNECT_COMPANY_IDS', 'another-company')
+    grant([GMAIL_READONLY_SCOPE])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=failed`)
+    // Refused before the exchange, so no grant is even issued a token.
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('saves nothing for a company archived since the consent started', async () => {
+    useSession('user-1', { companyVisible: false })
+    grant([GMAIL_READONLY_SCOPE])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=failed`)
+    expect(exchangeCodeForTokens).not.toHaveBeenCalled()
+    expect(saveConnection).not.toHaveBeenCalled()
+  })
+
+  it('saves nothing for someone who has become a viewer since the consent started', async () => {
+    useSession('user-1', { role: 'viewer' })
+    grant([GMAIL_READONLY_SCOPE])
+
+    const res = await callbackRoute().handler(callbackRequest(state))
+
+    expect(res.headers.get('location')).toBe(`${APP_URL}/settings/mail?mail=failed`)
     expect(exchangeCodeForTokens).not.toHaveBeenCalled()
     expect(saveConnection).not.toHaveBeenCalled()
   })
