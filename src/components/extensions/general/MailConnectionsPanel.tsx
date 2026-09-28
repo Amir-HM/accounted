@@ -1,216 +1,298 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { AttnLine } from '@/components/ui/attn-line'
+import { useToast } from '@/components/ui/use-toast'
+import {
+  DestructiveConfirmDialog,
+  useDestructiveConfirm,
+} from '@/components/ui/destructive-confirm-dialog'
+import { GoogleMark } from '@/components/ui/provider-marks'
 import {
   SettingsGroup,
   SettingsRow,
   SettingsRowEnd,
   SettingsRowNote,
 } from '@/components/settings/SettingsRows'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { GoogleMark, MicrosoftMark } from '@/components/ui/provider-marks'
-import { formatDateLong } from '@/lib/utils'
+import { useCapability } from '@/contexts/CompanyContext'
+import { CAPABILITY } from '@/lib/entitlements/keys'
+import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import { useFormat } from '@/lib/hooks/use-format'
+import { cn } from '@/lib/utils'
+import { ReceiptHuntStatus } from './ReceiptHuntStatus'
+import {
+  disconnectMailbox,
+  reconnectReason,
+  requestMailConnect,
+  summarizeMailboxes,
+  type MailCallbackCode,
+  type MailConnection,
+} from './mail-connections'
+import { useMailConnections } from './use-mail-connections'
+import { useReceiptHunt } from './use-receipt-hunt'
 
-interface MailConnection {
-  id: string
-  provider: 'gmail' | 'microsoft'
-  emailAddress: string
-  scopeLabel: string | null
-  status: 'active' | 'needs_reconsent' | 'revoked'
-  lastSearchedAt: string | null
-  lastErrorCode: string | null
-}
-
-import { useReceiptHunt } from '@/components/extensions/general/use-receipt-hunt'
-
-const BASE = '/api/extensions/ext/mail'
-
-export function MailConnectionsPanel() {
+/**
+ * Kopplingar > Gmail: connect, reconnect and disconnect the company's
+ * mailboxes, run the receipt hunt, and say plainly what the access allows.
+ *
+ * Everything the page claims is what the backend does: the grant is
+ * gmail.readonly and nothing else, only mails that may be the receipt for a
+ * specific purchase without an underlag are read, a receipt that is found is
+ * filed in Underlag with its sender, subject and date, and disconnecting
+ * revokes the grant at Google as well as deleting it here. A new claim on
+ * this page needs the code behind it first.
+ */
+export function MailConnectionsPanel({
+  notice,
+}: {
+  /** How the OAuth callback came back when it did not connect anything. */
+  notice: Exclude<MailCallbackCode, 'connected'> | null
+}) {
   const t = useTranslations('mail')
-  const [connections, setConnections] = useState<MailConnection[]>([])
-  const [configured, setConfigured] = useState(true)
-  // False while Google's scope review keeps new consents withheld on hosted:
-  // the connect button is simply absent, existing mailboxes stay listed.
-  const [connectEnabled, setConnectEnabled] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const { toast } = useToast()
+  const { formatDateLong } = useFormat()
+  const hasAi = useCapability(CAPABILITY.ai)
+  const { dialogProps, confirm } = useDestructiveConfirm()
+  // A build without the mail extension has no route to ask.
+  const mailExtension = ENABLED_EXTENSION_IDS.has('mail')
+  const mail = useMailConnections(mailExtension)
   const [connecting, setConnecting] = useState(false)
-  const [pendingDisconnect, setPendingDisconnect] = useState<MailConnection | null>(null)
-  const { hunt, stop: stopHunt, hunting, progress, result: huntResult } = useReceiptHunt(() => void load())
-  // Read inside the loop, so pressing Stop takes effect on the current pass
-  // rather than after every remaining pass has run.
 
-  const load = useCallback(async () => {
-    try {
-      const response = await fetch(`${BASE}/connections`)
-      if (!response.ok) return
-      const body = (await response.json()) as {
-        data: { connections: MailConnection[]; configured: boolean; connectEnabled?: boolean }
-      }
-      setConnections(body.data.connections)
-      setConfigured(body.data.configured)
-      setConnectEnabled(body.data.connectEnabled === true)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
+  // Back from Google's consent screen without finishing: a page restored
+  // from the back-forward cache still holds the busy connect button.
   useEffect(() => {
-    void load()
-  }, [load])
+    const reset = (event: PageTransitionEvent) => {
+      if (event.persisted) setConnecting(false)
+    }
+    window.addEventListener('pageshow', reset)
+    return () => window.removeEventListener('pageshow', reset)
+  }, [])
+  // A pass moves lastSearchedAt, so the list is read again after each one.
+  const hunt = useReceiptHunt(() => void mail.reload())
+
+  const view = mail.view
+  const summary = summarizeMailboxes(view)
+  const connections = view?.connections ?? []
 
   async function connect() {
     setConnecting(true)
-    try {
-      // The consent screen must open from the user's own gesture, so the tab is
-      // opened first and its location set once the URL is known: opening it
-      // after the await is what popup blockers stop.
-      const tab = window.open('', '_blank')
-      const response = await fetch(`${BASE}/oauth/start`, { method: 'POST' })
-      if (!response.ok) {
-        tab?.close()
-        return
-      }
-      const body = (await response.json()) as { url: string }
-      if (tab) tab.location.href = body.url
-      else window.location.href = body.url
-    } finally {
-      setConnecting(false)
+    const start = await requestMailConnect()
+    if (start.ok) {
+      // Same tab: Google's consent screen sends the browser back here, to
+      // /settings/mail?mail=<code>. The button stays busy until it leaves.
+      window.location.assign(start.url)
+      return
+    }
+    setConnecting(false)
+    toast({
+      title:
+        start.reason === 'connect_disabled'
+          ? t('connect_closed')
+          : start.reason === 'not_configured'
+            ? t('not_configured')
+            : t('connect_failed'),
+      variant: 'destructive',
+    })
+    // The route knows better than the page did: show what it says now.
+    if (start.reason !== 'failed') void mail.reload()
+  }
+
+  async function disconnect(connection: MailConnection) {
+    await confirm(
+      {
+        title: t('disconnect_title', { address: connection.emailAddress }),
+        description: t('disconnect_body'),
+        confirmLabel: t('disconnect'),
+      },
+      async () => {
+        if (!(await disconnectMailbox(connection.id))) {
+          toast({ title: t('disconnect_failed'), variant: 'destructive' })
+          throw new Error('disconnect failed')
+        }
+        toast({ title: t('disconnected_toast', { address: connection.emailAddress }) })
+        await mail.reload()
+      },
+    )
+  }
+
+  function statusText(connection: MailConnection): string {
+    switch (reconnectReason(connection)) {
+      case 'scope_missing':
+        return t('needs_reconnect_scope')
+      case 'access_ended':
+        return t('needs_reconnect_ended')
+      case 'other':
+        return t('needs_reconnect')
+      default:
+        return connection.lastSearchedAt
+          ? t('last_searched', { date: formatDateLong(connection.lastSearchedAt) })
+          : t('never_searched')
     }
   }
 
-  /**
-   * One bounded pass, on request.
-   *
-   * Deliberately not a background job: a sweep of a real mailbox runs longer
-   * than a serverless function may live, so the honest shape is a pass that
-   * ends, says what it found and what is left, and can be pressed again.
-   */
-  /**
-   * Keep asking until the mailboxes stop yielding.
-   *
-   * Each request is a bounded pass, because fetching a receipt means
-   * downloading it and having a model read the PDF, which is far too slow to
-   * finish a backlog inside one serverless invocation. The loop lives here
-   * rather than in a queue drained by cron: the finest schedule this app runs
-   * is hourly, so a queue would mean pressing a button and waiting an hour.
-   *
-   * It stops when a pass finds nothing new, which is the honest signal that
-   * the mailboxes hold nothing more for the purchases still open. The cap is a
-   * backstop against a pass that keeps reporting work it cannot finish.
-   */
+  const connectButton = (label: string, ariaLabel?: string) => (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      loading={connecting}
+      onClick={() => void connect()}
+      aria-label={ariaLabel}
+    >
+      {!connecting && <GoogleMark className="mr-2 h-3.5 w-3.5" />}
+      {label}
+    </Button>
+  )
 
-  async function disconnect(connection: MailConnection) {
-    await fetch(`${BASE}/connections?id=${encodeURIComponent(connection.id)}`, { method: 'DELETE' })
-    setPendingDisconnect(null)
-    void load()
-  }
-
-  if (loading) return null
+  const noticeText = notice
+    ? {
+        denied: t('callback_denied'),
+        invalid: t('callback_invalid'),
+        expired: t('callback_expired'),
+        mismatch: t('callback_mismatch'),
+        no_refresh_token: t('callback_no_refresh_token'),
+        no_address: t('callback_no_address'),
+        failed: t('callback_failed'),
+        scope_missing: t('callback_scope_missing'),
+      }[notice]
+    : null
 
   return (
-    <div className="space-y-8">
-      <SettingsGroup label={t('connected')} help={t('help')}>
-        {connections.length === 0 ? (
+    <>
+      {noticeText ? (
+        // One sentence, until the next attempt replaces it: the callback
+        // parameter is already gone from the URL.
+        <div role="alert" className="px-1 pt-6">
+          <AttnLine
+            action={
+              summary.canConnect
+                ? { label: notice === 'denied' ? t('connect') : t('reconnect'), onClick: () => void connect() }
+                : undefined
+            }
+          >
+            {noticeText}
+          </AttnLine>
+        </div>
+      ) : null}
+
+      <SettingsGroup label={t('group_mailboxes')} help={t('group_mailboxes_help')}>
+        {!mailExtension ? (
           <SettingsRow label={t('none_label')} borderless>
-            <SettingsRowNote>{t('none')}</SettingsRowNote>
+            <SettingsRowNote>{t('not_configured')}</SettingsRowNote>
+          </SettingsRow>
+        ) : mail.loading ? (
+          <div aria-busy="true" className="flex items-center justify-between gap-8 py-6">
+            <Skeleton className="h-4 w-56" />
+            <Skeleton className="h-8 w-28 rounded-full" />
+          </div>
+        ) : !view ? (
+          <div className="px-1 pt-3">
+            <AttnLine action={{ label: t('retry'), onClick: () => void mail.reload() }}>{t('load_failed')}</AttnLine>
+          </div>
+        ) : connections.length === 0 ? (
+          <SettingsRow label={t('none_label')} borderless>
+            {summary.canConnect ? (
+              <SettingsRowEnd>{connectButton(t('connect'))}</SettingsRowEnd>
+            ) : (
+              <SettingsRowNote>{view.configured ? t('connect_closed') : t('not_configured')}</SettingsRowNote>
+            )}
           </SettingsRow>
         ) : (
-          connections.map((connection) => (
-            <SettingsRow
-              key={connection.id}
-              label={
-                <span className="flex items-center gap-2">
-                  {connection.provider === 'gmail' ? (
-                    <GoogleMark className="h-3.5 w-3.5" />
-                  ) : (
-                    <MicrosoftMark className="h-3.5 w-3.5" />
-                  )}
-                  {connection.provider === 'gmail' ? 'Gmail' : 'Microsoft 365'}
-                </span>
-              }
-            >
-              <span className="min-w-0 flex-1 truncate">{connection.emailAddress}</span>
-              {connection.status === 'needs_reconsent' ? (
-                <Badge variant="warning">{t('needs_reconsent')}</Badge>
-              ) : null}
-              <SettingsRowEnd>
-                {connection.lastSearchedAt ? (
-                  <SettingsRowNote>
-                    {t('last_searched', { date: formatDateLong(connection.lastSearchedAt, 'sv') })}
+          <>
+            {connections.map((connection, index) => {
+              const reason = reconnectReason(connection)
+              return (
+                <SettingsRow
+                  key={connection.id}
+                  borderless={!summary.canConnect && index === connections.length - 1}
+                  label={
+                    <span className="flex min-w-0 items-center gap-2">
+                      <GoogleMark className="h-3.5 w-3.5 shrink-0" />
+                      <span data-ph-mask="" className="truncate">
+                        {connection.emailAddress}
+                      </span>
+                    </span>
+                  }
+                >
+                  <SettingsRowNote className={cn('min-w-0', reason && 'text-attn')}>
+                    {statusText(connection)}
                   </SettingsRowNote>
-                ) : null}
-                <Button variant="ghost" size="sm" onClick={() => setPendingDisconnect(connection)}>
-                  {t('disconnect')}
-                </Button>
-              </SettingsRowEnd>
-            </SettingsRow>
-          ))
+                  <SettingsRowEnd>
+                    {reason && summary.canConnect
+                      ? connectButton(t('reconnect'), t('reconnect_aria', { address: connection.emailAddress }))
+                      : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void disconnect(connection)}
+                      aria-label={t('disconnect_aria', { address: connection.emailAddress })}
+                    >
+                      {t('disconnect')}
+                    </Button>
+                  </SettingsRowEnd>
+                </SettingsRow>
+              )
+            })}
+            {summary.canConnect ? (
+              <SettingsRow label={t('connect_another')} borderless>
+                <SettingsRowEnd>{connectButton(t('connect'))}</SettingsRowEnd>
+              </SettingsRow>
+            ) : null}
+          </>
         )}
       </SettingsGroup>
 
-      {connections.length > 0 ? (
-        <SettingsGroup label={t('hunt_title')} help={t('hunt_help')}>
+      {summary.active.length > 0 ? (
+        <SettingsGroup label={t('hunt_group')} help={t('hunt_help')}>
           <SettingsRow label={t('hunt_row')} borderless>
+            <ReceiptHuntStatus
+              hunt={hunt}
+              blocked={!hasAi}
+              className="min-w-0 text-[12.5px] text-muted-foreground"
+            />
             <SettingsRowEnd>
-              {huntResult ? (
-                <SettingsRowNote>
-                  {huntResult.failed
-                    ? t('hunt_failed')
-                    : huntResult.fetched > 0
-                      ? t('hunt_found', { count: huntResult.fetched, left: huntResult.remaining })
-                      : t('hunt_none', { left: huntResult.remaining })}
-                </SettingsRowNote>
-              ) : null}
-              {hunting ? (
-                <Button variant="ghost" size="sm" onClick={stopHunt}>
+              {hunt.hunting && !hunt.stopping ? (
+                <Button type="button" variant="ghost" size="sm" onClick={hunt.stop}>
                   {t('hunt_stop')}
                 </Button>
               ) : null}
-              <Button variant="secondary" size="sm" onClick={hunt} disabled={hunting}>
-                {hunting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                {hunting
-                  ? progress
-                    ? t('hunt_progress', { fetched: progress.fetched })
-                    : t('hunt_running')
-                  : t('hunt_action')}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                loading={hunt.hunting}
+                disabled={!hasAi}
+                onClick={() => void hunt.hunt()}
+              >
+                {hunt.hunting ? t('hunt_running') : t('hunt_action')}
               </Button>
             </SettingsRowEnd>
           </SettingsRow>
         </SettingsGroup>
       ) : null}
 
-      {connectEnabled ? (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={connect} disabled={connecting || !configured}>
-            {connecting ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <GoogleMark className="mr-2 h-4 w-4" />
-            )}
-            {t('connect')}
-          </Button>
-          {!configured ? <SettingsRowNote>{t('not_configured')}</SettingsRowNote> : null}
-        </div>
-      ) : null}
+      {/* What the grant allows, stated before and after connecting: the
+          consent screen itself only says "read your email". */}
+      <SettingsGroup label={t('access_group')}>
+        <SettingsRow label={t('access_read_label')}>
+          <SettingsRowNote>{t('access_read')}</SettingsRowNote>
+        </SettingsRow>
+        <SettingsRow label={t('access_scope_label')}>
+          <SettingsRowNote>{t('access_scope')}</SettingsRowNote>
+        </SettingsRow>
+        <SettingsRow label={t('access_kept_label')}>
+          <SettingsRowNote>{t('access_kept')}</SettingsRowNote>
+        </SettingsRow>
+        <SettingsRow label={t('access_revoke_label')} borderless>
+          <SettingsRowNote>{t('access_revoke')}</SettingsRowNote>
+        </SettingsRow>
+      </SettingsGroup>
 
-      {connectEnabled || connections.length > 0 ? (
-        <p className="max-w-[62ch] text-xs text-muted-foreground">{t('promise')}</p>
-      ) : null}
-
-      <ConfirmDialog
-        open={pendingDisconnect !== null}
-        onOpenChange={(open) => !open && setPendingDisconnect(null)}
-        title={t('disconnect_title')}
-        description={t('disconnect_body', { address: pendingDisconnect?.emailAddress ?? '' })}
-        confirmLabel={t('disconnect')}
-        onConfirm={async () => {
-          if (pendingDisconnect) await disconnect(pendingDisconnect)
-        }}
-      />
-    </div>
+      <DestructiveConfirmDialog {...dialogProps} />
+    </>
   )
 }

@@ -3,107 +3,91 @@
 /**
  * Running the receipt hunt from a button.
  *
- * The loop was written for the settings panel and lived there. It belongs to
- * neither surface: the Underlag page is where a person notices that receipts
- * are missing, and asking them to walk to Settings to press the button that
- * fixes it is the kind of seam that makes a feature look broken. Both call this
- * now, so there is one definition of what a run does and when it stops.
+ * Two surfaces press it: the Gmail door in Underlag, where a person notices
+ * that receipts are missing, and Kopplingar > Gmail, right after connecting.
+ * Both call this, so there is one definition of what a run does and when it
+ * stops (receipt-hunt-run.ts).
  *
- * Why a client loop rather than one long request: a single pass is bounded by
- * the serverless ceiling, and each receipt costs a download plus a model read,
- * which is far too slow to clear a backlog inside one invocation. A queue
- * drained by cron would be the other option, but the finest schedule this app
- * runs is hourly, so pressing the button would mean waiting an hour.
- *
- * It stops when a pass finds nothing new. That is the honest signal that the
- * mailboxes hold nothing more for the purchases still open, and it is why the
- * cap below is a backstop rather than a budget.
+ * Stopping takes effect after the pass in flight: the server keeps working on
+ * a pass once it has started, so aborting the request would only hide what it
+ * still files. Leaving the page stops further passes the same way, so a run
+ * never keeps going on a page nobody can see.
  */
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { notifySessionExpired } from '@/lib/auth/session-timeout-shared'
+import { runReceiptHunt, type HuntOutcome, type HuntProgress } from './receipt-hunt-run'
 
-export interface HuntResult {
-  searched: number
-  fetched: number
-  proposed: number
-  remaining: number
-  failed?: boolean
-  /** Connections that refused the search. See the stop condition below. */
-  searchFailures?: number
+export type { HuntOutcome, HuntProgress } from './receipt-hunt-run'
+
+export interface ReceiptHunt {
+  hunt: () => Promise<void>
+  stop: () => void
+  hunting: boolean
+  /** Stop was pressed; the pass in flight is still finishing. */
+  stopping: boolean
+  /** Null until the first pass of a run has landed. */
+  progress: HuntProgress | null
+  result: HuntOutcome | null
 }
 
-export interface HuntProgress {
-  passes: number
-  fetched: number
-  proposed: number
-}
-
-/**
- * Each pass fetches a few receipts, so this is far more than any real backlog
- * needs. It exists so a pass that keeps reporting work it never completes
- * cannot run forever.
- */
-export const MAX_PASSES = 25
-
-export function useReceiptHunt(onPass?: () => void) {
+export function useReceiptHunt(onPass?: () => void): ReceiptHunt {
   const [hunting, setHunting] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [progress, setProgress] = useState<HuntProgress | null>(null)
-  const [result, setResult] = useState<HuntResult | null>(null)
+  const [result, setResult] = useState<HuntOutcome | null>(null)
   const stopped = useRef(false)
+  const running = useRef(false)
+  // The caller's refresh changes identity every render; reading it through a
+  // ref keeps `hunt` stable without running a stale one.
+  const onPassRef = useRef(onPass)
+  useEffect(() => {
+    onPassRef.current = onPass
+  })
+
+  useEffect(
+    () => () => {
+      stopped.current = true
+    },
+    [],
+  )
 
   const stop = useCallback(() => {
+    if (!running.current) return
     stopped.current = true
+    setStopping(true)
   }, [])
 
   const hunt = useCallback(async () => {
-    setHunting(true)
-    setResult(null)
+    if (running.current) return
+    running.current = true
     stopped.current = false
-
-    let passes = 0
-    let fetched = 0
-    let proposed = 0
-
+    setHunting(true)
+    setStopping(false)
+    setProgress(null)
+    setResult(null)
     try {
-      while (!stopped.current && passes < MAX_PASSES) {
-        const response = await fetch('/api/receipt-hunt/run', { method: 'POST' })
-        if (!response.ok) {
-          setResult({ searched: 0, fetched, proposed, remaining: 0, failed: true })
-          return
-        }
-
-        const body = (await response.json()) as { data: HuntResult }
-        passes++
-        fetched += body.data.fetched
-        proposed += body.data.proposed
-        setProgress({ passes, fetched, proposed })
-        // Let the caller refresh whatever the pass just changed, so a long run
-        // fills the list as it goes instead of all at once at the end.
-        onPass?.()
-
-        // Nothing new this pass: the mailboxes have no more for what is open.
-        //
-        // Unless a mailbox refused to be read, in which case zero fetched says
-        // nothing about what is in there. Stopping on it, and reporting it as
-        // "hittade inget", would tell the user their receipts do not exist
-        // because Gmail was busy. Treat it as a failure and let them retry.
-        if ((body.data.searchFailures ?? 0) > 0) {
-          setResult({ ...body.data, fetched, proposed, failed: true })
-          return
-        }
-        if (body.data.fetched === 0) {
-          setResult({ ...body.data, fetched, proposed })
-          return
-        }
-      }
-
-      setResult({ searched: 0, fetched, proposed, remaining: 0 })
-    } catch {
-      setResult({ searched: 0, fetched, proposed, remaining: 0, failed: true })
+      const outcome = await runReceiptHunt({
+        request: async () => {
+          const response = await fetch('/api/receipt-hunt/run', { method: 'POST' })
+          notifySessionExpired(response)
+          return response
+        },
+        shouldStop: () => stopped.current,
+        onPass: (next) => {
+          setProgress(next)
+          // Refresh whatever the pass changed, so a long run fills the list
+          // as it goes instead of all at once at the end.
+          onPassRef.current?.()
+        },
+      })
+      setResult(outcome)
     } finally {
+      running.current = false
       setHunting(false)
+      setStopping(false)
       setProgress(null)
     }
-  }, [onPass])
+  }, [])
 
-  return { hunt, stop, hunting, progress, result, setResult }
+  return { hunt, stop, hunting, stopping, progress, result }
 }
