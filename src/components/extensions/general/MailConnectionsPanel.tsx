@@ -108,8 +108,12 @@ export function MailConnectionsPanel({
         confirmLabel: t('disconnect'),
       },
       async () => {
-        if (!(await disconnectMailbox(connection.id))) {
-          toast({ title: t('disconnect_failed'), variant: 'destructive' })
+        const result = await disconnectMailbox(connection.id)
+        if (!result.ok) {
+          toast({
+            title: t(result.reason === 'not_allowed' ? 'disconnect_not_allowed' : 'disconnect_failed'),
+            variant: 'destructive',
+          })
           throw new Error('disconnect failed')
         }
         toast({ title: t('disconnected_toast', { address: connection.emailAddress }) })

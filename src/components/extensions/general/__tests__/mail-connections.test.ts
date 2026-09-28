@@ -188,17 +188,25 @@ describe('disconnectMailbox', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: { disconnected: true } }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(disconnectMailbox('a b&c')).resolves.toBe(true)
+    await expect(disconnectMailbox('a b&c')).resolves.toEqual({ ok: true })
     expect(fetchMock).toHaveBeenCalledWith('/api/extensions/ext/mail/connections?id=a%20b%26c', { method: 'DELETE' })
   })
 
-  it('is false on a refusal or a network error', async () => {
+  it('tells a refusal by role apart from a failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'disconnect_not_allowed' }), { status: 403 })),
+    )
+    await expect(disconnectMailbox('c1')).resolves.toEqual({ ok: false, reason: 'not_allowed' })
+  })
+
+  it('is a failure on any other refusal or a network error', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 500 })))
-    await expect(disconnectMailbox('c1')).resolves.toBe(false)
+    await expect(disconnectMailbox('c1')).resolves.toEqual({ ok: false, reason: 'failed' })
 
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new TypeError('Failed to fetch')
     }))
-    await expect(disconnectMailbox('c1')).resolves.toBe(false)
+    await expect(disconnectMailbox('c1')).resolves.toEqual({ ok: false, reason: 'failed' })
   })
 })

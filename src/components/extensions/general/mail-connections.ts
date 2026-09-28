@@ -198,15 +198,28 @@ export async function requestMailConnect(): Promise<MailConnectStart> {
   }
 }
 
-/** DELETE one mailbox. The route also revokes the grant at Google. */
-export async function disconnectMailbox(id: string): Promise<boolean> {
+export type MailDisconnectResult = { ok: true } | { ok: false; reason: 'not_allowed' | 'failed' }
+
+/**
+ * DELETE one mailbox. The route also revokes the grant at Google. Never throws.
+ *
+ * `not_allowed` is the route saying this person neither connected the
+ * mailbox nor is an owner or admin: trying again cannot help, so the panel
+ * says who can instead.
+ */
+export async function disconnectMailbox(id: string): Promise<MailDisconnectResult> {
   try {
     const response = await fetch(`${MAIL_ROUTE_BASE}/connections?id=${encodeURIComponent(id)}`, {
       method: 'DELETE',
     })
-    if (!response.ok) notifySessionExpired(response)
-    return response.ok
+    if (response.ok) return { ok: true }
+    const body = (await response.json().catch(() => null)) as { error?: unknown } | null
+    if (response.status === 403 && body?.error === 'disconnect_not_allowed') {
+      return { ok: false, reason: 'not_allowed' }
+    }
+    notifySessionExpired(response)
+    return { ok: false, reason: 'failed' }
   } catch {
-    return false
+    return { ok: false, reason: 'failed' }
   }
 }

@@ -394,6 +394,7 @@
     "disconnect_body": "Åtkomsten återkallas hos Google direkt och inga fler kvitton hämtas därifrån. Kvitton som redan hämtats ligger kvar.",
     "disconnected_toast": "{address} är frånkopplad",
     "disconnect_failed": "Brevlådan kunde inte kopplas från. Försök igen.",
+    "disconnect_not_allowed": "Bara den som kopplade brevlådan, eller en ägare eller administratör, kan koppla från den.",
     "last_searched": "Senast genomsökt {date}",
     "never_searched": "Inte genomsökt än",
     "needs_reconnect": "Behöver kopplas igen innan den kan läsas.",

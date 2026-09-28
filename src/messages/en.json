@@ -394,6 +394,7 @@
     "disconnect_body": "Access is revoked at Google straight away and no more receipts are fetched from it. Receipts already fetched stay where they are.",
     "disconnected_toast": "{address} is disconnected",
     "disconnect_failed": "The mailbox could not be disconnected. Try again.",
+    "disconnect_not_allowed": "Only the person who connected this mailbox, or an owner or admin, can disconnect it.",
     "last_searched": "Last searched {date}",
     "never_searched": "Not searched yet",
     "needs_reconnect": "Needs reconnecting before it can be read.",
