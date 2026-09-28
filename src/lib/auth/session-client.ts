@@ -1,4 +1,5 @@
 import { clearBrowserAccessToken } from '@/lib/supabase/browser-session-token'
+import { clearBrowserStorage } from '@/lib/auth/clear-browser-storage'
 import { resetAnalyticsIdentity } from '@/lib/analytics/reset'
 import { scrubAuthCookies } from '@/lib/auth/browser-session-cookies'
 
@@ -228,13 +229,15 @@ export function isInsufficientAal(error: AuthClientError | null): boolean {
 // Sign-out
 
 /**
- * Drop what the browser holds for the session: the in-memory access token,
- * the analytics identity, and any script-visible leftover auth cookie from
- * before the session became server-held (a stray duplicate under another
- * Path or Domain, PH 99).
+ * Drop everything the browser holds for the session (CASA 6.6.1): the
+ * in-memory access token, sessionStorage, localStorage minus display
+ * preferences (lib/auth/clear-browser-storage.ts), the analytics identity,
+ * and any script-visible leftover auth cookie from before the session became
+ * server-held (a stray duplicate under another Path or Domain, PH 99).
  */
 export function clearBrowserSessionState(): void {
   clearBrowserAccessToken()
+  clearBrowserStorage()
   resetAnalyticsIdentity()
   if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     try {

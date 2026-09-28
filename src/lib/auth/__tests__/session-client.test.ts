@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   clearToken: vi.fn(),
+  clearStorage: vi.fn(() => []),
   resetAnalytics: vi.fn(),
   scrub: vi.fn(() => 0),
 }))
 
 vi.mock('@/lib/supabase/browser-session-token', () => ({ clearBrowserAccessToken: mocks.clearToken }))
+vi.mock('@/lib/auth/clear-browser-storage', () => ({ clearBrowserStorage: mocks.clearStorage }))
 vi.mock('@/lib/analytics/reset', () => ({ resetAnalyticsIdentity: mocks.resetAnalytics }))
 vi.mock('@/lib/auth/browser-session-cookies', () => ({ scrubAuthCookies: mocks.scrub }))
 
@@ -91,8 +93,8 @@ describe('fetchSessionUser', () => {
   })
 })
 
-describe('signOut', () => {
-  it('asks the server to revoke, then clears token, analytics identity and stray cookies', async () => {
+describe('signOut (CASA 6.6.1)', () => {
+  it('asks the server to revoke, then clears token, storage, analytics identity and stray cookies', async () => {
     fetchMock.mockResolvedValue(json(200, { data: { revoked: true } }))
 
     const result = await signOut()
@@ -102,6 +104,7 @@ describe('signOut', () => {
     expect(path).toBe('/api/auth/logout')
     expect(JSON.parse(init.body as string)).toEqual({ scope: 'global' })
     expect(mocks.clearToken).toHaveBeenCalled()
+    expect(mocks.clearStorage).toHaveBeenCalled()
     expect(mocks.resetAnalytics).toHaveBeenCalled()
     expect(mocks.scrub).toHaveBeenCalled()
   })
@@ -116,7 +119,7 @@ describe('signOut', () => {
     fetchMock.mockRejectedValue(new TypeError('offline'))
     const { error } = await signOut()
     expect(error?.code).toBe('network_error')
-    expect(mocks.clearToken).toHaveBeenCalled()
+    expect(mocks.clearStorage).toHaveBeenCalled()
   })
 
   it('signOutAndNavigate leaves with a full page load', async () => {
