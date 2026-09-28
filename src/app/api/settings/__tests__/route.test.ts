@@ -216,6 +216,11 @@ describe('PUT /api/settings', () => {
     expect(findCall('dimension_values', 'upsert')?.[0]).toEqual([
       { company_id: 'company-1', dimension_id: 'dim-6', code: 'P001', name: 'P001', is_active: false },
     ])
+    // The settings page's toggle confirms the registration from this count
+    // instead of scanning a second time.
+    const body = await response.json()
+    expect(body.dimension_codes_imported).toBe(1)
+    expect(body.data).toEqual({ id: 's1', dimensions_enabled: true })
   })
 
   it('does not scan again when the save leaves dimensions on', async () => {
@@ -232,6 +237,9 @@ describe('PUT /api/settings', () => {
 
     expect(response.status).toBe(200)
     expect(supabase.rpc).not.toHaveBeenCalled()
+    // No transition, no registration: null tells the toggle to run the scan
+    // itself if it still wants to.
+    expect((await response.json()).dimension_codes_imported).toBeNull()
   })
 
   it('accepts the invoice type visibility toggles', async () => {
