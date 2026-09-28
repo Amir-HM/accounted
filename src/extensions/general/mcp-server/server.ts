@@ -238,6 +238,12 @@ import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/cre
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import { CreateDimensionValueParamsSchema } from '@/lib/pending-operations/schemas/dimension-value'
 import { RetagLineDimensionsParamsSchema, RETAG_MAX_LINES } from '@/lib/pending-operations/schemas/retag-line-dimensions'
+import {
+  dimensionsLabel,
+  resultingDimensions,
+  sameDimensions,
+  storedDimensions,
+} from '@/lib/dimensions/retag-service'
 import { UpdateCustomerParamsSchema } from '@/lib/pending-operations/schemas/customer'
 import {
   CreateRecurringScheduleParamsSchema,
@@ -11229,13 +11235,18 @@ export const tools: McpTool[] = [
         dimensions: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Dimensions bag applied to every matched line, REPLACING its current bag: {"<sie_dim_no>":"<kod eller namn>"}, e.g. {"6":"P01"}. Values may be registry codes or names: resolved server-side (resolve-don\'t-select).',
+          description: 'Pairs set on every matched line: {"<sie_dim_no>":"<kod eller namn>"}, e.g. {"6":"P01"}. Codes or names, resolved server-side.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['merge', 'replace'],
+          description: "merge (default) keeps each line's other dimensions; replace makes its bag exactly `dimensions`.",
         },
         reason: {
           type: 'string',
           minLength: 3,
           maxLength: 500,
-          description: 'Why the lines are retagged: stored per line in the immutable dimension_retag_log.',
+          description: 'Why: stored per line in the immutable dimension_retag_log.',
         },
         filters: {
           type: 'object',
@@ -11248,7 +11259,7 @@ export const tools: McpTool[] = [
             date_from: { type: 'string', description: 'Earliest entry date (YYYY-MM-DD, inclusive).' },
             date_to: { type: 'string', description: 'Latest entry date (YYYY-MM-DD, inclusive).' },
             text: { type: 'string', maxLength: 200, description: 'Case-insensitive substring match on the ENTRY description (verifikattext): line descriptions are not searched.' },
-            only_untagged: { type: 'boolean', description: 'Only lines whose dimensions bag is exactly empty ({}). Lines already carrying ANY dimension are excluded: partially tagged lines do not match.' },
+            only_untagged: { type: 'boolean', description: 'Only lines with no dimension at all ({}); partially tagged lines do not match.' },
           },
         },
         dry_run: {
@@ -11274,6 +11285,14 @@ export const tools: McpTool[] = [
       const inputBag = parseDimensionsArg(args.dimensions, 'dimensions')
       if (!inputBag) {
         throw new Error('dimensions must contain at least one {"<sie_dim_no>":"<kod eller namn>"} pair, e.g. {"6":"P01"}.')
+      }
+
+      // merge by default: tagging projekt on a line that carries a
+      // kostnadsställe keeps the kostnadsställe, as in the dashboard
+      // workbench. Hosts do not always enforce the enum, so check it here.
+      const mode = args.mode ?? 'merge'
+      if (mode !== 'merge' && mode !== 'replace') {
+        throw new Error("mode must be 'merge' (keep each line's other dimensions) or 'replace'.")
       }
 
       // ── Filters: validated before any DB work so bad input fails fast.
@@ -11320,6 +11339,7 @@ export const tools: McpTool[] = [
         debit_amount: number
         credit_amount: number
         sort_order: number
+        dimensions: unknown
         journal_entries: { id: string; entry_date: string; voucher_number: number; voucher_series: string }
       }
 
@@ -11398,6 +11418,7 @@ export const tools: McpTool[] = [
         debit_amount: number
         credit_amount: number
         sort_order: number
+        dimensions: unknown
       }
 
       const rows: MatchedRow[] = []
@@ -11427,7 +11448,7 @@ export const tools: McpTool[] = [
             const chunkLines = await fetchLinesByEntryIds<BareLineRow>(
               supabase,
               chunkIds,
-              'id, account_number, debit_amount, credit_amount, sort_order',
+              'id, account_number, debit_amount, credit_amount, sort_order, dimensions',
               filterLines,
             )
             for (const line of chunkLines) {
@@ -11489,15 +11510,32 @@ export const tools: McpTool[] = [
       if (onlyUntagged) summaryParts.push('endast otaggade rader')
       const filterSummary = summaryParts.join(', ').slice(0, 500)
 
-      const bagLabel = Object.entries(resolvedBag)
-        .map(([dim, code]) => `${dim}=${code}`)
-        .join(', ')
+      const bagLabel = dimensionsLabel(resolvedBag)
+
+      // The bag each line ends up with (lib/dimensions/retag-service.ts, the
+      // same computation the approval runs): grouped for the whole match, and
+      // before/after on the sample lines. A merge is applied to the bags as
+      // they are at approval, so a tag set in between is kept.
+      const outcomes = rows.map((r) => {
+        const before = storedDimensions(r.dimensions)
+        const after = resultingDimensions(before, resolvedBag, mode)
+        return { before, after }
+      })
+      const resultingBags: Record<string, number> = {}
+      for (const { after } of outcomes) {
+        const label = dimensionsLabel(after)
+        resultingBags[label] = (resultingBags[label] ?? 0) + 1
+      }
+      const unchangedLines = outcomes.filter(({ before, after }) => sameDimensions(before, after)).length
 
       // Same Zod schema the commit executor re-validates with: the staged
       // params can never drift from what commitRetagLineDimensions accepts.
+      // The mode is always staged explicitly: a row without one reads as a
+      // replace at commit (what rows staged before merge existed meant).
       const params = RetagLineDimensionsParamsSchema.parse({
         line_ids: rows.map((r) => r.id),
         dimensions: resolvedBag,
+        mode,
         reason,
         filter_summary: filterSummary,
       })
@@ -11505,20 +11543,29 @@ export const tools: McpTool[] = [
       // No dateForPeriodCheck: the matched lines span dates; the retag RPC
       // enforces open-period + lock-date per line at commit time.
       return stagePendingOperation(supabase, companyId, userId, 'retag_line_dimensions',
-        `Tagga om ${rows.length} verifikationsrader: ${bagLabel}`,
+        mode === 'merge'
+          ? `Tagga om ${rows.length} verifikationsrader: ${bagLabel}`
+          : `Ersätt dimensionerna på ${rows.length} verifikationsrader: ${bagLabel}`,
         params as unknown as Record<string, unknown>,
         {
           matched_lines: rows.length,
+          mode,
           dimensions: resolvedBag,
+          resulting_dimensions: resultingBags,
+          unchanged_lines: unchangedLines,
           filter_summary: filterSummary,
-          sample: rows.slice(0, 10).map((r) => ({
+          sample: rows.slice(0, 10).map((r, i) => ({
             account: r.account_number,
             date: r.journal_entries.entry_date,
             debit: r.debit_amount,
             credit: r.credit_amount,
+            dimensions_before: outcomes[i].before,
+            dimensions_after: outcomes[i].after,
           })),
           ...(resolutions.length > 0 ? { dimension_resolutions: resolutions } : {}),
-          will: 'replace the dimensions bag on every matched POSTED line via the audited retag RPC: internal reporting only, the verifikat itself is untouched',
+          will: mode === 'merge'
+            ? 'set these dimensions on every matched POSTED line and keep its other dimensions, via the audited retag RPC: internal reporting only, the verifikat itself is untouched'
+            : 'replace the dimensions bag on every matched POSTED line via the audited retag RPC: internal reporting only, the verifikat itself is untouched',
         },
         actor,
         {

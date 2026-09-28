@@ -5954,6 +5954,15 @@ const DIMENSION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Import av befintliga dimensionskoder misslyckades.',
     message_en: 'Failed to import existing dimension codes from journal lines.',
   },
+  // A retag of posted lines (lib/dimensions/retag-service.ts) where the RPC
+  // refused every line. Partial success is not an error: each line is its
+  // own transaction and the refused ones are listed.
+  DIMENSION_RETAG_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Ingen rad kunde taggas om.',
+    message_en:
+      'No line could be retagged: every line was refused. details.failed names each line and why (locked or closed period, lock date, a draft, a code missing from the registry or archived, a line of another company).',
+  },
 }
 
 // ─────────────────────────────────────────────────────────────────
