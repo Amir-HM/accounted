@@ -1123,7 +1123,7 @@ describe('salary entries: all vouchers or none, and a retry never posts one twic
       'Lön 2026-06: Semesteravsättning',
     ])
     expect(result.salaryEntry.id).toBe(fake.ledger[0].id)
-    expect(result.avgifterEntry.id).toBe(fake.ledger[1].id)
+    expect(result.avgifterEntry?.id).toBe(fake.ledger[1].id)
     expect(result.vacationEntry?.id).toBe(fake.ledger[2].id)
     expect(result.pensionEntry).toBeNull()
     expect(mockedCancel).not.toHaveBeenCalled()
@@ -1200,7 +1200,7 @@ describe('salary entries: all vouchers or none, and a retry never posts one twic
       'Lön 2026-06: Semesteravsättning',
     ])
     expect(retry.salaryEntry.id).toBe(firstSalaryId)
-    expect(retry.avgifterEntry.id).toBe(fake.ledger[1].id)
+    expect(retry.avgifterEntry?.id).toBe(fake.ledger[1].id)
     expect(retry.vacationEntry?.id).toBe(fake.ledger[2].id)
   })
 
@@ -1214,9 +1214,9 @@ describe('salary entries: all vouchers or none, and a retry never posts one twic
     expect(mockedCreateEntry).not.toHaveBeenCalled()
     expect(mockedCommit).not.toHaveBeenCalled()
     expect(fake.ledger).toHaveLength(3)
-    expect([again.salaryEntry.id, again.avgifterEntry.id, again.vacationEntry?.id]).toEqual([
+    expect([again.salaryEntry.id, again.avgifterEntry?.id, again.vacationEntry?.id]).toEqual([
       first.salaryEntry.id,
-      first.avgifterEntry.id,
+      first.avgifterEntry?.id,
       first.vacationEntry?.id,
     ])
   })
