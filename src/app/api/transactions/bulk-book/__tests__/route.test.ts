@@ -606,6 +606,7 @@ describe('POST /api/transactions/bulk-book: duplicate guard', () => {
  */
 describe('POST /api/transactions/bulk-book: dimension policy', () => {
   const mockUser = { id: 'user-1', email: 'test@test.se' }
+  const emptyParams = { params: Promise.resolve({}) }
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -634,7 +635,8 @@ describe('POST /api/transactions/bulk-book: dimension policy', () => {
     enqueue({ data: [{ dimension_id: 'dim-proj', code: 'P001', is_active: false }], error: null })
 
     const response = await POST(
-      createMockRequest('/api/transactions/bulk-book', { method: 'POST', body: manualLinesBody({ '6': 'P001' }) })
+      createMockRequest('/api/transactions/bulk-book', { method: 'POST', body: manualLinesBody({ '6': 'P001' }) }),
+      emptyParams,
     )
     const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
 
@@ -657,7 +659,8 @@ describe('POST /api/transactions/bulk-book: dimension policy', () => {
     enqueue({ data: [], error: null }) // event re-fetch
 
     const response = await POST(
-      createMockRequest('/api/transactions/bulk-book', { method: 'POST', body: manualLinesBody({ '6': 'P001' }) })
+      createMockRequest('/api/transactions/bulk-book', { method: 'POST', body: manualLinesBody({ '6': 'P001' }) }),
+      emptyParams,
     )
 
     expect(response.status).toBe(200)

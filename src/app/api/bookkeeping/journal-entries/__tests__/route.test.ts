@@ -704,6 +704,7 @@ describe('POST /api/bookkeeping/journal-entries', () => {
  */
 describe('POST /api/bookkeeping/journal-entries: source_type allowlist', () => {
   const mockUser = { id: 'user-1', email: 'test@test.se' }
+  const emptyParams = { params: Promise.resolve({}) }
   const baseBody = {
     fiscal_period_id: VALID_UUID,
     entry_date: '2024-06-15',
@@ -735,7 +736,7 @@ describe('POST /api/bookkeeping/journal-entries: source_type allowlist', () => {
       method: 'POST',
       body: { ...baseBody, source_type: sourceType },
     })
-    const response = await POST(request)
+    const response = await POST(request, emptyParams)
     const { status, body } = await parseJsonResponse<{ error: string; errors: Array<{ field: string }> }>(response)
 
     expect(status).toBe(400)
@@ -751,7 +752,7 @@ describe('POST /api/bookkeeping/journal-entries: source_type allowlist', () => {
       method: 'POST',
       body: { ...baseBody, source_type: 'vat_settlement' },
     })
-    const response = await POST(request)
+    const response = await POST(request, emptyParams)
 
     expect(response.status).toBe(200)
     expect(mockCreateJournalEntry).toHaveBeenCalledWith(
@@ -769,7 +770,7 @@ describe('POST /api/bookkeeping/journal-entries: source_type allowlist', () => {
       method: 'POST',
       body: baseBody,
     })
-    const response = await POST(request)
+    const response = await POST(request, emptyParams)
 
     expect(response.status).toBe(200)
     expect(mockCreateJournalEntry).toHaveBeenCalledWith(

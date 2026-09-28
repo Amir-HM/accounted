@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Logger } from '@/lib/logger'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 import { enforceBulkBookDimensionPolicy } from '../bulk-book'
 import { DimensionValidationError, MandatoryDimensionMissingError } from '@/lib/bookkeeping/errors'
@@ -43,7 +44,7 @@ function tables(q: ReturnType<typeof createQueuedMockSupabase>): string[] {
   return q.supabase.from.mock.calls.map((call) => call[0] as string)
 }
 
-function run(q: ReturnType<typeof createQueuedMockSupabase>, lines: Line[], log?: { warn: ReturnType<typeof vi.fn> }) {
+function run(q: ReturnType<typeof createQueuedMockSupabase>, lines: Line[], log?: Pick<Logger, 'warn'>) {
   return enforceBulkBookDimensionPolicy(q.supabase as unknown as SupabaseClient, 'company-1', lines, log)
 }
 
@@ -135,7 +136,7 @@ describe('enforceBulkBookDimensionPolicy', () => {
     q.enqueue({ data: { dimensions_enabled: true } })
     q.enqueue({ data: REGISTRY })
     q.enqueue({ data: [] })
-    const log = { warn: vi.fn() }
+    const log = { warn: vi.fn<Logger['warn']>() }
 
     const tagged = [{ ...LINES[0], dimensions: { '6': 'P999' } }, LINES[1]]
     await expect(run(q, tagged, log)).rejects.toBeInstanceOf(DimensionValidationError)

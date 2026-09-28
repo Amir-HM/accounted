@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { eventBus } from '@/lib/events/bus'
 import { makeJournalEntry, makeJournalEntryLine } from '@/tests/helpers'
+import type { CreateJournalEntryLineInput } from '@/types'
 import {
   BookkeepingDatabaseError,
   CorrectionChainTooDeepError,
@@ -759,7 +760,7 @@ describe('correctEntry: dimension-only corrections', () => {
   it('still rejects lines identical up to key order, aliases, leading zeros and empty values', async () => {
     const supabase = makeClient()
     results = [{ data: taggedOriginal, error: null }]
-    const sameBag = [
+    const sameBag: CreateJournalEntryLineInput[] = [
       {
         account_number: '4010',
         debit_amount: 1000,

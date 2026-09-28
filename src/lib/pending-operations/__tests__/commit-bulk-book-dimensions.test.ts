@@ -12,6 +12,11 @@ import type { PendingOperation } from '@/types'
 import { commitPendingOperation } from '../commit'
 
 function makeBulkBookOp(lines: Array<Record<string, unknown>>): PendingOperation {
+  const params: Record<string, unknown> = {
+    tx_ids: ['tx-1'],
+    existing_journal_entry_id: null,
+    new_entry: { description: 'Material', lines },
+  }
   return {
     id: 'op-bulk-dims',
     user_id: 'user-1',
@@ -19,21 +24,20 @@ function makeBulkBookOp(lines: Array<Record<string, unknown>>): PendingOperation
     operation_type: 'bulk_book_transactions',
     status: 'pending',
     title: 'Samlingsverifikation -400,00 SEK 2026-05-12: Byggvaror',
-    params: {
-      tx_ids: ['tx-1'],
-      existing_journal_entry_id: null,
-      new_entry: { description: 'Material', lines },
-    },
+    params,
     preview_data: {},
     result_data: null,
     actor_type: 'api_key',
     actor_id: 'key-1',
     actor_label: 'agent',
     risk_level: 'medium',
+    agent_metadata: null,
+    rejection_category: null,
+    rejection_reason: null,
     created_at: '2026-05-12T00:00:00Z',
     resolved_at: null,
     updated_at: '2026-05-12T00:00:00Z',
-  } as PendingOperation
+  }
 }
 
 const TAGGED = [
