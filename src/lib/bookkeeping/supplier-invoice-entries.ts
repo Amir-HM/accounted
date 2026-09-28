@@ -322,8 +322,42 @@ export async function buildSupplierInvoiceRegistrationEntryInput(
   return input
 }
 
+export interface SupplierInvoicePaymentLinesOptions {
+  /**
+   * SEK cleared off 2440: at the booked rate when there is a kursdifferens;
+   * with `sekClearingDebt`, the SEK that left the bank for the invoice, net
+   * of any fee.
+   */
+  paymentAmount: number
+  /** Kursvinst (> 0) or kursförlust (< 0) in SEK; omit for none. */
+  exchangeRateDifference?: number
+  supplierName?: string
+  /** Account credited; DEFAULT_SUPPLIER_PAYMENT_ACCOUNT when omitted. */
+  paymentAccount?: string
+  /** Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570. */
+  bankFeeSek?: number
+  /**
+   * Pure-SEK bank match: the SEK debt this payment clears off 2440 (the
+   * invoice's remaining). There is no kursdifferens in SEK, so
+   * exchangeRateDifference must be omitted.
+   */
+  sekClearingDebt?: number
+}
+
+export interface SupplierInvoicePaymentLines {
+  description: string
+  /** The payment account the bank leg credits. */
+  creditAccount: string
+  lines: CreateJournalEntryLineInput[]
+  /** The öresavrundning booked on 3740 (SEK clearing only); 0 for none. */
+  oreDiffSek: number
+}
+
 /**
- * Create journal entry when a supplier invoice is paid (accrual method)
+ * The verifikat of a supplier payment under faktureringsmetoden, pure:
+ * createSupplierInvoicePaymentEntry books exactly these lines and the payment
+ * previews show them, so the rows a user approves or edits carry what gets
+ * booked, the invoice's dimensions on every leg included.
  *
  *   Debit  2440 Leverantörsskulder   [payment amount]
  *   Credit 1930 Företagskonto        [payment amount]
@@ -334,57 +368,36 @@ export async function buildSupplierInvoiceRegistrationEntryInput(
  *   Credit/Debit 3960/7960           [difference]
  *
  * SEK clearing of a matched bank row (`sekClearingDebt`): the lines come from
- * buildSupplierPaymentClearingLines, the builder the match preview shows, so
- * a sub-krona difference between the debt and the bank amount is booked on
- * 3740 and 2440 clears in full. Every mode stamps the invoice's dimensions on
- * every leg.
+ * buildSupplierPaymentClearingLines, so a sub-krona difference between the
+ * debt and the bank amount is booked on 3740 and 2440 clears in full.
  */
-export async function createSupplierInvoicePaymentEntry(
-  supabase: SupabaseClient,
-  companyId: string,
-  userId: string,
-  invoice: SupplierInvoice,
-  paymentAmount: number,
-  paymentDate: string,
-  exchangeRateDifference?: number,
-  supplierName?: string,
-  paymentAccount?: string,
-  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>,
-  // Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570.
-  bankFeeSek?: number,
-  // Pure-SEK bank match: the SEK debt this payment clears off 2440 (the
-  // invoice's remaining). paymentAmount is then the SEK that left the bank
-  // for the invoice, net of any fee. There is no kursdifferens in SEK, so
-  // exchangeRateDifference must be omitted.
-  sekClearingDebt?: number,
-): Promise<JournalEntry | null> {
+export function buildSupplierInvoicePaymentLines(
+  invoice: Pick<SupplierInvoice, 'supplier_invoice_number' | 'arrival_number' | 'default_dimensions'>,
+  options: SupplierInvoicePaymentLinesOptions,
+): SupplierInvoicePaymentLines {
+  const { paymentAmount, exchangeRateDifference, supplierName, bankFeeSek, sekClearingDebt } = options
   if (sekClearingDebt !== undefined && exchangeRateDifference) {
-    throw new Error('createSupplierInvoicePaymentEntry: a SEK clearing has no exchange rate difference')
+    throw new Error('buildSupplierInvoicePaymentLines: a SEK clearing has no exchange rate difference')
   }
-  const creditAccount = paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
-  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
-  if (!fiscalPeriodId) {
-    log.warn('No open fiscal period found for payment date:', paymentDate)
-    return null
-  }
+  const creditAccount = options.paymentAccount || DEFAULT_SUPPLIER_PAYMENT_ACCOUNT
 
   const desc = buildSupplierDescription('Utbetalning leverantörsfaktura', invoice.supplier_invoice_number, supplierName, `(ankomstnr ${invoice.arrival_number})`)
   const lines: CreateJournalEntryLineInput[] = []
   // Dimensions PR7: the payment voucher re-propagates the linked invoice's
   // default bag onto every leg (incl. FX result lines), see the stamp below.
   const defaultDimensions = coerceDimensionsBag(invoice.default_dimensions)
+  let oreDiffSek = 0
 
   if (sekClearingDebt !== undefined) {
-    // Matched SEK bank row: the preview's own builder, so the committed lines
-    // equal the previewed ones (3740 öresavrundning and 6570 bank fee included).
-    lines.push(
-      ...buildSupplierPaymentClearingLines({
-        apSek: sekClearingDebt,
-        bankSek: paymentAmount,
-        paymentAccount: creditAccount,
-        bankFeeSek,
-      }).lines,
-    )
+    // Matched SEK bank row: 3740 öresavrundning and the 6570 bank fee included.
+    const clearing = buildSupplierPaymentClearingLines({
+      apSek: sekClearingDebt,
+      bankSek: paymentAmount,
+      paymentAccount: creditAccount,
+      bankFeeSek,
+    })
+    lines.push(...clearing.lines)
+    oreDiffSek = clearing.oreDiffSek
   } else if (exchangeRateDifference && exchangeRateDifference !== 0) {
     // Foreign currency with exchange rate difference
     const originalSekAmount = paymentAmount
@@ -449,10 +462,48 @@ export async function createSupplierInvoicePaymentEntry(
     for (const line of lines) line.dimensions = { ...defaultDimensions }
   }
 
+  return { description: desc, creditAccount, lines, oreDiffSek }
+}
+
+/**
+ * Create the journal entry when a supplier invoice is paid (accrual method):
+ * the lines of buildSupplierInvoicePaymentLines, booked in the open period of
+ * the payment date. Returns null when no open period covers it.
+ */
+export async function createSupplierInvoicePaymentEntry(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  invoice: SupplierInvoice,
+  paymentAmount: number,
+  paymentDate: string,
+  exchangeRateDifference?: number,
+  supplierName?: string,
+  paymentAccount?: string,
+  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>,
+  // Bank fee on top of the invoice (splitSupplierBankFee), booked on 6570.
+  bankFeeSek?: number,
+  // Pure-SEK bank match: see SupplierInvoicePaymentLinesOptions.sekClearingDebt.
+  sekClearingDebt?: number,
+): Promise<JournalEntry | null> {
+  const { description, creditAccount, lines } = buildSupplierInvoicePaymentLines(invoice, {
+    paymentAmount,
+    exchangeRateDifference,
+    supplierName,
+    paymentAccount,
+    bankFeeSek,
+    sekClearingDebt,
+  })
+  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
+  if (!fiscalPeriodId) {
+    log.warn('No open fiscal period found for payment date:', paymentDate)
+    return null
+  }
+
   const input: CreateJournalEntryInput = {
     fiscal_period_id: fiscalPeriodId,
     entry_date: paymentDate,
-    description: desc,
+    description,
     source_type: 'supplier_invoice_paid',
     source_id: invoice.id,
     ...(bankTransaction ? { bank_booking_context: [bankBookingContext(bankTransaction, creditAccount)] } : {}),
