@@ -559,3 +559,56 @@ describe('createDraftEntry — system-source exemption (PR10)', () => {
     expect(lineRows[0].dimensions).toEqual({})
   })
 })
+
+/**
+ * Accrual dissolutions replay a schedule that may pre-date a rule on its P&L
+ * or interim account. A required rule must not strand the remaining
+ * installments (the daily cron would retry the same impossible entry while
+ * the interim account stays overstated), and a default/fixed rule must not
+ * re-tag one side of a dissolution whose two lines carry the schedule's bag.
+ */
+describe('accrual dissolutions: exempt from account dimension rules', () => {
+  const requiredRule = makeRuleRow({ rule_type: 'required', dimension_values: null })
+
+  it('commits an untagged dissolution despite a required rule added after the schedule', async () => {
+    const { supabase } = buildSupabase({
+      ...BASE_TABLES,
+      account_dimension_rules: { data: [requiredRule] },
+      journal_entry_lines: {
+        data: [
+          { account_number: '4010', dimensions: {}, journal_entries: { source_type: 'accrual' } },
+          { account_number: '1790', dimensions: {}, journal_entries: { source_type: 'accrual' } },
+        ],
+      },
+    })
+
+    const entry = await commitEntry(supabase as never, 'company-1', 'user-1', 'entry-1')
+
+    expect(entry.id).toBe('entry-1')
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      'commit_journal_entry',
+      expect.objectContaining({ p_entry_id: 'entry-1' })
+    )
+  })
+
+  it('never re-tags one side of a dissolution with a fixed rule', async () => {
+    const { supabase, inserts, queriedTables } = buildSupabase({
+      ...BASE_TABLES,
+      account_dimension_rules: {
+        data: [makeRuleRow({ rule_type: 'fixed', dimension_values: { code: 'PLOCK' } })],
+      },
+    })
+
+    await createDraftEntry(
+      supabase as never,
+      'company-1',
+      'user-1',
+      makeInput(undefined, { source_type: 'accrual', source_id: 'sched-1' })
+    )
+
+    expect(queriedTables()).not.toContain('account_dimension_rules')
+    const lineRows = inserts.journal_entry_lines[0] as Array<Record<string, unknown>>
+    expect(lineRows[0].dimensions).toEqual({})
+    expect(lineRows[1].dimensions).toEqual({})
+  })
+})

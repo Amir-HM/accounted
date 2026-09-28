@@ -15,8 +15,14 @@ import { describe, it, expect } from 'vitest'
 import {
   applyDimensionRules,
   assertMandatoryDimensions,
+  DIMENSION_RULE_EXEMPT_SOURCE_TYPES,
+  DIMENSION_RULE_POLICY,
+  DIMENSION_VALIDATION_EXEMPT_SOURCE_TYPES,
+  isDimensionRuleExemptSource,
+  isDimensionValidationExemptSource,
   type AccountDimensionRule,
 } from '../dimension-rules'
+import { JournalEntrySourceTypeSchema } from '@/lib/api/schemas'
 import {
   MANDATORY_DIMENSION_MISSING,
   MandatoryDimensionMissingError,
@@ -251,5 +257,82 @@ describe('assertMandatoryDimensions', () => {
     const rules = [makeRule({ account_number: '5010', rule_type: 'required', value_code: null })]
 
     expect(() => assertMandatoryDimensions(lines, rules)).not.toThrow()
+  })
+})
+
+/**
+ * The source-type policy is a closed classification: every value of the
+ * journal source_type enum sits in exactly one bucket, and the lists below
+ * are the spec. A new source type fails here (and in the typecheck, through
+ * the Record in dimension-rules.ts) until someone decides whether a user can
+ * tag the lines it books.
+ */
+describe('dimension rule policy per source type', () => {
+  const ENFORCED = [
+    'manual',
+    'bank_transaction',
+    'inbox_item',
+    'invoice_created',
+    'invoice_paid',
+    'invoice_cash_payment',
+    'supplier_invoice_registered',
+    'supplier_invoice_paid',
+    'supplier_invoice_cash_payment',
+    'supplier_invoice_privately_paid',
+    'salary_payment',
+    'webshop_order',
+    'expense_claim',
+    'reminder_fee',
+  ]
+  const EXEMPT = [
+    'opening_balance',
+    'import',
+    'year_end',
+    'result_appropriation',
+    'currency_revaluation',
+    'storno',
+    'correction',
+    'credit_note',
+    'supplier_credit_note',
+    'system',
+    'accrual',
+    'vat_settlement',
+    'rot_rut_payout',
+    'rot_rut_reclaim',
+    'expense_payout',
+    'stripe_payout',
+  ]
+
+  it('classifies every source type of the enum into exactly one bucket', () => {
+    const all = [...JournalEntrySourceTypeSchema.options].sort()
+    expect([...ENFORCED, ...EXEMPT].sort()).toEqual(all)
+    expect(ENFORCED.filter((t) => EXEMPT.includes(t))).toEqual([])
+    expect(Object.keys(DIMENSION_RULE_POLICY).sort()).toEqual(all)
+  })
+
+  it('exempts exactly the exempt bucket from rules', () => {
+    for (const sourceType of ENFORCED) {
+      expect(isDimensionRuleExemptSource(sourceType), sourceType).toBe(false)
+    }
+    for (const sourceType of EXEMPT) {
+      expect(isDimensionRuleExemptSource(sourceType), sourceType).toBe(true)
+    }
+    expect([...DIMENSION_RULE_EXEMPT_SOURCE_TYPES].sort()).toEqual([...EXEMPT].sort())
+    // Unknown or missing source types are never exempt: the engine enforces.
+    expect(isDimensionRuleExemptSource(undefined)).toBe(false)
+    expect(isDimensionRuleExemptSource(null)).toBe(false)
+    expect(isDimensionRuleExemptSource('not_a_source_type')).toBe(false)
+  })
+
+  it('exempts accrual dissolutions from rules, not only from registry validation', () => {
+    expect(isDimensionRuleExemptSource('accrual')).toBe(true)
+    expect(isDimensionValidationExemptSource('accrual')).toBe(true)
+  })
+
+  it('keeps the registry-validation exemption a narrow subset of the rule exemption', () => {
+    expect([...DIMENSION_VALIDATION_EXEMPT_SOURCE_TYPES]).toEqual(['accrual'])
+    for (const sourceType of DIMENSION_VALIDATION_EXEMPT_SOURCE_TYPES) {
+      expect(DIMENSION_RULE_EXEMPT_SOURCE_TYPES.has(sourceType), sourceType).toBe(true)
+    }
   })
 })
