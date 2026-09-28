@@ -14,6 +14,7 @@
  * it read the pool and the credit note's reading.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { ISO_DATE_RE } from '@/lib/invariants'
 import { roundOre } from '@/lib/money'
 import { matchSupplierByIdentity, supplierIdentityFrom } from '@/lib/suppliers/match-supplier'
 
@@ -271,7 +272,7 @@ export function creditNoteFromReading(extracted: Record<string, unknown> | null 
     currency: text(invoice.currency),
     referencedNumber: text(invoice.creditedInvoiceNumber),
     creditNoteNumber: text(invoice.invoiceNumber),
-    creditNoteDate: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
+    creditNoteDate: date && ISO_DATE_RE.test(date) ? date : null,
   }
 }
 
