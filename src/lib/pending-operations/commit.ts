@@ -60,7 +60,7 @@ import {
   createCreditNoteJournalEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
-import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
+import { buildInvoiceMatchClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
 import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
@@ -3571,10 +3571,9 @@ async function commitMatchTransactionInvoice(
       // The old createInvoicePaymentJournalEntry(paidAmount) shape could not
       // carry either residual, so öre-settled and cross-currency matches
       // left 1510 unclean. The open period was checked before the storno.
-      const desc = invoice.customer?.name
-        ? `Inbetalning kundfaktura ${invoice.invoice_number}, ${invoice.customer.name}`
-        : `Inbetalning kundfaktura ${invoice.invoice_number}`
-      const { lines: clearingLines } = buildInvoicePaymentClearingLines(
+      // The invoice's dimension bag rides every leg, FX result lines included
+      // (the builder stamps it), exactly as the match routes book it.
+      const { description, lines: clearingLines } = buildInvoiceMatchClearingLines(
         {
           amount: transaction.amount,
           amount_sek: transaction.amount_sek ?? null,
@@ -3587,25 +3586,17 @@ async function commitMatchTransactionInvoice(
           remaining_amount: invoice.remaining_amount ?? null,
           total: invoice.total,
           paid_amount: invoice.paid_amount ?? null,
+          invoice_number: invoice.invoice_number,
+          customer: invoice.customer,
+          default_dimensions: (invoice as { default_dimensions?: unknown }).default_dimensions,
         },
-        desc,
         fx.required ? fx.paidInInvoiceCurrency : undefined,
         paymentAccount,
       )
-      // Re-propagate the invoice's default dimension bag onto every leg,
-      // including the FX result lines, so a project's kursvinst/kursförlust
-      // stays inside the project P&L: the shared line-builder is
-      // dimension-agnostic.
-      const defaultDimensions = coerceDimensionsBag(
-        (invoice as { default_dimensions?: unknown }).default_dimensions,
-      )
-      if (defaultDimensions) {
-        for (const line of clearingLines) line.dimensions = { ...defaultDimensions }
-      }
       const je = await createJournalEntry(supabase, companyId, userId, {
         fiscal_period_id: fiscalPeriodId,
         entry_date: transaction.date,
-        description: desc,
+        description,
         source_type: 'invoice_paid',
         source_id: invoice.id,
         bank_booking_context: [bankBookingContext(transaction, paymentAccount)],
