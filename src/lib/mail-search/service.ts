@@ -82,6 +82,17 @@ export interface FetchedAttachment {
   bytes: Buffer
 }
 
+/**
+ * Mailbox grants one person connected, read before their account is erased
+ * and revoked at the provider only once the erasure has succeeded.
+ */
+export interface PreparedGrantRevocation {
+  /** How many grants were read. */
+  count: number
+  /** Ask the provider to revoke them. Best effort: never throws. */
+  revoke(): Promise<void>
+}
+
 export interface MailSearchService {
   /**
    * Search every healthy connection for one company. Read-only: the scopes
@@ -113,6 +124,17 @@ export interface MailSearchService {
    * it is wrong, and it sounds final.
    */
   searchFailureCount?(): number
+  /**
+   * Account erasure: read the grants `userId` connected, in every company,
+   * while their tokens still exist.
+   *
+   * The erasure RPC shreds the stored tokens, which ends our copy but leaves
+   * each grant live at the provider, and afterwards nothing is left to revoke
+   * it with. So the caller reads first and calls revoke() only after the
+   * erasure succeeded; a refused erasure (the person still owns companies)
+   * must revoke nothing, and the prepared value is simply dropped.
+   */
+  prepareGrantRevocation?(userId: string): Promise<PreparedGrantRevocation | null>
 }
 
 class NoopMailSearchService implements MailSearchService {

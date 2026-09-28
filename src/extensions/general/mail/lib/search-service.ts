@@ -14,6 +14,7 @@ import type {
   MailCandidate,
   MailSearchQuery,
   MailSearchService,
+  PreparedGrantRevocation,
 } from '@/lib/mail-search/service'
 import { buildGmailQuery, looksLikeReceipt } from './gmail-query'
 import {
@@ -26,6 +27,8 @@ import {
 import {
   getAccessToken,
   listActiveConnections,
+  listGrantsConnectedBy,
+  revokeStoredGrant,
   touchSearched,
   type MailConnectionRow,
 } from './connections'
@@ -159,6 +162,27 @@ export class GmailSearchService implements MailSearchService {
   /** How many connections refused the last search. */
   searchFailureCount(): number {
     return this.failures
+  }
+
+  async prepareGrantRevocation(userId: string): Promise<PreparedGrantRevocation | null> {
+    const supabase = createServiceClientNoCookies()
+    const grants = await listGrantsConnectedBy(supabase, userId)
+    if (grants.length === 0) return null
+    return {
+      count: grants.length,
+      revoke: async () => {
+        // After the erasure the captured rows are revoked and renamed, so the
+        // shared-grant check in revokeStoredGrant only sees other people's
+        // live connections to the same mailbox, and spares them.
+        const outcomes = await Promise.all(
+          grants.map((grant) => revokeStoredGrant(supabase, grant).catch(() => 'failed' as const)),
+        )
+        const tally: Record<string, number> = {}
+        for (const outcome of outcomes) tally[outcome] = (tally[outcome] ?? 0) + 1
+        // Counts only: the person was just erased, so no address is logged.
+        log.info('revoked the mailbox grants of an erased account', { grants: grants.length, ...tally })
+      },
+    }
   }
 
   async fetchAttachment(
