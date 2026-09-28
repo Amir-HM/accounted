@@ -93,24 +93,6 @@ function request(path: string, init: RequestInit = {}) {
   return new Request(`${APP_URL}/api/extensions/ext/mail${path}`, init)
 }
 
-/** The service client the backfill route writes through. */
-function backfillWrite(result: { data: unknown; error: unknown }) {
-  const calls: { update?: Record<string, unknown>; eq: Array<[string, unknown]> } = { eq: [] }
-  const chain: Record<string, unknown> = {
-    update: vi.fn((values: Record<string, unknown>) => {
-      calls.update = values
-      return chain
-    }),
-    eq: vi.fn((column: string, value: unknown) => {
-      calls.eq.push([column, value])
-      return chain
-    }),
-    select: vi.fn(() => Promise.resolve(result)),
-  }
-  serviceClient.from.mockReturnValue(chain)
-  return calls
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
   mockShouldEnforceMfa.mockReturnValue(false)
@@ -310,74 +292,5 @@ describe('DELETE /api/extensions/ext/mail/connections', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ data: { disconnected: true } })
     expect(disconnect).toHaveBeenCalledWith(serviceClient, COMPANY, CONNECTION, USER)
-  })
-})
-
-describe('POST /api/extensions/ext/mail/connections/backfill', () => {
-  function backfill(body: unknown) {
-    return POST(
-      request('/connections/backfill', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: typeof body === 'string' ? body : JSON.stringify(body),
-      }),
-      params('connections', 'backfill'),
-    )
-  }
-
-  it('answers 401 without a session', async () => {
-    session(null)
-    const res = await backfill({ id: CONNECTION, days: 90 })
-    expect(res.status).toBe(401)
-    expect(serviceClient.from).not.toHaveBeenCalled()
-  })
-
-  it('answers 403 to a viewer and writes nothing', async () => {
-    session(USER, 'viewer')
-    const res = await backfill({ id: CONNECTION, days: 90 })
-    expect(res.status).toBe(403)
-    expect(serviceClient.from).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['a body that is not JSON', 'not json'],
-    ['no id', { days: 90 }],
-    ['an id that is not a connection id', { id: 'nope', days: 90 }],
-    ['no days', { id: CONNECTION }],
-    ['a look-back that was never offered', { id: CONNECTION, days: 3650 }],
-    ['days as a string', { id: CONNECTION, days: '90' }],
-  ])('answers 400 for %s, and writes nothing', async (_label, body) => {
-    const res = await backfill(body)
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'invalid_request' })
-    expect(serviceClient.from).not.toHaveBeenCalled()
-  })
-
-  it('answers 404 when no mailbox of this company has that id', async () => {
-    backfillWrite({ data: [], error: null })
-    const res = await backfill({ id: CONNECTION, days: 90 })
-    expect(res.status).toBe(404)
-  })
-
-  it('answers 500, not success, when the choice could not be saved', async () => {
-    backfillWrite({ data: null, error: { message: 'connection reset' } })
-    const res = await backfill({ id: CONNECTION, days: 90 })
-    expect(res.status).toBe(500)
-  })
-
-  it('records the chosen look-back on the connection, within the resolved company', async () => {
-    const calls = backfillWrite({ data: [{ id: CONNECTION }], error: null })
-    const res = await backfill({ id: CONNECTION, days: 30 })
-
-    expect(res.status).toBe(200)
-    const expected = new Date()
-    expected.setDate(expected.getDate() - 30)
-    const date = expected.toISOString().slice(0, 10)
-    expect(await res.json()).toEqual({ data: { backfill_from: date } })
-    expect(calls.update).toEqual({ backfill_from: date })
-    expect(calls.eq).toEqual([
-      ['id', CONNECTION],
-      ['company_id', COMPANY],
-    ])
   })
 })

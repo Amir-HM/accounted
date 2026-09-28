@@ -38,11 +38,11 @@ function jsonError(message: string, status = 500): Response {
 }
 
 /**
- * Connecting a mailbox and choosing its look-back change what feeds underlag
- * into the books, so a viewer (read-only member) may not. The dispatcher only
- * proves a session; the role is checked here, the same rule
- * withRouteContext's requireWrite applies to the app's own routes.
- * Disconnecting has its own rule (DELETE /connections).
+ * Connecting a mailbox changes what feeds underlag into the books, so a
+ * viewer (read-only member) may not. The dispatcher only proves a session;
+ * the role is checked here, the same rule withRouteContext's requireWrite
+ * applies to the app's own routes. Disconnecting has its own rule
+ * (DELETE /connections).
  */
 async function refuseViewer(ctx: ExtensionContext): Promise<Response | null> {
   const check = await requireWritePermission(ctx.supabase, ctx.userId, { companyId: ctx.companyId })
@@ -50,12 +50,6 @@ async function refuseViewer(ctx: ExtensionContext): Promise<Response | null> {
 }
 
 const ConnectionId = z.string().uuid()
-
-/** A connection and one of the offered look-back choices, in days. */
-const BackfillRequest = z.object({
-  id: ConnectionId,
-  days: z.union([z.literal(30), z.literal(90), z.literal(365)]),
-})
 
 export const mailExtension: Extension = {
   id: 'mail',
@@ -172,7 +166,6 @@ export const mailExtension: Extension = {
             accessToken: tokens.accessToken,
             expiresAt: tokens.expiresAt,
             scopes: tokens.scopes,
-            backfillFrom: null,
           })
           return NextResponse.redirect(`${settingsUrl}?mail=connected`)
         } catch {
@@ -222,41 +215,6 @@ export const mailExtension: Extension = {
         }
         await disconnect(supabase, ctx.companyId, id, ctx.userId)
         return NextResponse.json({ data: { disconnected: true } })
-      },
-    },
-
-    // How far back a mailbox may be searched once, chosen by the user at
-    // connect time and bounded to the offered choices. Recorded only: nothing
-    // reads backfill_from yet, and a search is not limited by it (the hunt
-    // matches on amount and merchant across the whole mailbox, see
-    // MailSearchQuery.useDateWindow).
-    {
-      method: 'POST',
-      path: '/connections/backfill',
-      handler: async (request, ctx) => {
-        if (!ctx) return jsonError('Missing context', 500)
-        const refused = await refuseViewer(ctx)
-        if (refused) return refused
-        const parsed = BackfillRequest.safeParse(await request.json().catch(() => null))
-        if (!parsed.success) return jsonError('invalid_request', 400)
-        const from = new Date()
-        from.setDate(from.getDate() - parsed.data.days)
-        const backfillFrom = from.toISOString().slice(0, 10)
-        const { data, error } = await createServiceClientNoCookies()
-          .from('mail_connections')
-          .update({ backfill_from: backfillFrom })
-          .eq('id', parsed.data.id)
-          .eq('company_id', ctx.companyId)
-          .select('id')
-        // Answering success for a write that failed, or that matched no row
-        // of this company, would tell the page a choice was saved when it
-        // was not.
-        if (error) {
-          ctx.log.error('mail backfill choice not saved', { error: error.message })
-          return jsonError('failed', 500)
-        }
-        if (!data || data.length === 0) return jsonError('not_found', 404)
-        return NextResponse.json({ data: { backfill_from: backfillFrom } })
       },
     },
   ],

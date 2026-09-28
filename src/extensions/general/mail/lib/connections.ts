@@ -137,7 +137,6 @@ export async function saveConnection(
     accessToken: string
     expiresAt: Date
     scopes: string[]
-    backfillFrom: string | null
   },
 ): Promise<void> {
   const { error } = await supabase.from('mail_connections').upsert(
@@ -152,7 +151,6 @@ export async function saveConnection(
       encrypted_access_token: encryptToken(params.accessToken),
       access_token_expires_at: params.expiresAt.toISOString(),
       scopes: params.scopes,
-      backfill_from: params.backfillFrom,
       status: 'active',
       last_error_code: null,
       last_error_at: null,
