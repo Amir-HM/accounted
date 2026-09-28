@@ -626,12 +626,6 @@ describe('tools/list payload size guard', () => {
     //     measures 60 028 (next case), so a single-company session still
     //     starts ~3 470 tokens lighter than on main. The founder call above
     //     stands.
-    //   * One definition of nettoomsättning: gnubok_get_income_statement
-    //     names nettoomsattning (3000-3799) as the revenue figure and
-    //     declares it in its outputSchema; the per-figure account
-    //     definitions travel in the response, not the schema. Paid for by
-    //     dropping the description's restatement of the dimensions arg.
-    //     Measured 65 032 on top of #3169 (main 65 028). Ceiling unchanged.
     expect(approxTokens).toBeLessThan(65_500)
   })
 
