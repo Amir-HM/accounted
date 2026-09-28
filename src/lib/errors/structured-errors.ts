@@ -4470,6 +4470,21 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     message_sv: 'Skattetabellen saknas för perioden. Importera skattetabellen först.',
     message_en: 'Tax table is missing for the period.',
   },
+  // salary_payroll_config has no row for the year (lib/salary/payroll-config.ts,
+  // PayrollConfigMissingError). The year's figures ship as a migration once they
+  // are official; the calendar tripwire (tests/pg/payroll-rates-calendar.pg.test.ts)
+  // fails CI before the year turns if they have not.
+  SALARY_PAYROLL_CONFIG_MISSING: {
+    httpStatus: 409,
+    message_sv:
+      'Lönesatserna för året (arbetsgivaravgifter, prisbasbelopp, traktamente med mera) är inte inlagda ännu. Beräkningen kan göras när de är på plats.',
+    message_en: 'Payroll rates for this year are not loaded yet. The calculation can run once they are.',
+    remediation: {
+      description:
+        'Accounted adds each year\'s statutory payroll rates in a release once they are officially set. Nothing in the input is wrong: do not move the payment date to get around it. Try again once the year\'s rates are in place.',
+    },
+    retryable: false,
+  },
   SALARY_RUN_PERIOD_LOCKED: {
     httpStatus: 400,
     message_sv: 'Lönekörningen kan inte göras i en låst period.',

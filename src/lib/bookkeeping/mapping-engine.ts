@@ -35,6 +35,15 @@ const PRISBASBELOPP_HALVES: Record<number, number> = {
 }
 const LATEST_KNOWN_YEAR = 2026
 
+/**
+ * The years with a known threshold. A year missing here silently uses
+ * LATEST_KNOWN_YEAR, so lib/salary/__tests__/rates-calendar.test.ts fails CI
+ * once next year is due (PAYROLL_RATES_DUE) and still absent.
+ */
+export const CAPITALIZATION_THRESHOLD_YEARS: ReadonlySet<number> = new Set(
+  Object.keys(PRISBASBELOPP_HALVES).map(Number),
+)
+
 function getCapitalizationThreshold(year: number): number {
   const threshold = PRISBASBELOPP_HALVES[year]
   if (threshold) return threshold

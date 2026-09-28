@@ -58,6 +58,7 @@ registerEndpoint({
     'Run must be in `draft` status: calculate on a non-draft run returns 400 SALARY_RUN_CALCULATE_NOT_DRAFT.',
     'Salary run must have at least one employee: empty runs return 400 SALARY_RUN_NO_EMPLOYEES.',
     'If Skatteverket\'s tax-table API is down and local fallback is missing the required table, calculate returns 503 SALARY_RUN_TAX_TABLE_MISSING. Retry is safe; the operation is idempotent at the helper level.',
+    'A run whose payment date falls in a year Accounted has no payroll rates for yet returns 409 SALARY_PAYROLL_CONFIG_MISSING (details.paymentYear). The year\'s rates ship once they are officially set; do not move the payment date to get around it.',
     'F-skatt "not_verified" employees produce a non-blocking warning; an integrator should treat the warning as a hard signal that withholding will be wrong until F-skatt is verified.',
     'Warnings about tax-table fallback or läkarintyg / FK day-15 transitions are non-blocking; the run still advances to review. Surface them to a human reviewer before calling :approve.',
   ],
