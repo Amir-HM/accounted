@@ -96,6 +96,28 @@ describe('export of goods', () => {
     })
   })
 
+  // An unassigned code is outside the EU table, so it would read as "outside
+  // the EU" and unlock 0 %: refused whether stated or implied.
+  it.each([
+    ['export', 'ZZ'],
+    ['export', 'QQ'],
+    [null, 'XX'],
+    ['reverse_charge', 'AA'],
+  ] as const)('refuses an unassigned delivery country (%s, %s)', (treatment, country) => {
+    expect(resolveInvoiceVatRules(swedishBusiness, { vat_treatment: treatment, delivery_country: country })).toEqual({
+      ok: false,
+      code: 'INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_MISMATCH',
+      details: { vat_treatment: treatment, delivery_country: country, required: 'assigned_iso_country' },
+    })
+  })
+
+  it('still accepts XK (Kosovo) as an export destination', () => {
+    expect(resolveInvoiceVatRules(swedishBusiness, { vat_treatment: 'export', delivery_country: 'XK' })).toMatchObject({
+      ok: true,
+      rules: { momsRuta: '36' },
+    })
+  })
+
   it('without a destination is only the services export the customer already has', () => {
     expect(resolveInvoiceVatRules(norwegianBusiness, { vat_treatment: 'export', delivery_country: null })).toMatchObject({
       ok: true,

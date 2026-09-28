@@ -3,6 +3,7 @@ import type { InvoiceVatOverride, InvoiceVatTreatmentOverride } from '@/lib/invo
 import {
   countryPermitsReverseCharge,
   isEuGoodsDestination,
+  isAssignedCountryCode,
   isEuTradeVatPrefix,
   normalizeCountryCode,
   vatNumberCountryPrefix,
@@ -622,6 +623,17 @@ export function resolveInvoiceVatRules(
   const requested = override?.vat_treatment ?? null
   if (!requested && !deliveryCountry) {
     return { ok: true, rules: customerRules, permittedRates: customerRates, explainFromCustomer: true }
+  }
+
+  // Fail closed on a code no country carries: outside the EU table it would
+  // read as "outside the EU" and imply or permit export at 0 %. The wire
+  // schema refuses it too; this covers every caller that skips the schema.
+  if (deliveryCountry && !isAssignedCountryCode(deliveryCountry)) {
+    return {
+      ok: false,
+      code: 'INVOICE_VAT_TREATMENT_DELIVERY_COUNTRY_MISMATCH',
+      details: { vat_treatment: requested, delivery_country: deliveryCountry, required: 'assigned_iso_country' },
+    }
   }
 
   const treatment = requested ?? impliedTreatmentForDelivery(deliveryCountry as string)

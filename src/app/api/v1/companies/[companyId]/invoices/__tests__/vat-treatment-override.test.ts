@@ -150,6 +150,7 @@ describe('POST /invoices with vat_treatment + delivery_country (#2906)', () => {
   it.each([
     ['a treatment outside the vocabulary', { vat_treatment: 'standard_25' }],
     ['a country name instead of a code', { vat_treatment: 'export', delivery_country: 'Norway' }],
+    ['an unassigned code that would read as outside the EU', { vat_treatment: 'export', delivery_country: 'ZZ' }],
   ])('rejects %s (400 VALIDATION_ERROR)', async (_label, extra) => {
     mockServiceClient.mockReturnValue(makeSupabase(baseTables()))
     const res = await createInvoice(post({ ...BODY, ...extra }), params)

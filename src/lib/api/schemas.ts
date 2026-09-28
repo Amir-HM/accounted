@@ -39,6 +39,7 @@ import {
   COUNTRY_CONSISTENCY_MESSAGES,
   checkCountryConsistency,
   defaultCountryForParty,
+  isAssignedCountryCode,
   normalizeCountryCode,
 } from '@/lib/vat/country-codes'
 import {
@@ -643,6 +644,8 @@ export const InvoiceVatOverrideShape = {
     .string()
     .regex(/^[A-Za-z]{2}$/, 'delivery_country must be an ISO 3166-1 alpha-2 code')
     .transform((v) => normalizeCountryCode(v) as string)
+    // An unassigned code would read as "outside the EU" and unlock export.
+    .refine(isAssignedCountryCode, 'delivery_country must be an assigned ISO 3166-1 alpha-2 country code')
     .nullable()
     .optional()
     .describe(
