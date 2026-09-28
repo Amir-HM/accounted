@@ -1,4 +1,5 @@
 import { DimensionsBagSchema } from '@/lib/bookkeeping/dimension-resolver'
+import { isIsoDateShaped } from '@/lib/invariants/iso-date'
 
 /**
  * The URL contract of a report drill-down. Clicking an account in a report
@@ -20,8 +21,6 @@ export interface DrilldownDimension {
   dimNo: string
   code: string
 }
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 /** /reports/huvudbok for one account, carrying the clicked report's window and filter. */
 export function huvudbokDrilldownHref(
@@ -51,8 +50,8 @@ export function parseDrilldownParams(params: URLSearchParams): {
   const fromDate = params.get('from_date')
   const toDate = params.get('to_date')
   const range: DrilldownWindow = {}
-  if (fromDate && ISO_DATE.test(fromDate)) range.fromDate = fromDate
-  if (toDate && ISO_DATE.test(toDate)) range.toDate = toDate
+  if (fromDate && isIsoDateShaped(fromDate)) range.fromDate = fromDate
+  if (toDate && isIsoDateShaped(toDate)) range.toDate = toDate
 
   const dimNo = params.get('dim_no')
   const code = params.get('dim_code')
