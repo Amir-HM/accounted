@@ -16,6 +16,8 @@
  *     faktureringsmetoden;
  *   - a non-SEK invoice gets Riksbanken's rate for the invoice date unless a
  *     rate is given, and is refused when none can be had (never a NULL rate);
+ *   - a company that is not VAT-registered books each line's VAT as part of
+ *     its cost: 0 % on the line, nothing on 2641, the full total on 2440;
  *   - the item's document becomes the supplier invoice's underlag, and the
  *     registration verifikat's when one is booked (BFL 5 kap 6 §);
  *   - a company that books on issue gets the registration verifikat through
@@ -43,6 +45,7 @@ import { suggestBalanceAccount } from '@/lib/bookkeeping/accruals/account-sugges
 import { roundOre } from '@/lib/money'
 import { renderChannelContextNotes } from '@/lib/documents/channel-context-notes'
 import { booksInvoicesOnIssue } from '@/lib/bookkeeping/booking-mode'
+import { foldSellerVatIntoCost, sellerVatAsCostNote, sellerVatIsCost } from '@/lib/bookkeeping/vat-registration'
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createSchedulesForSupplierInvoice } from '@/lib/bookkeeping/accruals/from-invoices'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
@@ -126,18 +129,18 @@ export async function convertInboxItemToSupplierInvoice(
   if (hasAccrualItems && body.reverse_charge) {
     return { ok: false, code: 'SI_CREATE_ACCRUAL_REVERSE_CHARGE' }
   }
-  if (hasAccrualItems) {
-    const { data: methodSettings } = await supabase
-      .from('company_settings')
-      .select('accounting_method')
-      .eq('company_id', companyId)
-      .single()
-    if ((methodSettings?.accounting_method || 'accrual') !== 'accrual') {
-      return {
-        ok: false,
-        code: 'SI_CREATE_INVALID_INPUT',
-        details: { reason: 'periodisering requires faktureringsmetoden (accrual)' },
-      }
+  // The accounting method (periodisering, booking on issue) and the VAT
+  // registration the lines depend on, read once.
+  const { data: settings } = await supabase
+    .from('company_settings')
+    .select('accounting_method, defer_invoice_booking, vat_registered')
+    .eq('company_id', companyId)
+    .single()
+  if (hasAccrualItems && (settings?.accounting_method || 'accrual') !== 'accrual') {
+    return {
+      ok: false,
+      code: 'SI_CREATE_INVALID_INPUT',
+      details: { reason: 'periodisering requires faktureringsmetoden (accrual)' },
     }
   }
 
@@ -158,7 +161,7 @@ export async function convertInboxItemToSupplierInvoice(
   // to (#2553): exempt, export and reverse_charge carry no Swedish moms.
   const vatTreatment = body.vat_treatment || 'standard_25'
 
-  const items = body.items.map((line, index) => {
+  const pricedItems = body.items.map((line, index) => {
     const vatRate = line.vat_rate ?? defaultVatRateForTreatment(vatTreatment)
     const lineTotal = line.amount != null
       ? roundOre(line.amount)
@@ -188,6 +191,15 @@ export async function convertInboxItemToSupplierInvoice(
       apply_slp: line.apply_slp === true,
     }
   })
+  // Icke momsregistrerad (feedback seq 708521): amounts arrive excluding VAT
+  // with the seller's rate, and a company with no avdragsrätt owes the
+  // seller the VAT as part of the cost. The editor folds it before it
+  // submits; any other caller is folded here, so a line never books 2641 the
+  // company can never reclaim (lib/bookkeeping/vat-registration.ts).
+  const sellerVatFold = sellerVatIsCost(settings?.vat_registered, body.reverse_charge === true)
+    ? foldSellerVatIntoCost(pricedItems)
+    : null
+  const items = sellerVatFold ? sellerVatFold.lines : pricedItems
 
   const subtotal = items.reduce((sum, i) => sum + i.line_total, 0)
   const totalVat = items.reduce((sum, i) => sum + i.vat_amount, 0)
@@ -209,11 +221,6 @@ export async function convertInboxItemToSupplierInvoice(
       : body.notes.trim() || null
 
   if (options.dryRun) {
-    const { data: settings } = await supabase
-      .from('company_settings')
-      .select('accounting_method, defer_invoice_booking')
-      .eq('company_id', companyId)
-      .single()
     return {
       ok: true,
       dryRun: true,
@@ -236,6 +243,15 @@ export async function convertInboxItemToSupplierInvoice(
         document_id: item.document_id || null,
         notes,
         items,
+        ...(sellerVatFold
+          ? {
+              vat_registration: {
+                vat_registered: false,
+                seller_vat_added_to_cost: sellerVatFold.sellerVat,
+                note: sellerVatAsCostNote(sellerVatFold.sellerVat, total),
+              },
+            }
+          : {}),
         would_create_registration_journal_entry: booksInvoicesOnIssue(settings),
       },
     }
@@ -337,12 +353,6 @@ export async function convertInboxItemToSupplierInvoice(
     await supabase.from('supplier_invoices').delete().eq('id', invoice.id)
     return failed(itemsError)
   }
-
-  const { data: settings } = await supabase
-    .from('company_settings')
-    .select('accounting_method, defer_invoice_booking')
-    .eq('company_id', companyId)
-    .single()
 
   let registrationJournalEntryId: string | null = null
 

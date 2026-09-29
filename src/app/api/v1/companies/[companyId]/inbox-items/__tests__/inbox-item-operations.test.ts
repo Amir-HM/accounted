@@ -467,6 +467,24 @@ describe('POST /inbox-items/:id/convert', () => {
     expect(createSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
   })
 
+  it('a dry run for a non-VAT-registered company shows the seller VAT added to the cost (feedback 708521)', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      invoice_inbox_items: { data: itemRow({ extracted_data: null }), error: null },
+      suppliers: { data: { id: SUPPLIER_ID, name: 'Clas Ohlson AB', supplier_type: 'swedish_business' }, error: null },
+      company_settings: { data: { accounting_method: 'accrual', defer_invoice_booking: false, vat_registered: false }, error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post(BODY, '?dry_run=true')
+    expect(res.status).toBe(200)
+    const { preview } = (await res.json()).data
+    expect(preview).toMatchObject({ subtotal: 499, vat_amount: 0, total: 499, total_sek: 499 })
+    expect(preview.items[0]).toMatchObject({ line_total: 499, unit_price: 499, vat_rate: 0, vat_amount: 0 })
+    expect(preview.vat_registration).toMatchObject({ vat_registered: false, seller_vat_added_to_cost: 99.8 })
+    expect(preview.vat_registration.note).toMatch(/not VAT-registered/)
+    expect(wrote(client)).toBe(false)
+  })
+
   it('201 registers the invoice, books the registration verifikat and marks the item converted', async () => {
     const client = makeClient({
       company_members: MEMBER,

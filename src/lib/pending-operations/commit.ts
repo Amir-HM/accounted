@@ -75,6 +75,7 @@ import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 import { ISO_DATE_RE } from '@/lib/invariants/iso-date'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
+import { foldSellerVatIntoCost, sellerVatIsCost } from '@/lib/bookkeeping/vat-registration'
 import { isReverseChargeKind } from '@/lib/bookkeeping/vat-entries'
 import { cancelOrphanedPaymentEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
 import { runWithActor } from '@/lib/bookkeeping/actor-context-node'
@@ -4777,6 +4778,14 @@ async function commitCreateSupplierInvoiceFromInbox(
     }
   }
 
+  // Booking mode for the registration verifikat, and the VAT registration
+  // the item rows depend on: read once, before an ankomstnummer is drawn.
+  const { data: settings } = await supabase
+    .from('company_settings')
+    .select('accounting_method, defer_invoice_booking, vat_registered')
+    .eq('company_id', companyId)
+    .single()
+
   const { data: arrivalNum, error: arrivalErr } = await supabase
     .rpc('get_next_arrival_number', { p_company_id: companyId })
 
@@ -4785,11 +4794,58 @@ async function commitCreateSupplierInvoiceFromInbox(
   }
 
   const reverseCharge = vatTreatment === 'reverse_charge'
+  // Icke momsregistrerad (feedback seq 708521): the seller's moms is part of
+  // the cost, never 2641. Staging folds it into the lines; an op staged
+  // before that fix (net lines plus 25 %) or a tampered one is folded here
+  // too, so no op can book input VAT the company can never reclaim.
+  const vatIsCost = sellerVatIsCost(settings?.vat_registered, reverseCharge)
   // Treatments under which no seller VAT may reach the books: reverse charge
   // (the buyer self-assesses on 2614/2645) and exempt / export, where the
   // supplier charged no Swedish moms at all so there is nothing deductible
   // (issue #2553). Both take the same header and item treatment below.
-  const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
+  const noDeductibleSellerVat = !vatIsCost && (reverseCharge || !treatmentDeductsInputVat(vatTreatment))
+
+  // RC invariant: a reverse-charge supplier invoice never shows output VAT
+  // from the supplier. Zero any per-line VAT that slipped through staging so
+  // the registration JE's 2614/2645 self-assessed leg lines up with rutor
+  // 20-24 / 48 instead of double-counting input VAT into 2641. Tampered
+  // params can't smuggle non-zero VAT into the items table.
+  //
+  // Exempt and export invoices take the same zeroing (issue #2553): the
+  // supplier charged no Swedish moms, so a rate that came from OCR, from a
+  // stale staged op or from the column's own 0.25 default has nothing to
+  // deduct behind it. The engine refuses to book 2641 for these treatments
+  // either way; storing 0 keeps the row honest about what the underlag says.
+  const itemRows = rawItems.map((item, idx) => {
+    // Normalize percent-shaped rates (25 -> 0.25) and snap to the statutory
+    // set: rows staged before the issue #310 fix (or tampered params) carry
+    // percent integers, and inserting one books 2500 % VAT downstream.
+    const vatRate = noDeductibleSellerVat ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
+    const vatAmt = noDeductibleSellerVat ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
+    return {
+      sort_order: idx,
+      description: String(item.description ?? `Position ${idx + 1}`),
+      quantity: typeof item.quantity === 'number' && Number.isFinite(item.quantity) ? item.quantity : 1,
+      unit: (item.unit as string | undefined) ?? 'st',
+      unit_price: typeof item.unit_price === 'number' && Number.isFinite(item.unit_price) ? item.unit_price : 0,
+      line_total: typeof item.line_total === 'number' && Number.isFinite(item.line_total) ? item.line_total : 0,
+      account_number: String(item.account_number ?? '4000'),
+      vat_code: null,
+      vat_rate: vatRate,
+      vat_amount: vatAmt,
+      // For reverse charge the buyer self-assesses VAT; carry an explicit
+      // statutory rate when staged, else null (engine defaults to 25%).
+      reverse_charge_rate: reverseCharge
+        ? ([0.06, 0.12, 0.25].includes(Number(item.reverse_charge_rate)) ? Number(item.reverse_charge_rate) : null)
+        : null,
+      // Särskild löneskatt (SLP): booking injects the self-balancing
+      // 7533/2514 pair for this line. Validated above (741x accounts only).
+      apply_slp: item.apply_slp === true,
+      dimensions: coerceDimensionsBag(item.dimensions) ?? {},
+    }
+  })
+  const items = vatIsCost ? foldSellerVatIntoCost(itemRows).lines : itemRows
+
   // Omvänd skattskyldighet: the registration entry credits 2440 with the sum
   // of the line nets (the fiktiv 2614/2645 pair nets to zero), so that sum is
   // the only payable the reskontra can carry. Staging registers the net since
@@ -4800,11 +4856,14 @@ async function commitCreateSupplierInvoiceFromInbox(
   // charged on a reverse-charge invoice is not deductible and is not booked.
   // An exempt or export op is the same shape: the items below carry no VAT,
   // so a staged header that still carries some would leave the reskontra
-  // above what the registration entry credits on 2440.
-  const itemNetSum = rawItems.reduce((sum, item) => sum + (finite(item.line_total) ?? 0), 0)
-  const subtotalRounded = noDeductibleSellerVat ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
-  const vatAmountRounded = noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100
-  const totalRounded = noDeductibleSellerVat ? subtotalRounded : Math.round(total * 100) / 100
+  // above what the registration entry credits on 2440. A non-registered
+  // company's rows carry the seller's moms as cost, so their sum is its
+  // payable for the same reason.
+  const headerFromItems = noDeductibleSellerVat || vatIsCost
+  const itemNetSum = items.reduce((sum, item) => sum + item.line_total, 0)
+  const subtotalRounded = headerFromItems ? roundOre(itemNetSum) : Math.round(subtotal * 100) / 100
+  const vatAmountRounded = headerFromItems ? 0 : Math.round(vatAmount * 100) / 100
+  const totalRounded = headerFromItems ? subtotalRounded : Math.round(total * 100) / 100
   // Fed the already-rounded figures so a SEK invoice (rate 1) gets
   // total_sek === total to the öre instead of the two roundings disagreeing on
   // an exact-half value. The old `exchangeRate ? … : null` guard left all three
@@ -4902,46 +4961,7 @@ async function commitCreateSupplierInvoiceFromInbox(
     return { error: 'Failed to create supplier invoice', status: 500 }
   }
 
-  // RC invariant: a reverse-charge supplier invoice never shows output VAT
-  // from the supplier. Zero any per-line VAT that slipped through staging so
-  // the registration JE's 2614/2645 self-assessed leg lines up with rutor
-  // 20-24 / 48 instead of double-counting input VAT into 2641. Tampered
-  // params can't smuggle non-zero VAT into the items table.
-  //
-  // Exempt and export invoices take the same zeroing (issue #2553): the
-  // supplier charged no Swedish moms, so a rate that came from OCR, from a
-  // stale staged op or from the column's own 0.25 default has nothing to
-  // deduct behind it. The engine refuses to book 2641 for these treatments
-  // either way; storing 0 keeps the row honest about what the underlag says.
-  const itemInserts = rawItems.map((item, idx) => {
-    // Normalize percent-shaped rates (25 -> 0.25) and snap to the statutory
-    // set: rows staged before the issue #310 fix (or tampered params) carry
-    // percent integers, and inserting one books 2500 % VAT downstream.
-    const vatRate = noDeductibleSellerVat ? 0 : (typeof item.vat_rate === 'number' ? normalizeVatRateToDecimal(item.vat_rate) : 0)
-    const vatAmt = noDeductibleSellerVat ? 0 : (typeof item.vat_amount === 'number' && Number.isFinite(item.vat_amount) ? item.vat_amount : 0)
-    return {
-      supplier_invoice_id: invoice.id,
-      sort_order: idx,
-      description: String(item.description ?? `Position ${idx + 1}`),
-      quantity: typeof item.quantity === 'number' && Number.isFinite(item.quantity) ? item.quantity : 1,
-      unit: (item.unit as string | undefined) ?? 'st',
-      unit_price: typeof item.unit_price === 'number' && Number.isFinite(item.unit_price) ? item.unit_price : 0,
-      line_total: typeof item.line_total === 'number' && Number.isFinite(item.line_total) ? item.line_total : 0,
-      account_number: String(item.account_number ?? '4000'),
-      vat_code: null,
-      vat_rate: vatRate,
-      vat_amount: vatAmt,
-      // For reverse charge the buyer self-assesses VAT; carry an explicit
-      // statutory rate when staged, else null (engine defaults to 25%).
-      reverse_charge_rate: reverseCharge
-        ? ([0.06, 0.12, 0.25].includes(Number(item.reverse_charge_rate)) ? Number(item.reverse_charge_rate) : null)
-        : null,
-      // Särskild löneskatt (SLP): booking injects the self-balancing
-      // 7533/2514 pair for this line. Validated above (741x accounts only).
-      apply_slp: item.apply_slp === true,
-      dimensions: coerceDimensionsBag(item.dimensions) ?? {},
-    }
-  })
+  const itemInserts = items.map((item) => ({ supplier_invoice_id: invoice.id, ...item }))
 
   const { error: itemsErr } = await supabase
     .from('supplier_invoice_items')
@@ -4959,12 +4979,6 @@ async function commitCreateSupplierInvoiceFromInbox(
     })
     return { error: 'Failed to insert supplier invoice items', status: 500 }
   }
-
-  const { data: settings } = await supabase
-    .from('company_settings')
-    .select('accounting_method, defer_invoice_booking')
-    .eq('company_id', companyId)
-    .single()
 
   let registrationJournalEntryId: string | null = null
 
