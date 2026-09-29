@@ -654,6 +654,13 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
   // "At least one field" tools: the schema requires only the id.
   gnubok_update_asset: { args: { name: 'Bandsåg' } },
   gnubok_update_dimension: { args: { name: 'Avdelning' }, rows: { dimensions: { is_system: false, name: 'Avd' } } },
+  // Account dimension rules: the account has no rule for the dimension yet;
+  // the update pauses a required rule, which carries no value.
+  gnubok_create_dimension_rule: { empty: ['account_dimension_rules'] },
+  gnubok_update_dimension_rule: {
+    args: { is_active: false },
+    rows: { account_dimension_rules: { rule_type: 'required', value_id: null } },
+  },
   // Settings are owner/admin only on every door: the preview reads the caller's role.
   gnubok_update_company_settings: { args: { phone: '08-123 45 67' }, rows: { company_members: { role: 'owner' } } },
   gnubok_update_recurring_schedule: { args: { name: 'Hyra' } },

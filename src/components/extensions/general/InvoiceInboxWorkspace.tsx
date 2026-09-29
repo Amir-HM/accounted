@@ -2669,7 +2669,13 @@ type SuggestedBooking = {
     | 'no_transaction'
     | 'already_booked'
     | 'currency_unsupported'
-  lines: { account_number: string; debit_amount: number; credit_amount: number; description: string }[]
+  lines: {
+    account_number: string
+    debit_amount: number
+    credit_amount: number
+    description: string
+    dimensions?: Record<string, string>
+  }[]
   confidence: number | null
   requires_review?: boolean
   direction_mismatch?: boolean

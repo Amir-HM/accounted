@@ -2961,7 +2961,7 @@ Request body:
   invoice_id: string,
   force?: boolean,
   expected_journal_entry_id?: string,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string }[],
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, dimensions?: Record<string, string> }[],
   manual_exchange_rate?: number
 }
 ```
@@ -3043,7 +3043,7 @@ Request body:
 ```ts
 {
   supplier_invoice_id: string,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string }[]
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, dimensions?: Record<string, string> }[]
 }
 ```
 

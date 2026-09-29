@@ -90,7 +90,7 @@ Example response `200`:
 **Register an expense claim (utlägg) and post its verifikat.**
 `scope:suppliers:write · risk:medium · idempotent · dry-run · reversible`
 
-Books a business cost someone paid privately: Debit the cost account (net), Debit 2641 (vat_amount), Credit the person's liability account (gross), in one verifikat posted immediately. The liability account follows the claimant: employee_id books 2820; otherwise the owner's account for the legal form (2893 aktiebolag, 2018 enskild firma as egen insättning, 2890 förening member) with claimant_name. Foreign currency converts at exchange_rate or Riksbanken's rate for expense_date. lines replaces the generated rows (reverse charge, templates) and must credit the liability account with exactly amount. document_id attaches the receipt to the verifikat; inbox_item_id marks the inbox item booked. Idempotent. Dry-runnable.
+Books a business cost someone paid privately: Debit the cost account (net), Debit 2641 (vat_amount), Credit the person's liability account (gross), in one verifikat posted immediately. The liability account follows the claimant: employee_id books 2820; otherwise the owner's account for the legal form (2893 aktiebolag, 2018 enskild firma as egen insättning, 2890 förening member) with claimant_name. Foreign currency converts at exchange_rate or Riksbanken's rate for expense_date. lines replaces the generated rows (reverse charge, templates) and must credit the liability account with exactly amount. dimensions ({sie_dim_no: code}, kostnadsställe/projekt) tags the cost line, or with lines every class 3-8 line, where a line's own dimensions win per key. document_id attaches the receipt to the verifikat; inbox_item_id marks the inbox item booked. Idempotent. Dry-runnable.
 
 **Use when:** A receipt was paid with a private card or cash: the answer to "Vem betalade?" is the owner or an employee, not the company account.
 **Do not use for:** A purchase the company paid itself (categorize the bank transaction or register a supplier invoice), an unpaid supplier invoice (POST /supplier-invoices) or mileage (körjournal).
@@ -121,7 +121,8 @@ Request body:
   claimant_name?: string,
   document_id?: string | null,
   inbox_item_id?: string | null,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string | null }[]
+  dimensions?: Record<string, string>,
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string | null, dimensions?: Record<string, string> }[]
 }
 ```
 
@@ -1158,6 +1159,7 @@ Changes the account of one line on an unsettled supplier invoice (registered, ap
 - A settled invoice answers 409 SI_ITEM_ACCOUNT_SETTLED.
 - A locked or closed period answers 409 JOURNAL_RATTELSE_PERIOD_LOCKED: past a lock, storno is the only lawful correction.
 - When the verifikat was already corrected by hand and holds no matching line on the old account, the answer is 409 SI_ITEM_ACCOUNT_NO_MATCHING_LINE and nothing changes.
+- A foreign-currency line moves the kronor the registration booked (the line at the invoice's stored rate); an invoice without that rate answers 409 SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN and nothing changes.
 - account_number is a STRING ("6550"), never a number.
 
 | Parameter | In | Type | Required | Notes |

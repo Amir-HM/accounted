@@ -614,6 +614,28 @@ describe('commitPendingOperation: book_salary_run', () => {
     expect(result.http_status).toBe(409)
     expect(result.error).toMatch(/redan bokförd/)
   })
+
+  it('answers 409 with the vouchers to reverse when the run has posted vouchers that do not match', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // finalize (failed)
+
+    const { SalaryRunPartiallyBookedError } = await import('@/lib/salary/salary-entries')
+    mockAdvanceAndBook.mockRejectedValue(
+      new SalaryRunPartiallyBookedError([{ id: 'je-7', voucher_series: 'L', voucher_number: 7 }]),
+    )
+
+    const op = makePendingOp({
+      operation_type: 'book_salary_run',
+      risk_level: 'high',
+      params: { salary_run_id: 'run-1' },
+    })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+    expect(result.error).toContain('(L7)')
+  })
 })
 
 describe('commitPendingOperation: delete_absence', () => {

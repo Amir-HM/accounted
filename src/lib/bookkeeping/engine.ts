@@ -495,10 +495,11 @@ export async function updateDraftEntry(
   entryId: string,
   input: CreateJournalEntryInput
 ): Promise<JournalEntry> {
-  // Load the entry and assert it is an editable draft.
+  // Load the entry and assert it is an editable draft. source_type is read
+  // for the dimension policy below: the stored value is authoritative.
   const { data: existing, error: loadError } = await supabase
     .from('journal_entries')
-    .select('id, status, voucher_series')
+    .select('id, status, voucher_series, source_type')
     .eq('id', entryId)
     .eq('company_id', companyId)
     .single()
@@ -517,20 +518,22 @@ export async function updateDraftEntry(
     throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
   }
 
-  // Same soft dimension validation as createDraftEntry: before any write, so
-  // a rejection leaves both the header and the existing lines untouched.
-  // Account dimension rules (PR10) apply first — same as create. Gate on
-  // the STORED source_type (updates preserve it; the input's copy is not
-  // authoritative here).
-  const ruleExempt = isDimensionRuleExemptSource(
-    (existing as { source_type?: string }).source_type
-  )
+  // Same dimension policy as createDraftEntry, before any write, so a
+  // rejection leaves both the header and the existing lines untouched:
+  // account dimension rules (PR10) first, then the soft registry validation.
+  // Both exemptions gate on the STORED source_type. Updates preserve it, and
+  // the input's copy is not authoritative here (the v1 update operation
+  // passes a 'manual' placeholder).
+  const storedSourceType = (existing as { source_type?: string | null }).source_type
+  const ruleExempt = isDimensionRuleExemptSource(storedSourceType)
   const rules = ruleExempt ? [] : await fetchActiveDimensionRules(supabase, companyId)
   if (rules === null) {
-    log.warn('dimension rule fetch failed — defaults/fixed skipped (fail-open)', { companyId })
+    log.warn('dimension rule fetch failed: defaults/fixed skipped (fail-open)', { companyId })
   }
   const lines = rules ? applyDimensionRules(input.lines, rules) : input.lines
-  await validateEntryDimensions(supabase, companyId, lines)
+  if (!isDimensionValidationExemptSource(storedSourceType)) {
+    await validateEntryDimensions(supabase, companyId, lines)
+  }
 
   // Entry date must fall within the selected fiscal period.
   const { data: period, error: periodError } = await supabase

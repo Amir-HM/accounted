@@ -12,11 +12,11 @@ import { z } from 'zod'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { cashPartialBlockReason } from '@/lib/bookkeeping/booking-mode'
-import { buildSupplierInvoiceCashLines } from '@/lib/bookkeeping/supplier-invoice-entries'
 import {
-  addSupplierBankFeeLine,
-  buildSupplierPaymentClearingLines,
-} from '@/lib/bookkeeping/supplier-payment-lines'
+  buildSupplierInvoiceCashLines,
+  buildSupplierInvoicePaymentLines,
+} from '@/lib/bookkeeping/supplier-invoice-entries'
+import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { planSupplierPayment, splitSupplierBankFee } from '@/lib/invoices/apply-supplier-payment'
 import { ORE_TOLERANCE, roundOre } from '@/lib/money'
@@ -27,6 +27,8 @@ type PreviewLine = {
   debit_amount: number
   credit_amount: number
   description: string
+  /** The line's dimension bag, as the POST books it; absent when untagged. */
+  dimensions?: Record<string, string>
 }
 
 const QuerySchema = z.object({
@@ -247,65 +249,42 @@ export const GET = withRouteContext(
         throw err
       }
     } else {
-      // Clearing: Dr 2440 / Cr 1930 (or chosen payment account).
+      // Clearing: Dr 2440 / Cr 1930 (or chosen payment account), from
+      // buildSupplierInvoicePaymentLines with the arguments the POST hands
+      // createSupplierInvoicePaymentEntry, so the previewed lines are the
+      // booked ones, the invoice's dimensions on every leg included.
       if (isPureSek) {
-        // Shared builder so the previewed lines (including any 3740
-        // öresavrundning row) are byte-identical to what the POST commits.
-        const { lines: clearingLines, oreDiffSek } = buildSupplierPaymentClearingLines({
-          apSek: remainingInvoiceCurrency,
-          bankSek: roundOre(txAmountAbs - bankFeeSek),
+        // Any 3740 öresavrundning row and 6570 bank fee included.
+        const built = buildSupplierInvoicePaymentLines(si, {
+          paymentAmount: roundOre(txAmountAbs - bankFeeSek),
           paymentAccount,
           bankFeeSek,
+          sekClearingDebt: remainingInvoiceCurrency,
         })
-        lines.push(...clearingLines)
-        oreRounding = oreDiffSek !== 0
+        lines.push(...built.lines)
+        oreRounding = built.oreDiffSek !== 0
         // Full settlement when the öre residual is absorbed or the bank covers
         // the whole remaining; a ≥1 kr short payment leaves a partial.
         isFullyPaid =
           oreRounding || paymentAmountInvoiceCurrency >= remainingInvoiceCurrency - ORE_TOLERANCE
       } else {
-        // Foreign leg under faktureringsmetoden. createSupplierInvoicePaymentEntry
-        // clears 2440 at the SEK the leverantörsskuld was BOOKED at and credits
-        // the bank with the SEK that actually moved, booking the difference as
-        // kursvinst (3960) or kursförlust (7960). The old preview showed a single
-        // min(bankSEK, invoiceSEK) figure on both legs and no FX line, so the
-        // bank credit the user approved differed from the committed one by
-        // exactly the kursdifferens (and, with no conversion inputs at all,
-        // showed the raw foreign amount as kronor).
-        lines.push({
-          account_number: '2440',
-          debit_amount: Math.round(originalBookedSek * 100) / 100,
-          credit_amount: 0,
-          line_description: 'Kvittning leverantörsskuld',
+        // Foreign leg under faktureringsmetoden: 2440 cleared at the SEK the
+        // leverantörsskuld was BOOKED at, the bank credited with the SEK that
+        // actually moved, the difference as kursvinst (3960) or kursförlust
+        // (7960), and any bank fee on 6570. Same arguments as the POST.
+        const built = buildSupplierInvoicePaymentLines(si, {
+          paymentAmount: exchangeRateDifference !== 0 ? originalBookedSek : actualBankSek,
+          exchangeRateDifference: exchangeRateDifference !== 0 ? exchangeRateDifference : undefined,
+          paymentAccount,
+          bankFeeSek,
         })
-        lines.push({
-          account_number: paymentAccount,
-          debit_amount: 0,
-          credit_amount: Math.round(actualBankSek * 100) / 100,
-          line_description: 'Utbetalning från bank',
-        })
-        if (exchangeRateDifference > 0) {
-          lines.push({
-            account_number: '3960',
-            debit_amount: 0,
-            credit_amount: Math.round(Math.abs(exchangeRateDifference) * 100) / 100,
-            line_description: 'Valutakursvinst',
-          })
-        } else if (exchangeRateDifference < 0) {
-          lines.push({
-            account_number: '7960',
-            debit_amount: Math.round(Math.abs(exchangeRateDifference) * 100) / 100,
-            credit_amount: 0,
-            line_description: 'Valutakursförlust',
-          })
-        }
+        lines.push(...built.lines)
         // Mirrors planSupplierPayment without öre absorption (the accrual FX
         // path never absorbs): a cross-currency match is clamped to the
         // remaining balance and therefore always settles in full; a
         // same-currency foreign match settles when the bank amount covers it.
         isFullyPaid =
           paymentAmountInvoiceCurrency >= remainingInvoiceCurrency - ORE_TOLERANCE
-        addSupplierBankFeeLine(lines, paymentAccount, bankFeeSek)
       }
     }
 
@@ -314,6 +293,9 @@ export const GET = withRouteContext(
       debit_amount: l.debit_amount,
       credit_amount: l.credit_amount,
       description: l.line_description ?? '',
+      // What the grid holds is what gets booked: a row the user edits keeps
+      // the bag it came with.
+      ...(l.dimensions && Object.keys(l.dimensions).length > 0 ? { dimensions: l.dimensions } : {}),
     }))
 
     return NextResponse.json({
@@ -324,6 +306,8 @@ export const GET = withRouteContext(
       is_fully_paid: isFullyPaid,
       ore_rounding: oreRounding,
       bank_fee_sek: bankFeeSek,
+      // The settled invoice's bag, for a row the user adds while editing.
+      document_dimensions: coerceDimensionsBag(si.default_dimensions),
     })
   },
 )
