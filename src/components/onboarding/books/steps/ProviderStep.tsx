@@ -77,6 +77,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const [regText, setRegText] = useState('')
   const [importError, setImportError] = useState<string | null>(null)
   const [keptYears, setKeptYears] = useState<number[]>([])
+  const [unfetched, setUnfetched] = useState<number[]>([])
   const [jobPhase, setJobPhase] = useState<JobPhase | null>(null)
   const apiRef = useRef<TheaterApi | null>(null)
   const timers = useRef<number[]>([])
@@ -183,18 +184,22 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     { title: t('th_balance'), sub: importError ?? t('th_balance_sub'), tone: importError ? 'err' : 'ok' },
   ]
 
-  /** The result of a run that left selected years out of the books: which, and why. */
+  /** The result of a run that left selected years out of the books: which,
+   *  and why. A failed job's reason spans lines (bullets, then its
+   *  reference), so what follows it starts on a line of its own. */
   function missingYearsText(o: ProviderYearsOutcome): string {
-    const parts: string[] = []
+    const lines: string[] = []
     if (o.failed) {
-      if (o.failed.fiscalYear !== null) parts.push(t('provider_year_failed', { year: String(o.failed.fiscalYear) }))
-      if (o.failed.reason) parts.push(o.failed.reason)
-      else if (o.failed.fiscalYear === null) parts.push(t('sie_failed'))
+      if (o.failed.fiscalYear !== null) lines.push(t('provider_year_failed', { year: String(o.failed.fiscalYear) }))
+      if (o.failed.reason) lines.push(o.failed.reason)
+      else if (o.failed.fiscalYear === null) lines.push(t('sie_failed'))
     }
-    if (o.notReached.length > 0) parts.push(t('provider_years_not_reached', { count: o.notReached.length, years: listYears(o.notReached) }))
-    if (o.notFetched.length > 0) parts.push(t('provider_years_not_fetched', { count: o.notFetched.length, years: listYears(o.notFetched), provider: provName }))
-    if (o.imported.length + o.alreadyImported.length > 0) parts.push(t('provider_retry_missing'))
-    return parts.join(' ')
+    const rest: string[] = []
+    if (o.notReached.length > 0) rest.push(t('provider_years_not_reached', { count: o.notReached.length, years: listYears(o.notReached) }))
+    if (o.notFetched.length > 0) rest.push(t('provider_years_not_fetched', { count: o.notFetched.length, years: listYears(o.notFetched), provider: provName }))
+    if (o.imported.length + o.alreadyImported.length > 0) rest.push(t('provider_retry_missing'))
+    if (rest.length > 0) lines.push(rest.join(' '))
+    return lines.join('\n')
   }
 
   async function runImport() {
@@ -202,6 +207,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     setPhase('importing')
     setImportError(null)
     setKeptYears([])
+    setUnfetched([])
     setTick(0)
     setPrepared(0)
     setJobPhase('preparing')
@@ -277,7 +283,10 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         }, (err) => (err instanceof SIEJobFailedError ? err.message : getErrorMessage(err, { locale })))
         // Registers, the insight and the door onward wait until every
         // selected year is in the books.
-        if (!providerYearsComplete(outcome)) throw new YearsMissingError(missingYearsText(outcome))
+        if (!providerYearsComplete(outcome)) {
+          setUnfetched(outcome.notFetched)
+          throw new YearsMissingError(missingYearsText(outcome))
+        }
         setJobPhase(null)
         apiRef.current?.pulse()
         dispatch({ type: 'IMPORTED', accounts: importedAccounts })
@@ -477,6 +486,14 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
           <Button size="lg" onClick={() => { setShown(0); setTick(0); void runImport() }}>
             {t('provider_retry')}
           </Button>
+          {/* A year the provider will not hand over is fetched again by a
+              retry. Back to the years instead, where it can be left out as
+              on a first run; the preview is still in memory. */}
+          {unfetched.length > 0 && sourceYears.length > 1 ? (
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => { setShown(0); setTick(0); setImportError(null); setPhase('preview') }}>
+              {t('provider_pick_years')}
+            </Button>
+          ) : null}
           <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => dispatch({ type: 'GO_BACK', flags })}>
             {t('provider_change_source')}
           </Button>

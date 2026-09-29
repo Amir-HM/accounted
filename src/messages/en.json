@@ -10395,6 +10395,7 @@
     "provider_years_not_reached": "{count, plural, one {Fiscal year {years} is not imported yet.} other {Fiscal years {years} are not imported yet.}}",
     "provider_years_not_fetched": "{count, plural, one {Fiscal year {years} could not be fetched from {provider}.} other {Fiscal years {years} could not be fetched from {provider}.}}",
     "provider_retry_missing": "Trying again imports only what is missing.",
+    "provider_pick_years": "Choose other years",
     "provider_login": "Log in at {provider}",
     "provider_connecting": "Connecting to {provider} …",
     "provider_reading": "Reading {provider} …",

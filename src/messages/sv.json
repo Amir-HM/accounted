@@ -10395,6 +10395,7 @@
     "provider_years_not_reached": "{count, plural, one {Räkenskapsår {years} är inte importerat än.} other {Räkenskapsåren {years} är inte importerade än.}}",
     "provider_years_not_fetched": "{count, plural, one {Räkenskapsår {years} kunde inte hämtas från {provider}.} other {Räkenskapsåren {years} kunde inte hämtas från {provider}.}}",
     "provider_retry_missing": "Ett nytt försök importerar bara det som saknas.",
+    "provider_pick_years": "Välj andra år",
     "provider_login": "Logga in hos {provider}",
     "provider_connecting": "Ansluter till {provider} …",
     "provider_reading": "Läser av {provider} …",
