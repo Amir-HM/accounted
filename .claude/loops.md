@@ -67,7 +67,7 @@ comment what was tried. Never retry the same failing action in a cycle.
 ran for 19 days as silent no-ops (no `GH_TOKEN` in the cloud env, issue #993) and the founder chose
 to disable them rather than provision. Do not re-enable or re-create them.
 
-Removed 2026-09-29 after zero invocations since March: `loop-ignite`, `loop-pr-ci-triage`,
+Removed 2026-09-29, unused after their build-time pilot runs: `loop-ignite`, `loop-pr-ci-triage`,
 `loop-vercel-errors`, `loop-design-scan`, `loop-docs-freshness`, `loop-regeluppdat`. The
 `design-scan` workflow (`.claude/workflows/design-scan.js`) stays and runs on its own.
 
