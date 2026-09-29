@@ -283,4 +283,45 @@ describe('gnubok_year_end_readiness: execute', () => {
     expect(result.preview).not.toBeNull()
     expect(result.preview?.net_result).toBe(12345)
   })
+
+  // Feedback seq 707985: the preview discloses the omföring the close books in
+  // the next period, including when it will skip it (built by
+  // previewYearEndClosing; the tool passes it through untouched).
+  it('passes the disclosed omföring through in the preview', async () => {
+    vi.mocked(validateYearEndReadiness).mockResolvedValue({
+      ready: true,
+      blockers: [],
+      errors: [],
+      warnings: [],
+      draftCount: 0,
+      voucherGaps: [],
+      unexplainedGaps: [],
+      sequenceMismatches: [],
+      trialBalanceBalanced: true,
+    })
+    const resultAppropriation = {
+      from_account: '2069',
+      to_account: '2068',
+      amount: 0,
+      direction: 'profit',
+      entry_date: '2025-01-01',
+      skipped_reason: 'already_disposed',
+      disposed_by: ['A1172'],
+    }
+    vi.mocked(previewYearEndClosing).mockResolvedValue({ netResult: 35059.47, resultAppropriation } as never)
+
+    const tool = tools.find((t) => t.name === 'gnubok_year_end_readiness')!
+    const supabase = makeMockSupabase({
+      id: 'period-1', name: '2024',
+      period_start: '2024-01-01', period_end: '2024-12-31',
+      is_closed: false, locked_at: null, closing_entry_id: null, continuity_verified: true,
+    })
+
+    const result = (await tool.execute(
+      { fiscal_period_id: 'period-1', include_preview: true },
+      'company-1', 'user-1', supabase,
+    )) as { preview: { resultAppropriation?: unknown } | null }
+
+    expect(result.preview?.resultAppropriation).toEqual(resultAppropriation)
+  })
 })

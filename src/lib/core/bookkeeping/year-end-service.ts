@@ -20,7 +20,7 @@ import {
   createNextPeriod,
   findNextPeriod,
 } from './period-service'
-import { generateResultAppropriation } from './result-appropriation-service'
+import { generateResultAppropriation, previewResultAppropriation } from './result-appropriation-service'
 import {
   previewCurrencyRevaluation,
   executeCurrencyRevaluation,
@@ -520,13 +520,16 @@ export async function validateYearEndReadiness(
 
 /**
  * Preview year-end closing without persisting anything.
- * Shows the net result, closing account, and the journal entry lines that would be created.
+ * Shows the net result, closing account, and the journal entry lines that would be created,
+ * plus the omföring the close books in the next period (`resultAppropriation`) unless the
+ * caller opts out.
  */
 export async function previewYearEndClosing(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
-  fiscalPeriodId: string
+  fiscalPeriodId: string,
+  options: { resultAppropriation?: boolean } = {},
 ): Promise<YearEndPreview> {
 
   // Get entity type to determine closing account
@@ -654,6 +657,22 @@ export async function previewYearEndClosing(
   const bolagsskattMissing =
     closingAccount === '2099' && netResult > ORE_TOLERANCE && !hasTaxAccount
 
+  // The close books a second verifikat: step 11's omföring of the result off
+  // the result account in the next period. Disclose it with the same rule
+  // (feedback seq 707985). The next period's ingående balans on the result
+  // account will be what the account holds now plus this year's result,
+  // including the balansdagen revaluation step 2 books first.
+  const resultAppropriation = periodData && options.resultAppropriation !== false
+    ? await previewResultAppropriation(supabase, companyId, {
+        periodId: fiscalPeriodId,
+        periodEnd: periodData.period_end,
+        entityType,
+        projectedIbNet: roundOre(
+          resultAccountLeftover(rows, closingAccount) + netResult + (currencyRevaluation?.netEffect ?? 0),
+        ),
+      })
+    : null
+
   return {
     netResult,
     closingAccount,
@@ -662,6 +681,7 @@ export async function previewYearEndClosing(
     resultAccountSummary,
     currencyRevaluation,
     bolagsskattMissing,
+    resultAppropriation,
   }
 }
 
@@ -715,8 +735,12 @@ export async function executeYearEndClosing(
     userId
   )
 
-  // 3. Get closing preview (now includes revaluation effects in trial balance)
-  const preview = await previewYearEndClosing(supabase, companyId, userId, fiscalPeriodId)
+  // 3. Get closing preview (now includes revaluation effects in trial balance).
+  //    Without the omföring disclosure: step 11 books it from the real IB, and
+  //    here the estimate would only add queries that could fail the close.
+  const preview = await previewYearEndClosing(supabase, companyId, userId, fiscalPeriodId, {
+    resultAppropriation: false,
+  })
 
   if (preview.closingLines.length === 0) {
     throw new Error('No result accounts to close: period has no activity')

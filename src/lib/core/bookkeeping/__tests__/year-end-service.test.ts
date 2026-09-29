@@ -237,12 +237,15 @@ vi.mock('../period-service', () => ({
 }))
 
 // Default: nothing carried. Guard tests override (PostHog PH 120 / PH 108).
-vi.mock('../prior-result-carry', () => ({
+// carryAfterDispositions stays real: the preview's omföring runs through it.
+vi.mock('../prior-result-carry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../prior-result-carry')>()),
   priorResultCarry: vi.fn().mockResolvedValue(null),
 }))
 
 import { validateYearEndReadiness, previewYearEndClosing } from '../year-end-service'
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
+import { previewCurrencyRevaluation } from '@/lib/bookkeeping/currency-revaluation'
 import { priorResultCarry } from '../prior-result-carry'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import { countUnbookedInPeriod, findNextPeriod } from '../period-service'
@@ -1358,5 +1361,131 @@ describe('previewYearEndClosing', () => {
     const efPreview = await previewYearEndClosing(supabase as never, 'company-1', 'user-1', 'fp-1')
     expect(efPreview.netResult).toBe(100000)
     expect(efPreview.bolagsskattMissing).toBe(false)
+  })
+})
+
+// Feedback seq 707985: run_year_end booked an omföring in the next period that
+// no preview had shown. previewYearEndClosing now discloses it, estimated by
+// the close's own rule from the ingående balans the close will write.
+describe('previewYearEndClosing: the omföring it discloses', () => {
+  const settings = (entityType: string) => ({ data: { entity_type: entityType }, error: null })
+  const PERIOD_END = { data: { period_end: '2024-12-31' }, error: null }
+  const profitRows = (amount: number) => ({
+    rows: [
+      { account_number: '3001', account_name: 'Intäkter', account_class: 3, closing_debit: 0, closing_credit: amount },
+    ],
+    isBalanced: true,
+    totalDebit: 0,
+    totalCredit: amount,
+  })
+
+  it('discloses Dr 2099 / Cr 2098 of this year\'s result for an aktiebolag', async () => {
+    results = [settings('aktiebolag'), PERIOD_END]
+    vi.mocked(generateTrialBalance).mockResolvedValue(profitRows(150000) as never)
+
+    const preview = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(preview.resultAppropriation).toEqual({
+      from_account: '2099',
+      to_account: '2098',
+      amount: 150000,
+      direction: 'profit',
+      entry_date: '2025-01-01',
+      skipped_reason: null,
+      disposed_by: [],
+    })
+  })
+
+  it('discloses 2069 -> 2068 for an ideell förening', async () => {
+    results = [settings('ideell_forening'), PERIOD_END]
+    vi.mocked(generateTrialBalance).mockResolvedValue(profitRows(25000) as never)
+
+    const preview = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(preview.closingAccount).toBe('2069')
+    expect(preview.resultAppropriation).toMatchObject({
+      from_account: '2069',
+      to_account: '2068',
+      amount: 25000,
+      skipped_reason: null,
+    })
+  })
+
+  it('counts a result already closed by hand and the balansdagen revaluation', async () => {
+    // Imported books: the old system closed 20 000 of the year onto 2099
+    // through 8999; the close adds the remaining 10 000 and step 2's FX gain.
+    results = [settings('aktiebolag'), PERIOD_END]
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows: [
+        { account_number: '2099', account_name: 'Årets resultat', account_class: 2, closing_debit: 0, closing_credit: 20000 },
+        { account_number: '3001', account_name: 'Intäkter', account_class: 3, closing_debit: 0, closing_credit: 100000 },
+        { account_number: '5010', account_name: 'Lokalhyra', account_class: 5, closing_debit: 70000, closing_credit: 0 },
+        { account_number: '8999', account_name: 'Årets resultat', account_class: 8, closing_debit: 20000, closing_credit: 0 },
+      ],
+      isBalanced: true,
+      totalDebit: 90000,
+      totalCredit: 120000,
+    } as never)
+    vi.mocked(previewCurrencyRevaluation).mockResolvedValueOnce({
+      items: [{ id: 'inv-1' }],
+      lines: [],
+      closingRates: {},
+      totalGain: 1500,
+      totalLoss: 0,
+      netEffect: 1500,
+    } as never)
+
+    const preview = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(preview.netResult).toBe(10000)
+    expect(preview.resultAppropriation?.amount).toBe(31500)
+  })
+
+  it('discloses the skip when the next period already disposes the result (feedback seq 707985)', async () => {
+    vi.mocked(findNextPeriod).mockResolvedValueOnce(
+      makeFiscalPeriod({ id: 'fp-2', period_start: '2025-01-01', period_end: '2025-12-31' }) as never,
+    )
+    results = [
+      settings('ideell_forening'),
+      PERIOD_END,
+      { data: null, error: null }, // no live omföring in the next period
+      // The migrated disposition in the next period (entries, then lines).
+      { data: [{ id: 'a1172', source_type: 'manual', voucher_series: 'A', voucher_number: 1172 }], error: null },
+      {
+        data: [
+          { id: 'l1', journal_entry_id: 'a1172', account_number: '2067', debit_amount: 0, credit_amount: 35059.47 },
+          { id: 'l2', journal_entry_id: 'a1172', account_number: '2069', debit_amount: 35059.47, credit_amount: 0 },
+        ],
+        error: null,
+      },
+    ]
+    vi.mocked(generateTrialBalance).mockResolvedValue(profitRows(35059.47) as never)
+
+    const preview = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(preview.resultAppropriation).toEqual({
+      from_account: '2069',
+      to_account: '2068',
+      amount: 0,
+      direction: 'profit',
+      entry_date: '2025-01-01',
+      skipped_reason: 'already_disposed',
+      disposed_by: ['A1172'],
+    })
+  })
+
+  it('is null for an enskild firma and when the caller (the close itself) opts out', async () => {
+    results = [settings('enskild_firma'), PERIOD_END]
+    vi.mocked(generateTrialBalance).mockResolvedValue(profitRows(50000) as never)
+    const ef = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+    expect(ef.resultAppropriation).toBeNull()
+
+    resultIdx = 0
+    results = [settings('aktiebolag'), PERIOD_END]
+    const inClose = await previewYearEndClosing(makeClient() as never, 'company-1', 'user-1', 'fp-1', {
+      resultAppropriation: false,
+    })
+    expect(inClose.resultAppropriation).toBeNull()
+    expect(findNextPeriod).not.toHaveBeenCalled()
   })
 })

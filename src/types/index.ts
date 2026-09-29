@@ -3729,6 +3729,45 @@ export interface YearEndPreview {
    * only, never a blocker: zero tax is legitimate with underskottsavdrag.
    */
   bolagsskattMissing: boolean
+  /**
+   * The second verifikat the close books: the omföring of the result off the
+   * result account in the next period. Null when the form closes straight
+   * into equity (enskild firma), when there is no result to move, and inside
+   * the close itself (which books it instead).
+   */
+  resultAppropriation: ResultAppropriationPreview | null
+}
+
+/**
+ * The year-open omföring av föregående års resultat that executeYearEndClosing
+ * books in the next period (step 11), estimated before the close by the same
+ * rule (planResultAppropriation). Snake_case like the other preview rows: MCP
+ * returns it verbatim.
+ */
+export interface ResultAppropriationPreview {
+  /** The form's result account the result leaves (aktiebolag 2099, ideell förening 2069). */
+  from_account: string
+  /** Where it is carried (aktiebolag 2098, ideell förening 2068). */
+  to_account: string
+  /**
+   * Estimated, öre-rounded; 0 when skipped. What the result account will
+   * carry into the next period (its balance now plus this year's result,
+   * balansdagen FX revaluation included) less what a disposition already
+   * booked there moved. Later bookings in the year change it.
+   */
+  amount: number
+  /** profit: debit from_account, credit to_account; loss: the reverse. */
+  direction: 'profit' | 'loss'
+  /** The next period's first day. */
+  entry_date: string
+  /**
+   * Why no omföring will be booked, null when one will: already_disposed =
+   * dispositions booked by hand in the next period moved all of it (PostHog
+   * PH 108); already_booked = a live omföring is already there.
+   */
+  skipped_reason: 'already_disposed' | 'already_booked' | null
+  /** Verifikat in the next period that already moved part or all of it. */
+  disposed_by: string[]
 }
 
 export interface YearEndResult {
