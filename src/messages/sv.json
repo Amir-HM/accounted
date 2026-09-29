@@ -10578,6 +10578,7 @@
     "articles_vat_rounded": "{count, plural, one {# rad} other {# rader}} hade en momssats som avrundades till närmaste giltiga (0, 6, 12 eller 25 %).",
     "articles_account_dropped": "{count, plural, one {# rad} other {# rader}} hade ett ogiltigt bokföringskonto (måste vara klass 1-3) som ignorerades.",
     "articles_housework_dropped": "{count, plural, one {# rad} other {# rader}} hade ett ROT/RUT-värde som inte är en arbetstyp och ignorerades: sätt arbetstyp på artikeln efteråt.",
+    "articles_housework_on_goods_dropped": "{count, plural, one {# vara} other {# varor}} hade ett ROT/RUT-värde som ignorerades: ROT och RUT gäller bara arbetskostnad. Är artikeln arbete, ändra typen till tjänst och sätt arbetstyp.",
     "articles_currency_dropped": "{count, plural, one {# rad} other {# rader}} hade en ogiltig valutakod som ignorerades: priset importeras som SEK.",
     "articles_currency_unsupported": "Valutan {code} stöds inte: priset importerades som SEK.",
     "articles_account_inactive": "Försäljningskonto {account} är inte aktiverat i kontoplanen, så artiklarna importerades utan kontoöverstyrning.",
