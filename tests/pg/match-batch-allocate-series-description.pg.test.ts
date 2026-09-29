@@ -170,7 +170,7 @@ describe('match_batch_allocate: voucher series from company settings', () => {
     // Feedback 708521's shape: the standard set routes supplier payments to E.
     const seed = await seedCompany()
     await insertSettings(seed)
-    const supplierId = await insertSupplier(seed, 'Ringö Brygga AB')
+    const supplierId = await insertSupplier(seed, 'Bryggleverantören AB')
     const invoiceId = await insertSupplierInvoice(seed, { supplierId, arrivalNumber: 1, number: '5571', total: 1250 })
     const txId = await insertTransaction({ ...seed, amount: -1250, date: '2026-01-16' })
 
@@ -256,7 +256,7 @@ describe('match_batch_allocate: verifikat description', () => {
   it('names the one supplier invoice like the single-invoice route; the preview states the same wording without number and name', async () => {
     const seed = await seedCompany()
     await insertSettings(seed)
-    const supplierId = await insertSupplier(seed, 'Ringö Brygga AB')
+    const supplierId = await insertSupplier(seed, 'Bryggleverantören AB')
     const invoiceId = await insertSupplierInvoice(seed, { supplierId, arrivalNumber: 1, number: '5571', total: 1250 })
     const txId = await insertTransaction({ ...seed, amount: -1250, date: '2026-01-16' })
     const allocations = [{ kind: 'supplier_invoice' as const, supplier_invoice_id: invoiceId, amount: 1250 }]
@@ -264,7 +264,7 @@ describe('match_batch_allocate: verifikat description', () => {
     const { entry } = await allocate(seed, txId, allocations)
 
     // app/api/transactions/[id]/match-supplier-invoice: `Utbetalning leverantörsfaktura ${number}, ${supplier.name}`
-    expect(entry.description).toBe('Utbetalning leverantörsfaktura 5571, Ringö Brygga AB')
+    expect(entry.description).toBe('Utbetalning leverantörsfaktura 5571, Bryggleverantören AB')
     const preview = buildBatchAllocationPreview({
       transaction: { amount: -1250, currency: 'SEK', date: '2026-01-16' },
       bankAccount: '1930',
@@ -272,7 +272,7 @@ describe('match_batch_allocate: verifikat description', () => {
       invoices: { [invoiceId]: { currency: 'SEK', remaining_amount: 1250, total: 1250 } },
     })
     expect(preview.description).toBe('Utbetalning leverantörsfaktura')
-    expect(entry.description).toBe(`${preview.description} 5571, Ringö Brygga AB`)
+    expect(entry.description).toBe(`${preview.description} 5571, Bryggleverantören AB`)
   })
 
   it('names the one customer invoice like the single-invoice route', async () => {

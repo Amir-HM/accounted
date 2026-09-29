@@ -1,7 +1,7 @@
 -- match_batch_allocate: book in the company's voucher series for the entry's
 -- source_type, and name the invoice when the batch settles exactly one.
 --
--- Feedback 708521 (company 2fbcd2b8): nine single supplier-invoice payments
+-- Feedback 708521: nine single supplier-invoice payments
 -- were matched, eight through match_batch_allocate (MCP
 -- accounted_match_batch_allocate). The company maps supplier_invoice_paid to
 -- series E, yet the eight batch commits landed as A7-A14, each described
