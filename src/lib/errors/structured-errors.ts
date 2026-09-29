@@ -5225,9 +5225,12 @@ const MATCH_BATCH: Record<string, StructuredErrorEntry> = {
     message_en:
       'The transaction already looks booked: one or more posted vouchers with no bank link add up exactly to its amount. Link the transaction to them instead, or pass force=true with expected_journal_entry_ids to book anyway.',
     retryable: false,
+    // Names the scope: a key without reconciliation:write was sent to a tool
+    // it cannot call (feedback seqs 817176, 817189). The MCP door replaces
+    // this hint when it knows the key's scopes.
     remediation: {
       description:
-        'Link the bank row to the vouchers the message names instead of booking it again: gnubok_reconcile_match with account_key "bank:<cash_account_id>" and one pair { external_ids: [transaction_id], journal_entry_ids: [...], allocations }. Only if the row is a genuinely separate affärshändelse, call again with force=true and expected_journal_entry_ids set to exactly the ids the refusal listed.',
+        'Link the bank row to the vouchers the message names instead of booking it again: gnubok_reconcile_match (needs the reconciliation:write scope) with account_key "bank:<cash_account_id>" and one pair { external_ids: [transaction_id], journal_entry_ids: [...], allocations }. One voucher also links with gnubok_link_transaction_to_journal_entry. A key without reconciliation:write: the user links the row on the Avstämning page in Accounted, or reconnects the connector so its new key carries that scope. Only if the row is a genuinely separate affärshändelse, call again with force=true and expected_journal_entry_ids set to exactly the ids the refusal listed.',
       tool: 'gnubok_reconcile_match',
     },
   },
@@ -5573,6 +5576,25 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
       description:
         'A person must connect (or reconnect) to Skatteverket with BankID under Inställningar → Skatteverket. Personal Skatteverket sessions expire after about 1 hour by SKV design, so an expired session is normal, not a fault. Do not retry until the user confirms they have reconnected.',
     },
+  },
+  // A live connection whose skattekonto has not been fetched yet, so the
+  // reconciliation account "skattekonto" does not exist. It fills by itself
+  // (right after each BankID consent, and on the scheduled sync), which makes
+  // this the one retryable answer; an expired connection is
+  // SKATTEVERKET_NOT_CONNECTED. Both reached agents as UNKNOWN_ERROR before.
+  SKATTEKONTO_NOT_SYNCED: {
+    httpStatus: 409,
+    message_sv:
+      'Skatteverket är kopplat men inga skattekontohändelser har hämtats ännu. Skattekontot går att stämma av när den första hämtningen är klar.',
+    message_en:
+      'Skatteverket is connected but no skattekonto rows have been fetched yet, so account_key "skattekonto" does not exist yet. It appears once the first fetch completes.',
+    retryable: true,
+    remediation: {
+      description:
+        'Skip the skattekonto for now and continue with the other accounts; ask again later. The skattekonto is fetched right after each BankID consent and by the scheduled sync, and the user can fetch it now on the Skattekonto page in Accounted. If it stays empty, check the connection with gnubok_connect_skatteverket and have the user reconnect.',
+      tool: 'gnubok_connect_skatteverket',
+    },
+    thrown_message_sv: true,
   },
   SKATTEVERKET_ACCESS_DENIED: {
     httpStatus: 403,
