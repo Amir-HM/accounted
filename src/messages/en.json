@@ -6395,6 +6395,7 @@
     "dim_form_active_help": "Archived dimensions are hidden in pickers but remain on posted vouchers.",
     "dim_created_title": "Dimension created",
     "dim_updated_title": "Dimension updated",
+    "dim_update_partial": "The change was only partly saved. Check the order and try again.",
     "subdimension_of": "Subdimension of {parent}"
   },
   "tic_workspace": {

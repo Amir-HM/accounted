@@ -304,6 +304,9 @@ export default function DimensionsManager() {
       return
     }
     setIsUpdatingDim(true)
+    // The PATCHes are sequential, not atomic: when a later one fails the
+    // earlier ones stay saved, so the user is told the order may be mixed.
+    let saved = 0
     try {
       for (const patch of patches) {
         const res = await fetch(`/api/dimensions/${patch.id}`, {
@@ -313,13 +316,15 @@ export default function DimensionsManager() {
         })
         const json = await res.json().catch(() => null)
         if (!res.ok) throw json ?? new Error()
+        saved++
       }
       toast({ title: t('dim_updated_title') })
       setEditDimDialogOpen(false)
     } catch (err) {
+      const reason = getErrorMessage(err, { locale: errorLocale })
       toast({
         title: t('save_failed_title'),
-        description: getErrorMessage(err, { locale: errorLocale }),
+        description: saved > 0 ? `${reason} ${t('dim_update_partial')}` : reason,
         variant: 'destructive',
       })
     } finally {

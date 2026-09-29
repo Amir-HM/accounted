@@ -6395,6 +6395,7 @@
     "dim_form_active_help": "Arkiverade dimensioner döljs i väljare men finns kvar på bokförda verifikat.",
     "dim_created_title": "Dimension skapad",
     "dim_updated_title": "Dimension uppdaterad",
+    "dim_update_partial": "Ändringen sparades bara delvis. Kontrollera ordningen och försök igen.",
     "subdimension_of": "Underdimension till {parent}"
   },
   "tic_workspace": {
