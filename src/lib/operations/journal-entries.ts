@@ -686,7 +686,9 @@ export const journalEntriesBatchNoDocumentRequired = defineOperation({
     title: 'Mark Vouchers as No Underlag Required',
     description:
       'Stage marking posted verifikat "Inget underlag krävs" (no external underlag by nature: avskrivning, periodisering, bokslutspost). Removes them from the missing-underlag list; verifikat unchanged. Never for a missing receipt.',
-    keywords: ['inget underlag krävs', 'saknat underlag', 'underlag saknas', 'egen handling', 'utan underlag'],
+    // English too, for guessed waiver names (waive_document_requirement).
+    // Matching only: the description's rule, never for a missing receipt, stands.
+    keywords: ['inget underlag krävs', 'saknat underlag', 'underlag saknas', 'egen handling', 'utan underlag', 'waive', 'waiver', 'not required', 'no document needed'],
     stage: {
       pendingType: 'mark_no_document_required',
       title: (input) => {
