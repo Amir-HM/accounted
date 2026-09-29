@@ -418,7 +418,7 @@ describe('POST /api/v1/.../transactions/{id}/categorize orphaned counter-account
       },
       cash_accounts: [
         // 1: resolveSettlementAccount reads the row's own ledger (1930).
-        { data: { ledger_account: '1930' }, error: null },
+        { data: { ledger_account: '1930', currency: 'SEK' }, error: null },
         // 2: the guard's topology scan: 1931 is held by a revoked connection
         // and shares the live row's (IBAN, currency): a stale twin.
         {

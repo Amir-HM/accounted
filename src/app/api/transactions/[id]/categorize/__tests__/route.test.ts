@@ -1735,7 +1735,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
       error: null,
     })
     // resolveSettlementAccount: the row's own cash account is the live 1940
-    enqueue({ data: { ledger_account: '1940' }, error: null })
+    enqueue({ data: { ledger_account: '1940', currency: 'SEK' }, error: null })
     // Guard: cash_accounts scan + bank_connections status lookup
     enqueue({
       data: [
@@ -1800,7 +1800,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
       },
       error: null,
     })
-    enqueue({ data: { ledger_account: '1940' }, error: null }) // resolveSettlementAccount
+    enqueue({ data: { ledger_account: '1940', currency: 'SEK' }, error: null }) // resolveSettlementAccount
     enqueue({
       data: [
         { id: 'ca-live', ledger_account: '1940', bank_connection_id: 'conn-new', iban: 'SE455', enabled: true, currency: 'SEK' },

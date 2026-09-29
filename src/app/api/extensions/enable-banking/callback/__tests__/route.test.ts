@@ -274,6 +274,38 @@ describe('account identity and standing choices', () => {
   })
 })
 
+// Feedback seq 753539: the bank reported the account currency as 'XXX' (ISO
+// 4217 "no currency"), it was stored verbatim, and no SEK transaction on the
+// account could be booked: the bank-booking guards look the account up by the
+// transaction's currency.
+describe('unknown provider currency', () => {
+  it.each(['XXX', 'xxx', '', undefined])('stores and mirrors a new account reported as %j under SEK', async currency => {
+    mocks.createSession.mockResolvedValue({ session_id: 'new-session', access: { valid_until: expires }, accounts: [{ ...account, currency }] })
+    await complete()
+    expect(plan().accounts[0].currency).toBe('SEK')
+    expect(plan().mirrors).toEqual([{ uid: 'a', ledger_account: '1930', reuse_cash_account_id: null }])
+    expect(mocks.resolve).toHaveBeenCalledWith(expect.anything(), row.company_id, row.user_id, expect.objectContaining({ currency: 'SEK' }))
+  })
+  it.each(['uid', 'iban'])('keeps the currency the account is already stored under, matched by %s', async matching => {
+    reconnect([{ uid: matching === 'uid' ? 'a' : 'old', currency: 'EUR', iban, enabled: false, dedup_scope: 'eur-scope' }])
+    mocks.createSession.mockResolvedValue({ session_id: 'new-session', access: { valid_until: expires }, accounts: [{ ...account, currency: 'XXX' }] })
+    await complete(); expect(plan().accounts[0]).toMatchObject({ currency: 'EUR', enabled: false, dedup_scope: 'eur-scope' })
+  })
+  it('meets a no-IBAN account stored as XXX before the fix instead of re-keying its history', async () => {
+    // finalize_bank_callback compares stored currencies strictly, so it refuses
+    // this pair until the repair rewrites the stored 'XXX'. The silent
+    // alternative, a fresh dedup scope that re-imports the history, must not
+    // be what this code sends.
+    reconnect([{ uid: 'old-card', name: 'PayPal', currency: 'XXX', enabled: true, dedup_scope: 'legacy-card' }])
+    cashRows = [{ id: 'cash', external_uid: 'old-card', ledger_account: '1940', currency: 'XXX', iban: null }]
+    mocks.createSession.mockResolvedValue({ session_id: 'new-session', access: { valid_until: expires }, accounts: [{ uid: 'new-card', name: 'PayPal', currency: 'XXX' }] })
+    await complete()
+    expect(plan()).toMatchObject({ noIbanPairs: { 'new-card': 'old-card' }, accounts: [{ currency: 'SEK', dedup_scope: 'legacy-card' }],
+      mirrors: [{ uid: 'new-card', ledger_account: '1940', reuse_cash_account_id: 'cash' }] })
+    expect(mocks.resolve).not.toHaveBeenCalled()
+  })
+})
+
 describe('cross-company and mirror-card defaults', () => {
   it.each(['claimed', 'deselected', 'lookup-failed', 'mirror-card'])('disables new %s accounts without allocating or mirroring', async reason => {
     if (reason === 'lookup-failed') mocks.crossCompany.mockResolvedValue(null)

@@ -80,7 +80,7 @@ function enqueuePreGuard(enqueue: (r: { data?: unknown; error?: unknown }) => vo
 
 /** The bank leg's cash account, period_status lookups + the pending_operations insert. */
 function enqueueStage(enqueue: (r: { data?: unknown; error?: unknown }) => void) {
-  enqueue({ data: { ledger_account: '1930' }, error: null }) // cash_accounts (resolveSettlementAccount)
+  enqueue({ data: { ledger_account: '1930', currency: 'SEK' }, error: null }) // cash_accounts (resolveSettlementAccount)
   enqueue({ data: { bookkeeping_locked_through: null }, error: null }) // company_settings
   enqueue({ data: { id: 'fp-1', is_closed: false, locked_at: null }, error: null }) // fiscal_periods
   enqueue({ data: { id: 'op-batch-1' }, error: null }) // pending_operations insert

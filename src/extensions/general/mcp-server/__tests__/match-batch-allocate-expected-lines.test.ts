@@ -39,7 +39,7 @@ const SI_A = '44444444-4444-4444-8444-444444444444'
 
 /** resolveSettlementAccount: the row's cash_account_id resolves to this ledger account. */
 function enqueueBankAccount(enqueue: (r: { data?: unknown; error?: unknown }) => void, ledgerAccount: string) {
-  enqueue({ data: { ledger_account: ledgerAccount }, error: null }) // cash_accounts
+  enqueue({ data: { ledger_account: ledgerAccount, currency: 'SEK' }, error: null }) // cash_accounts
 }
 
 function enqueueStage(enqueue: (r: { data?: unknown; error?: unknown }) => void) {
