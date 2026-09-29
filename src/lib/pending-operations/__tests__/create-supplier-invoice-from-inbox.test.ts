@@ -1340,3 +1340,54 @@ describe('commitPendingOperation: create_supplier_invoice_from_inbox for a non-V
     expect(lines.find((l) => l.account_number === '2440')?.credit_amount).toBe(2500)
   })
 })
+
+describe('commitPendingOperation: create_supplier_invoice_from_inbox carries a staged öresavrundning (feedback 753539)', () => {
+  it('writes the 3740 row as staged, so 2440 is credited with the billed 444 192.00', async () => {
+    vi.mocked(createSupplierInvoiceRegistrationEntry).mockResolvedValueOnce(makeJournalEntry({ id: 'je-ore' }))
+    const { supabase, enqueue, findCall } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'inbox-1', created_supplier_invoice_id: null, status: 'ready' }, error: null })
+    enqueue({ data: { id: 'supplier-1', name: 'Themax AB', supplier_type: 'swedish_business' }, error: null })
+    enqueue({ data: { accounting_method: 'accrual', vat_registered: true }, error: null }) // company_settings
+    enqueue({ data: 61, error: null }) // arrival number
+    enqueue({ data: makeSupplierInvoice({ id: 'inv-ore', supplier_invoice_number: '2026006' }), error: null })
+    enqueue({ data: null, error: null }) // supplier_invoice_items insert
+    enqueue({ data: null, error: null }) // supplier_invoices update with JE id
+    enqueue({ data: null, error: null }) // invoice_inbox_items update
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const line = { quantity: 1, unit: 'st', account_number: '4010' }
+    const result = await commitPendingOperation(
+      supabase as never,
+      'user-1',
+      'company-1',
+      makePendingOp({
+        params: {
+          ...(makePendingOp().params as Record<string, unknown>),
+          supplier_invoice_number: '2026006',
+          // As the tool stages it now: 353 191.16 + 25 % and 2 702.96 at 0 %
+          // come to 444 191.91; the 0.09 öresavrundning makes the billed total.
+          subtotal: 355894.21,
+          vat_amount: 88297.79,
+          total: 444192,
+          items: [
+            { ...line, line_number: 1, description: 'Rad 1', unit_price: 353191.16, line_total: 353191.16, vat_rate: 0.25, vat_amount: 88297.79 },
+            { ...line, line_number: 2, description: 'Rad 2', unit_price: 2702.96, line_total: 2702.96, vat_rate: 0, vat_amount: 0 },
+            { ...line, line_number: 3, description: 'Öresavrundning', unit_price: 0.09, line_total: 0.09, account_number: '3740', vat_rate: 0, vat_amount: 0 },
+          ],
+        },
+      }),
+    )
+
+    expect(result.status).toBe('committed')
+    const [row] = findCall('supplier_invoices', 'insert') as [Record<string, unknown>]
+    expect(row).toMatchObject({ subtotal: 355894.21, vat_amount: 88297.79, total: 444192, remaining_amount: 444192 })
+    const [itemRows] = findCall('supplier_invoice_items', 'insert') as [Array<Record<string, unknown>>]
+    expect(itemRows[2]).toMatchObject({ account_number: '3740', line_total: 0.09, vat_rate: 0, vat_amount: 0 })
+
+    const lines = await postedLines(row)
+    expect(lines.find((l) => l.account_number === '3740')?.debit_amount).toBe(0.09)
+    expect(lines.find((l) => l.account_number === '2641')?.debit_amount).toBe(88297.79)
+    expect(lines.find((l) => l.account_number === '2440')?.credit_amount).toBe(444192)
+  })
+})

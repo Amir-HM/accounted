@@ -1425,8 +1425,9 @@ describe('gnubok_create_supplier_invoice_from_inbox: a non-VAT-registered compan
       extracted: { ...ringo, totals: { subtotal: 2000, vat: 500, total: 2600 } },
     })
 
-    // The payable is what 2440 is credited with.
+    // The payable is what 2440 is credited with; the gap is not rounding.
     expect(params.total).toBe(2500)
+    expect(params.items.some((i) => i.account_number === '3740')).toBe(false)
     expect(String((result.preview.vat_registration as { note: string }).note)).toContain(
       'That differs from the document total 2600',
     )
@@ -1454,5 +1455,135 @@ describe('gnubok_create_supplier_invoice_from_inbox: a non-VAT-registered compan
     expect(params.total).toBe(2000)
     expect(result.preview.vat_registration).toBeUndefined()
     expect((result.preview.payable_recomputed as { reason: string }).reason).toBe('reverse_charge')
+  })
+})
+
+describe('gnubok_create_supplier_invoice_from_inbox: öresavrundning (feedback 753539)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockResolveRate.mockReset()
+  })
+
+  // Themax 2026006 (company 5d72569a) as registered on 2026-09-26: the lines
+  // come to 355 894.12 + 88 297.79 = 444 191.91 against a billed 444 192.00,
+  // and 2440 was credited with 444 191.91.
+  const themaxLines = [
+    { account: '5800', net: 24659.23, rate: 25 },
+    { account: '6550', net: 20000, rate: 25 },
+    { account: '4010', net: 30903, rate: 25 },
+    { account: '4010', net: 30175.83, rate: 25 },
+    { account: '4010', net: 21900.46, rate: 25 },
+    { account: '4010', net: 13536.61, rate: 25 },
+    { account: '4010', net: 201375.99, rate: 25 },
+    { account: '4010', net: 10640, rate: 25 },
+    { account: '4010', net: 2360, rate: 0 },
+    { account: '5710', net: 343, rate: 0 },
+  ]
+  const themax = {
+    supplier: { name: 'Themax AB' },
+    invoice: { invoiceNumber: '2026006', invoiceDate: '2026-09-25', dueDate: '2026-10-25', currency: 'SEK' },
+    totals: { subtotal: 355894.12, vat: 88297.79, total: 444192, roundingAmount: 0.09 },
+    lineItems: themaxLines.map((l, i) => ({
+      description: `Rad ${i + 1}`,
+      quantity: 1,
+      unitPrice: l.net,
+      lineTotal: l.net,
+      vatRate: l.rate,
+      accountSuggestion: l.account,
+    })),
+  }
+
+  async function stage(extracted: unknown, opts: { vatRegistered?: boolean } = {}) {
+    const inserts: Array<Record<string, unknown>> = []
+    const supabase = makeMock({
+      inbox: {
+        id: 'inbox-ore',
+        status: 'received',
+        extracted_data: extracted,
+        matched_supplier_id: 'supplier-1',
+        created_supplier_invoice_id: null,
+        document_id: 'doc-ore',
+      },
+      inserts,
+      ...(opts.vatRegistered !== undefined ? { vatRegistered: opts.vatRegistered } : {}),
+    })
+    const tool = tools.find((t) => t.name === 'gnubok_create_supplier_invoice_from_inbox')!
+    const result = (await tool.execute(
+      { inbox_item_id: 'inbox-ore' },
+      'company-1', 'user-1', supabase,
+    )) as { staged: boolean; preview: Record<string, unknown> }
+    return { result, params: inserts[0]?.params as StagedParams }
+  }
+
+  it('stages a 0.09 zero-VAT 3740 line, so 2440 is credited with the billed 444 192.00', async () => {
+    const { result, params } = await stage(themax)
+
+    expect(result.staged).toBe(true)
+    expect(params.items).toHaveLength(11)
+    expect(params.items[10]).toEqual({
+      line_number: 11,
+      description: 'Öresavrundning',
+      quantity: 1,
+      unit: 'st',
+      unit_price: 0.09,
+      line_total: 0.09,
+      account_number: '3740',
+      vat_rate: 0,
+      vat_amount: 0,
+    })
+    expect(params.vat_amount).toBe(88297.79)
+    expect(params.subtotal).toBe(355894.21)
+    expect(params.total).toBe(444192)
+    expect(result.preview.ore_rounding).toMatchObject({ account_number: '3740', amount: 0.09 })
+
+    const lines = await registrationLines(params)
+    expect(lines.find((l) => l.account_number === '3740')?.debit_amount).toBe(0.09)
+    expect(lines.find((l) => l.account_number === '2641')?.debit_amount).toBe(88297.79)
+    expect(lines.find((l) => l.account_number === '2440')?.credit_amount).toBe(444192)
+  })
+
+  it('credits 3740 when the supplier rounded down', async () => {
+    const { params } = await stage({ ...themax, totals: { ...themax.totals, total: 444191.5 } })
+
+    expect(params.items[10]).toMatchObject({ account_number: '3740', line_total: -0.41, vat_rate: 0 })
+    expect(params.total).toBe(444191.5)
+    const lines = await registrationLines(params)
+    expect(lines.find((l) => l.account_number === '3740')?.credit_amount).toBe(0.41)
+    expect(lines.find((l) => l.account_number === '2440')?.credit_amount).toBe(444191.5)
+  })
+
+  it('does not absorb a gap over 0.50: that is not rounding', async () => {
+    const { result, params } = await stage({ ...themax, totals: { ...themax.totals, total: 444192.42 } })
+
+    expect(params.items).toHaveLength(10)
+    expect(params.items.some((i) => i.account_number === '3740')).toBe(false)
+    expect(params.subtotal).toBe(355894.12)
+    expect(result.preview.ore_rounding).toBeUndefined()
+  })
+
+  it('never touches a foreign-currency invoice', async () => {
+    mockResolveRate.mockResolvedValue({
+      ok: true,
+      rate: { currency: 'EUR', rate: 11.5, exchangeRate: 11.5, exchangeRateDate: '2026-09-25', source: 'fetched' },
+    })
+    const { result, params } = await stage({ ...themax, invoice: { ...themax.invoice, currency: 'EUR' } })
+
+    expect(params.currency).toBe('EUR')
+    expect(params.items).toHaveLength(10)
+    expect(params.items.some((i) => i.account_number === '3740')).toBe(false)
+    expect(params.total).toBe(444192)
+    expect(result.preview.ore_rounding).toBeUndefined()
+  })
+
+  it('carries the rounding on top of the folded lines for a non-registered company', async () => {
+    const { params } = await stage(themax, { vatRegistered: false })
+
+    expect(params.items[10]).toMatchObject({ account_number: '3740', line_total: 0.09, vat_rate: 0 })
+    expect(params.items.every((i) => i.vat_rate === 0 && i.vat_amount === 0)).toBe(true)
+    expect(params.vat_amount).toBe(0)
+    expect(params.total).toBe(444192)
+    const lines = await registrationLines(params)
+    expect(lines.find((l) => l.account_number === '2641')).toBeUndefined()
+    expect(lines.find((l) => l.account_number === '2440')?.credit_amount).toBe(444192)
   })
 })
