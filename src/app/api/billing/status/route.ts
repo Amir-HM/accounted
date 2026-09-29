@@ -53,6 +53,12 @@ export async function GET() {
   let teamAgreement: TeamAgreement | null = null
   // The paying company's interval, so the plan card shows the price it pays.
   let subscriptionPlan: 'monthly' | 'yearly' | null = null
+  // A subscription started during the product trial stays Stripe 'trialing'
+  // until the deferred first charge (billing/checkout sets trial_end), and its
+  // current_period_end is that charge date. The entitlement read nulls
+  // trialEndsAt once the stripe grant lands, so this is the only date the
+  // paying card can show. Additive field: absent for everyone else.
+  let firstChargeAt: string | null = null
   if (companyId) {
     const entitlements = await getCompanyEntitlements(supabase, companyId)
     entitlementState = entitlements.entitlementState
@@ -76,11 +82,19 @@ export async function GET() {
       // subscription row (the entitlement check above does the same).
       const { data: subscription } = await supabase
         .from('company_subscriptions')
-        .select('plan')
+        .select('plan, status, current_period_end')
         .eq('company_id', companyId)
         .maybeSingle()
       const plan = subscription?.plan
       subscriptionPlan = plan === 'monthly' || plan === 'yearly' ? plan : null
+      const periodEnd = subscription?.current_period_end
+      if (
+        subscription?.status === 'trialing' &&
+        typeof periodEnd === 'string' &&
+        new Date(periodEnd).getTime() > Date.now()
+      ) {
+        firstChargeAt = periodEnd
+      }
     }
   }
 
@@ -93,5 +107,6 @@ export async function GET() {
     coverage,
     ...(teamAgreement ? { teamAgreement } : {}),
     ...(subscriptionPlan ? { subscriptionPlan } : {}),
+    ...(firstChargeAt ? { firstChargeAt } : {}),
   })
 }

@@ -133,6 +133,59 @@ describe('GET /api/billing/status', () => {
   })
 })
 
+// Subscribing during the product trial defers the first charge to the trial
+// end: Stripe keeps the subscription 'trialing' with current_period_end on
+// that date. The paying card shows it, since the entitlement read stops
+// reporting trialEndsAt once the stripe grant exists.
+describe('GET /api/billing/status first charge date', () => {
+  type FirstChargeBody = StatusBody & { firstChargeAt?: string }
+  const STRIPE_LIVE = [{ capability_key: 'ai', expires_at: '2099-01-04T00:00:00Z', source: 'stripe', team_id: null }]
+
+  it('returns the deferred first charge date for a trialing subscription', async () => {
+    authAs({
+      company_subscriptions: {
+        data: { status: 'trialing', plan: 'monthly', current_period_end: '2099-01-01T09:00:00+00:00' },
+      },
+      capability_grants: { data: [...TRIAL_LIVE, ...STRIPE_LIVE] },
+    })
+
+    const { status, body } = await parseJsonResponse<FirstChargeBody>(await GET())
+
+    expect(status).toBe(200)
+    expect(body.isPaying).toBe(true)
+    expect(body.trialEndsAt).toBeNull()
+    expect(body.firstChargeAt).toBe('2099-01-01T09:00:00+00:00')
+  })
+
+  it('omits it for an active subscription (the first charge is behind)', async () => {
+    authAs({
+      company_subscriptions: {
+        data: { status: 'active', plan: 'monthly', current_period_end: '2099-01-01T09:00:00+00:00' },
+      },
+      capability_grants: { data: STRIPE_LIVE },
+    })
+
+    const { body } = await parseJsonResponse<FirstChargeBody>(await GET())
+
+    expect(body.isPaying).toBe(true)
+    expect('firstChargeAt' in (body as object)).toBe(false)
+  })
+
+  it('omits it for a trialing subscription whose period end has passed', async () => {
+    authAs({
+      company_subscriptions: {
+        data: { status: 'trialing', plan: 'monthly', current_period_end: '2020-01-01T09:00:00+00:00' },
+      },
+      capability_grants: { data: STRIPE_LIVE },
+    })
+
+    const { body } = await parseJsonResponse<FirstChargeBody>(await GET())
+
+    expect(body.isPaying).toBe(true)
+    expect('firstChargeAt' in (body as object)).toBe(false)
+  })
+})
+
 // WL-10 billing honesty: a non-paying company under a byrå team with an
 // active team-scoped manual grant gets the additive teamAgreement field.
 describe('GET /api/billing/status team agreement', () => {
