@@ -424,7 +424,7 @@ describe('validateYearEndReadiness', () => {
     results = withFormLookup(noGapResults(period), 'aktiebolag')
     vi.mocked(priorResultCarry).mockResolvedValueOnce({
       resultAccount: '2099', resultAccountName: 'Årets resultat', priorResultAccount: '2098',
-      retainedAccount: '2091', ibNet: 20000, remaining: 20000, movedBy: [],
+      retainedAccount: '2091', ibNet: 20000, remaining: 20000, overMoved: 0, movedBy: [],
     })
     vi.mocked(generateTrialBalance).mockResolvedValue({
       rows: [
@@ -451,7 +451,7 @@ describe('validateYearEndReadiness', () => {
     results = withFormLookup(noGapResults(period), 'ideell_forening')
     vi.mocked(priorResultCarry).mockResolvedValueOnce({
       resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
-      retainedAccount: '2067', ibNet: 30000, remaining: 30000, movedBy: [],
+      retainedAccount: '2067', ibNet: 30000, remaining: 30000, overMoved: 0, movedBy: [],
     })
     vi.mocked(generateTrialBalance).mockResolvedValue({
       rows: [{ account_number: '2069', closing_debit: 0, closing_credit: 30000 }],
@@ -491,7 +491,7 @@ describe('validateYearEndReadiness', () => {
     // 30 000 was moved off by the owner's own disposition.
     vi.mocked(priorResultCarry).mockResolvedValueOnce({
       resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
-      retainedAccount: '2067', ibNet: 30000, remaining: 0, movedBy: ['A12'],
+      retainedAccount: '2067', ibNet: 30000, remaining: 0, overMoved: 0, movedBy: ['A12'],
     })
     vi.mocked(generateTrialBalance).mockResolvedValue({
       rows: [{ account_number: '2069', closing_debit: 0, closing_credit: 12000 }],
@@ -503,6 +503,139 @@ describe('validateYearEndReadiness', () => {
     const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
 
     expect(result.blockers.some((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')).toBe(false)
+  })
+
+  // A migrated aktiebolag's FY2022 (prod, 2026-09-29): 2021's result (IB 2099 C 151 986,05) moved off
+  // by the omföring A181 AND the previous system's imported disposition A176
+  // (+2 kr in A178). 2099 shows D 149 217,18, but 1 962,87 of that account is
+  // 2022's result closed by hand through 8999 (A177/A178): the excess is
+  // 151 180,05. #3153's carry alone says 151 274,05 (A178 mixes a 94 kr
+  // closing line into its disposition).
+  const OVER_DISPOSED_CARRY = {
+    resultAccount: '2099', resultAccountName: 'Årets resultat', priorResultAccount: '2098',
+    retainedAccount: '2091', ibNet: 151986.05, remaining: 0, overMoved: -151274.05,
+    movedBy: ['A181', 'A176', 'A178'],
+  }
+  function trialBalanceWith(rows: Array<{ account_number: string; closing_debit: number; closing_credit: number }>) {
+    vi.mocked(generateTrialBalance).mockResolvedValue({
+      rows,
+      isBalanced: true,
+      totalDebit: 0,
+      totalCredit: 0,
+    } as never)
+  }
+
+  it('blocks with PRIOR_RESULT_OVER_DISPOSED, the excess and the correction (migrated aktiebolag)', async () => {
+    const period = makeFiscalPeriod({
+      id: 'fp-1', is_closed: false, closing_entry_id: null, period_end: '2022-12-31',
+    })
+    results = withFormLookup(noGapResults(period), 'aktiebolag')
+    vi.mocked(priorResultCarry).mockResolvedValueOnce(OVER_DISPOSED_CARRY)
+    trialBalanceWith([
+      { account_number: '2099', closing_debit: 149217.18, closing_credit: 0 },
+      { account_number: '8999', closing_debit: 2056.87, closing_credit: 94 },
+    ])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.ready).toBe(false)
+    expect(result.blockers.some((b) => b.code === 'PRIOR_RESULT_NOT_DISPOSED')).toBe(false)
+    const blocker = result.blockers.find((b) => b.code === 'PRIOR_RESULT_OVER_DISPOSED')
+    expect(blocker).toBeDefined()
+    // The amount a correction must move back, not the raw 2099 balance.
+    expect(blocker?.message).toMatch(/151\s180,05/)
+    expect(blocker?.message).not.toMatch(/149\s217,18/)
+    expect(blocker?.message).toContain('A181, A176, A178')
+    expect(blocker?.message).toContain('senast 2022-12-31')
+    // A profit moved off too often is credited back to 2099.
+    expect(blocker?.message).toContain('debet 2098 eller 2091, kredit 2099')
+    expect(result.errors).toContain(blocker?.message)
+  })
+
+  it('names the reverse correction for a loss moved off too often (ideell förening)', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'ideell_forening')
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
+      retainedAccount: '2067', ibNet: -4000, remaining: 0, overMoved: 4000, movedBy: ['A2', 'A9'],
+    })
+    trialBalanceWith([{ account_number: '2069', closing_debit: 0, closing_credit: 4000 }])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    const blocker = result.blockers.find((b) => b.code === 'PRIOR_RESULT_OVER_DISPOSED')
+    expect(blocker?.message).toContain('debet 2069, kredit 2068 eller 2067')
+  })
+
+  it('does not block once a correction entry moved the excess back', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'aktiebolag')
+    // The carry still counts both transfers (a correction is not a
+    // disposition), but 2099 now holds only 2022's hand-closed result.
+    vi.mocked(priorResultCarry).mockResolvedValueOnce(OVER_DISPOSED_CARRY)
+    trialBalanceWith([
+      { account_number: '2099', closing_debit: 149217.18, closing_credit: 151180.05 },
+      { account_number: '8999', closing_debit: 2056.87, closing_credit: 94 },
+    ])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.blockers.some((b) => b.code.startsWith('PRIOR_RESULT_'))).toBe(false)
+  })
+
+  it('does not block a prior result disposed exactly once (omföring or by hand)', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'aktiebolag')
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      ...OVER_DISPOSED_CARRY, remaining: 0, overMoved: 0, movedBy: ['A181'],
+    })
+    // 2099 holds only this year's result, closed by hand through 8999.
+    trialBalanceWith([
+      { account_number: '2099', closing_debit: 0, closing_credit: 1962.87 },
+      { account_number: '8999', closing_debit: 1962.87, closing_credit: 0 },
+    ])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.blockers.some((b) => b.code.startsWith('PRIOR_RESULT_'))).toBe(false)
+  })
+
+  it('does not block this year\'s loss re-homed in the disposition verifikat (PostHog PH 108 shape)', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'ideell_forening')
+    // The carry counts the re-homed loss as moved (-12 000 over), but 2069's
+    // D 12 000 is exactly this year's loss closed by hand through 8999.
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      resultAccount: '2069', resultAccountName: 'Årets resultat', priorResultAccount: '2068',
+      retainedAccount: '2067', ibNet: 30000, remaining: 0, overMoved: -12000, movedBy: ['A12'],
+    })
+    trialBalanceWith([
+      { account_number: '2069', closing_debit: 12000, closing_credit: 0 },
+      { account_number: '8999', closing_debit: 0, closing_credit: 12000 },
+    ])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(result.blockers.some((b) => b.code.startsWith('PRIOR_RESULT_'))).toBe(false)
+  })
+
+  it('looks at the carry when only the hand-closed result makes the account look empty', async () => {
+    const period = makeFiscalPeriod({ id: 'fp-1', is_closed: false, closing_entry_id: null })
+    results = withFormLookup(noGapResults(period), 'aktiebolag')
+    // Moved off 20 000 too much, and this year's 20 000 closed by hand makes
+    // the raw balance 0: the residual still shows the excess.
+    vi.mocked(priorResultCarry).mockResolvedValueOnce({
+      ...OVER_DISPOSED_CARRY, ibNet: 20000, overMoved: -20000, movedBy: ['A1', 'A5'],
+    })
+    trialBalanceWith([
+      { account_number: '2099', closing_debit: 20000, closing_credit: 20000 },
+      { account_number: '8999', closing_debit: 20000, closing_credit: 0 },
+    ])
+
+    const result = await validateYearEndReadiness(makeClient() as never, 'company-1', 'user-1', 'fp-1')
+
+    expect(priorResultCarry).toHaveBeenCalled()
+    expect(result.blockers.find((b) => b.code === 'PRIOR_RESULT_OVER_DISPOSED')?.message).toMatch(/20\s000/)
   })
 
   it('returns error when period has not yet ended', async () => {

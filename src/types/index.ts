@@ -3686,6 +3686,7 @@ export type YearEndBlockerCode =
   | 'UNBOOKED_TRANSACTIONS'
   | 'UNBOOKED_CHECK_FAILED'
   | 'PRIOR_RESULT_NOT_DISPOSED'
+  | 'PRIOR_RESULT_OVER_DISPOSED'
 
 export interface YearEndBlocker {
   code: YearEndBlockerCode

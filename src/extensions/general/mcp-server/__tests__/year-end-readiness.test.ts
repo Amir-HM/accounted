@@ -69,6 +69,14 @@ describe('gnubok_year_end_readiness: registration', () => {
     expect(YEAR_END_BLOCKER_KIND.PERIOD_LOCKED).toBe('period_locked')
   })
 
+  // Both directions of a prior result on the result account share one kind
+  // (the description budget names every kind verbatim); the message says
+  // which way to correct.
+  it('maps an over-disposed prior result to the prior_result_left kind', () => {
+    expect(YEAR_END_BLOCKER_KIND.PRIOR_RESULT_OVER_DISPOSED).toBe('prior_result_left')
+    expect(YEAR_END_BLOCKER_KIND.PRIOR_RESULT_NOT_DISPOSED).toBe('prior_result_left')
+  })
+
   it('names every actionable blocker kind the tool can emit', () => {
     const tool = tools.find((t) => t.name === 'gnubok_year_end_readiness')!
     const actionable = [...new Set(Object.values(YEAR_END_BLOCKER_KIND))].filter(

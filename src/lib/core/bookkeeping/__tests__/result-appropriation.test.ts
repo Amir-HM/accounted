@@ -46,6 +46,7 @@ import { getOpeningBalances } from '@/lib/reports/opening-balances'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
 import { fetchEntryLines } from '@/lib/bookkeeping/entry-lines'
 import { findNextPeriod } from '../period-service'
+import { carryAfterDispositions } from '../prior-result-carry'
 
 const FAKE_ENTRY = { id: 'ra-1', voucher_series: 'A', voucher_number: 2 }
 
@@ -459,5 +460,39 @@ describe('previewResultAppropriation (feedback seq 707985)', () => {
     expect(await previewResultAppropriation(makeClient() as never, 'c1', closing('enskild_firma', 50000))).toBeNull()
     expect(await previewResultAppropriation(makeClient() as never, 'c1', closing('aktiebolag', 0.004))).toBeNull()
     expect(findNextPeriod).not.toHaveBeenCalled()
+  })
+})
+
+describe('carryAfterDispositions: a prior result moved off too often (a migrated aktiebolag)', () => {
+  it('reports what went beyond the carry and leaves nothing for another omföring', async () => {
+    // FY2022: the automatic omföring AND the previous system's imported
+    // disposition both moved 2021's result off 2099.
+    vi.mocked(fetchEntryLines).mockResolvedValue([
+      ...entryLines('a181', 'result_appropriation', 181, [
+        { account_number: '2099', debit_amount: 151986.05, credit_amount: 0 },
+        { account_number: '2098', debit_amount: 0, credit_amount: 151986.05 },
+      ]),
+      ...entryLines('a176', 'import', 176, [
+        { account_number: '2091', debit_amount: 0, credit_amount: 151178.05 },
+        { account_number: '2099', debit_amount: 151178.05, credit_amount: 0 },
+      ]),
+    ] as never)
+
+    const carry = await carryAfterDispositions(makeClient() as never, 'c1', 'p-2022', 'aktiebolag' as never, 151986.05)
+
+    expect(carry).toMatchObject({ ibNet: 151986.05, remaining: 0, overMoved: -151178.05, movedBy: ['A181', 'A176'] })
+  })
+
+  it('reports no over-move for a carry disposed exactly once', async () => {
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('a181', 'result_appropriation', 181, [
+        { account_number: '2099', debit_amount: 151986.05, credit_amount: 0 },
+        { account_number: '2098', debit_amount: 0, credit_amount: 151986.05 },
+      ]) as never
+    )
+
+    const carry = await carryAfterDispositions(makeClient() as never, 'c1', 'p-2022', 'aktiebolag' as never, 151986.05)
+
+    expect(carry).toMatchObject({ remaining: 0, overMoved: 0 })
   })
 })

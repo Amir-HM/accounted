@@ -4,7 +4,7 @@ import { fetchEntryLines, type EntryLinesQuery } from '@/lib/bookkeeping/entry-l
 import { getOpeningBalances } from '@/lib/reports/opening-balances'
 import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
 import type { EntityType } from '@/types'
-import { movedOffCarry, remainingCarry, type CarryEntry } from './prior-result-guard'
+import { movedOffCarry, overMovedCarry, remainingCarry, type CarryEntry } from './prior-result-guard'
 
 export interface PriorResultCarry {
   /** The form's "årets resultat" account (aktiebolag 2099, ideell förening 2069). */
@@ -18,6 +18,11 @@ export interface PriorResultCarry {
   ibNet: number
   /** What is still carried after the automatic omföring and hand-booked dispositions. */
   remaining: number
+  /**
+   * What the dispositions moved beyond the carry, credit-positive and so of
+   * the opposite sign to `ibNet` (see overMovedCarry); 0 when they did not.
+   */
+  overMoved: number
   /** Vouchers (e.g. "A12") that moved part or all of it. */
   movedBy: string[]
 }
@@ -77,7 +82,7 @@ export async function carryAfterDispositions(
     priorResultAccount: accounts.priorYearCarry,
     retainedAccount,
   }
-  if (Math.abs(ibNet) < ORE_TOLERANCE) return { ...base, ibNet: 0, remaining: 0, movedBy: [] }
+  if (Math.abs(ibNet) < ORE_TOLERANCE) return { ...base, ibNet: 0, remaining: 0, overMoved: 0, movedBy: [] }
 
   const dispositionAccounts = [...new Set([accounts.priorYearCarry, retainedAccount])].filter(
     (account) => account !== accounts.closing,
@@ -86,7 +91,13 @@ export async function carryAfterDispositions(
     ? await fetchCarryEntries(supabase, companyId, periodId, [accounts.closing, ...dispositionAccounts])
     : []
   const moved = movedOffCarry(entries, accounts.closing, dispositionAccounts, ibNet)
-  return { ...base, ibNet, remaining: remainingCarry(ibNet, moved.net), movedBy: moved.vouchers }
+  return {
+    ...base,
+    ibNet,
+    remaining: remainingCarry(ibNet, moved.net),
+    overMoved: overMovedCarry(ibNet, moved.net),
+    movedBy: moved.vouchers,
+  }
 }
 
 /** Live (posted) entries in the period with their lines on `accounts`, one item per entry. */

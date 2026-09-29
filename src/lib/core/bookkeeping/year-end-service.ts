@@ -29,7 +29,7 @@ import { validateBalanceContinuity } from '@/lib/reports/continuity-check'
 import { assessKontantmetodCutoff } from './kontantmetod-cutoff'
 import { ENTITY_TYPES, resolveCompanyEntityType, resultClosingAccounts } from '@/lib/company/entity-type'
 import { formatCurrency } from '@/lib/utils'
-import { resultAccountLeftover } from './prior-result-guard'
+import { overDisposedAmount, resultAccountLeftover, resultAccountResidual } from './prior-result-guard'
 import { priorResultCarry } from './prior-result-carry'
 import type {
   YearEndValidation,
@@ -269,7 +269,8 @@ export async function validateYearEndReadiness(
   // close: once a closing entry exists, CLOSING_ENTRY_EXISTS already blocks.
   // Fails open (logged): a lookup error must not block every close. The free
   // pre-check on the trial balance keeps the form lookup off the common path:
-  // only a leftover on one of the forms' result accounts is worth resolving.
+  // only a leftover on one of the forms' result accounts, or one that shows
+  // once this year's hand-closed result is taken off, is worth resolving.
   const resultAccountCandidates = [
     ...new Set(
       ENTITY_TYPES.map((t) => resultClosingAccounts(t))
@@ -279,7 +280,11 @@ export async function validateYearEndReadiness(
   ]
   if (
     !period.closing_entry_id &&
-    resultAccountCandidates.some((account) => resultAccountLeftover(trialBalance.rows, account) !== 0)
+    resultAccountCandidates.some(
+      (account) =>
+        resultAccountLeftover(trialBalance.rows, account) !== 0 ||
+        resultAccountResidual(trialBalance.rows, account) !== 0,
+    )
   ) {
     try {
       const { data: formSettings } = await supabase
@@ -300,6 +305,31 @@ export async function validateYearEndReadiness(
           message:
             `Konto ${carry.resultAccount} ${carry.resultAccountName} bär fortfarande ${formatCurrency(Math.abs(carry.remaining))} från föregående års resultat. ` +
             `Flytta det till ${carry.priorResultAccount} eller ${carry.retainedAccount} (resultatdisposition) innan bokslutet, annars räknas det in i årets resultat.`,
+        })
+      }
+      // The other way round (an SIE-migrated aktiebolag, 2026-09-29): the
+      // prior result moved off more than it was, typically the automatic
+      // omföring plus the previous system's own disposition imported into the
+      // same year. The account then carries the excess with the opposite sign
+      // and the close adds this year's result on top. Measured net of this
+      // year's result already closed onto the account by hand (899x), so the
+      // amount is what a correction must move back and the block clears once
+      // one is booked.
+      const excess = carry
+        ? overDisposedAmount(carry.overMoved, resultAccountResidual(trialBalance.rows, carry.resultAccount))
+        : 0
+      if (carry && excess !== 0) {
+        const amount = formatCurrency(Math.abs(excess))
+        const dispositionAccounts = `${carry.priorResultAccount} eller ${carry.retainedAccount}`
+        // A profit moved off too often leaves a debit, credited back; a loss the other way.
+        const [debit, credit] =
+          excess < 0 ? [dispositionAccounts, carry.resultAccount] : [carry.resultAccount, dispositionAccounts]
+        blockers.push({
+          code: 'PRIOR_RESULT_OVER_DISPOSED',
+          message:
+            `Från konto ${carry.resultAccount} ${carry.resultAccountName} har ${amount} mer än föregående års resultat förts bort (verifikat ${carry.movedBy.join(', ')}). ` +
+            `Boka en rättelse daterad i räkenskapsåret, senast ${period.period_end}, som för tillbaka ${amount} till ${carry.resultAccount} från ${dispositionAccounts}, där beloppet bokades för mycket (debet ${debit}, kredit ${credit}). ` +
+            'Annars stämmer årets resultat i balansräkningen inte med resultaträkningen.',
         })
       }
     } catch (err) {

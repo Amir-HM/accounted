@@ -2973,6 +2973,9 @@ export const YEAR_END_BLOCKER_KIND: Record<YearEndBlockerCode, string> = {
   UNBOOKED_TRANSACTIONS: 'unbooked_transactions',
   UNBOOKED_CHECK_FAILED: 'unbooked_transactions',
   PRIOR_RESULT_NOT_DISPOSED: 'prior_result_left',
+  // Same kind, the other direction: more than the prior result was moved off.
+  // The message says which way to correct.
+  PRIOR_RESULT_OVER_DISPOSED: 'prior_result_left',
 }
 
 /**
