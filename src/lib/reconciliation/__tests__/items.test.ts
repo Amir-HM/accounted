@@ -125,7 +125,9 @@ describe('listAccountItems', () => {
     enqueue({ data: { id: CASH, ledger_account: '1930', currency: 'SEK', is_primary: true } })
     enqueue({
       data: [
-        { ...row, id: 't-link', date: '2026-08-05', description: 'Lön', amount: -31200, journal_entry_id: 'e-1', reconciliation_method: 'manual' },
+        // Linked, with a stale proposal pointer left behind (a multi-row
+        // bulk_book never clears it).
+        { ...row, id: 't-link', date: '2026-08-05', description: 'Lön', amount: -31200, journal_entry_id: 'e-1', reconciliation_method: 'manual', potential_journal_entry_id: 'e-stale' },
         // Booked by hand a day after the bank debit; the matcher proposed it at 0.85.
         { ...row, id: 't-prop', date: '2026-08-02', description: 'KORTKÖP KONTORSVAROR', amount: -1250, potential_journal_entry_id: 'e-2', potential_match_method: 'auto_date_range', potential_match_confidence: '0.85' },
         { ...row, id: 't-gone', date: '2026-08-01', description: 'Okänd', amount: -40, potential_journal_entry_id: 'e-missing', potential_match_method: 'auto_fuzzy', potential_match_confidence: 0.75 },
@@ -139,6 +141,7 @@ describe('listAccountItems', () => {
       data: [
         { id: 'e-1', entry_date: '2026-08-05', voucher_series: 'A', voucher_number: 11, description: 'Lön augusti' },
         { id: 'e-2', entry_date: '2026-08-03', voucher_series: 'A', voucher_number: 12, description: 'Kontorsvaror' },
+        { id: 'e-stale', entry_date: '2026-07-30', voucher_series: 'A', voucher_number: 9, description: 'Annat verifikat' },
       ],
     })
 
@@ -168,7 +171,10 @@ describe('listAccountItems', () => {
       description: '',
     })
     expect(byId['t-link'].linked_entry).toEqual({ entry_date: '2026-08-05', voucher_series: 'A', voucher_number: 11, description: 'Lön augusti' })
-    // One journal_entries read serves the linked row and both proposals.
+    // Only live proposals are filled in: the stale pointer on the matched row
+    // keeps its fallback rather than showing another verifikat's label.
+    expect(byId['t-link']).toMatchObject({ bucket: 'matched', proposal: { journal_entry_id: 'e-stale', voucher_number: null, description: '' } })
+    // One journal_entries read serves the linked row and both live proposals.
     const reads = findCalls('journal_entries', 'in')
     expect(reads).toHaveLength(1)
     expect([...(reads[0][1] as string[])].sort()).toEqual(['e-1', 'e-2', 'e-missing'])

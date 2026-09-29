@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { dropProposedLedgerDuplicates } from '../overview-rows'
 import type { ReconciliationItem, ReconciliationProposal } from '../schemas'
 
-function bankRow(id: string, bucket: ReconciliationItem['bucket'], proposal: ReconciliationProposal | null = null): ReconciliationItem {
+function bankRow(
+  id: string,
+  bucket: ReconciliationItem['bucket'],
+  proposal: ReconciliationProposal | null = null,
+  amount = -1250,
+): ReconciliationItem {
   return {
     item_id: id,
     item_type: 'transaction',
@@ -10,14 +15,14 @@ function bankRow(id: string, bucket: ReconciliationItem['bucket'], proposal: Rec
     bucket,
     date: '2026-08-02',
     description: 'KORTKÖP',
-    amount: -1250,
+    amount,
     currency: 'SEK',
     proposal,
     actions: bucket === 'proposed' ? ['match', 'book', 'ignore'] : ['book', 'match', 'ignore'],
   }
 }
 
-function ledgerRow(entryId: string, voucherNumber: number): ReconciliationItem {
+function ledgerRow(entryId: string, voucherNumber: number, amount = -1250): ReconciliationItem {
   return {
     item_id: entryId,
     item_type: 'journal_entry',
@@ -25,7 +30,7 @@ function ledgerRow(entryId: string, voucherNumber: number): ReconciliationItem {
     bucket: 'unmatched_ledger',
     date: '2026-08-03',
     description: `Verifikat ${voucherNumber}`,
-    amount: -1250,
+    amount,
     currency: 'SEK',
     voucher_number: voucherNumber,
     voucher_series: 'A',
@@ -48,6 +53,10 @@ function proposalFor(entryId: string, extra: Partial<ReconciliationProposal> = {
   }
 }
 
+function setVoucher(entryId: string, voucherNumber: number, amount: number) {
+  return { journal_entry_id: entryId, voucher_number: voucherNumber, voucher_series: 'A', entry_date: '2026-07-31', description: `Verifikat ${voucherNumber}`, amount }
+}
+
 const ids = (items: ReconciliationItem[]) => items.map((i) => i.item_id)
 
 describe('dropProposedLedgerDuplicates', () => {
@@ -61,16 +70,70 @@ describe('dropProposedLedgerDuplicates', () => {
     expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['t-prop', 't-open', 'e-3'])
   })
 
-  it('drops every verifikat of a covering-set proposal', () => {
-    const set = proposalFor('e-57', {
-      reasons: ['exact_sum_same_date'],
-      vouchers: [
-        { journal_entry_id: 'e-57', voucher_number: 57, voucher_series: 'A', entry_date: '2026-07-31', description: 'Inbetalning 1', amount: 600 },
-        { journal_entry_id: 'e-58', voucher_number: 58, voucher_series: 'A', entry_date: '2026-07-31', description: 'Inbetalning 2', amount: 400 },
-      ],
+  it('keeps the ledger row of a verifikat whose net on the account differs from the proposed bank row', () => {
+    // A multi-line verifikat: the matcher paired one 500 line, but the
+    // verifikat nets -800 on the account. Its ledger row is the only place
+    // the overview shows the 300 the pair does not explain.
+    const items = [bankRow('t-prop', 'proposed', proposalFor('e-12'), -500), ledgerRow('e-12', 12, -800)]
+    expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['t-prop', 'e-12'])
+    // One öre off is a gap too.
+    const ore = [bankRow('t-prop', 'proposed', proposalFor('e-12'), -500), ledgerRow('e-12', 12, -500.01)]
+    expect(ids(dropProposedLedgerDuplicates(ore))).toEqual(['t-prop', 'e-12'])
+  })
+
+  it('drops a verifikat proposed for two bank rows once, when the rows together equal its net', () => {
+    const items = [
+      bankRow('t-a', 'proposed', proposalFor('e-20'), -300.1),
+      bankRow('t-b', 'proposed', proposalFor('e-20'), -499.9),
+      ledgerRow('e-20', 20, -800),
+    ]
+    expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['t-a', 't-b'])
+    // Rows that do not add up keep it listed.
+    const short = [bankRow('t-a', 'proposed', proposalFor('e-20'), -300), bankRow('t-b', 'proposed', proposalFor('e-20'), -400), ledgerRow('e-20', 20, -800)]
+    expect(ids(dropProposedLedgerDuplicates(short))).toEqual(['t-a', 't-b', 'e-20'])
+  })
+
+  it('drops the 1630 verifikat of a combined skattekonto proposal once, when the group equals its net', () => {
+    // Two Skatteverket rows (avdragen skatt, arbetsgivaravgift) settle one
+    // combined 1630 credit; each row carries the same proposal.
+    const group = proposalFor('e-30', { reasons: ['summan av 2 händelser är exakt beloppet på 1630'], external_ids: ['s-1', 's-2'] })
+    const skvRow = (id: string, amount: number): ReconciliationItem => ({
+      ...bankRow(id, 'proposed', group, amount),
+      item_type: 'skattekonto_transaction',
     })
-    const items = [bankRow('t-bg', 'proposed', set), ledgerRow('e-57', 57), ledgerRow('e-58', 58), ledgerRow('e-59', 59)]
+    const items = [skvRow('s-1', -4210), skvRow('s-2', -3142.8), ledgerRow('e-30', 30, -7352.8), ledgerRow('e-31', 31, -900)]
+    expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['s-1', 's-2', 'e-31'])
+    // With one row of the group outside the list the sum is partial: keep it.
+    expect(ids(dropProposedLedgerDuplicates([items[0], items[2]]))).toEqual(['s-1', 'e-30'])
+  })
+
+  it('drops every verifikat of a covering-set proposal, signing each bank leg in the row direction', () => {
+    const outgoing = proposalFor('e-57', {
+      reasons: ['exact_sum_same_date'],
+      vouchers: [setVoucher('e-57', 57, 600), setVoucher('e-58', 58, 400)],
+    })
+    const items = [
+      bankRow('t-bg', 'proposed', outgoing, -1000),
+      ledgerRow('e-57', 57, -600),
+      ledgerRow('e-58', 58, -400),
+      ledgerRow('e-59', 59, -400),
+    ]
     expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['t-bg', 'e-59'])
+
+    const incoming = proposalFor('e-60', {
+      reasons: ['exact_sum_same_date'],
+      vouchers: [setVoucher('e-60', 60, 25750), setVoucher('e-61', 61, 62500)],
+    })
+    const inItems = [bankRow('t-in', 'proposed', incoming, 88250), ledgerRow('e-60', 60, 25750), ledgerRow('e-61', 61, 62500)]
+    expect(ids(dropProposedLedgerDuplicates(inItems))).toEqual(['t-in'])
+  })
+
+  it('keeps a set voucher whose net on the account differs from its bank leg', () => {
+    // The voucher also has a debit line on the account, so it nets less than
+    // the credit leg the set summed.
+    const set = proposalFor('e-57', { vouchers: [setVoucher('e-57', 57, 600), setVoucher('e-58', 58, 400)] })
+    const items = [bankRow('t-bg', 'proposed', set, -1000), ledgerRow('e-57', 57, -450), ledgerRow('e-58', 58, -400)]
+    expect(ids(dropProposedLedgerDuplicates(items))).toEqual(['t-bg', 'e-57'])
   })
 
   it('keeps the verifikat when the row pointing at it is not a live proposal (ignored or already matched)', () => {

@@ -140,7 +140,7 @@ export function AccountOverview({ account, otherBankAccounts = [], window, onCha
   const byBucket = useMemo(() => {
     const map = new Map<ReconciliationItemBucket, ReconciliationItem[]>()
     for (const b of BUCKET_ORDER) map.set(b, [])
-    // A proposed verifikat shows in its pair only, not again as missing at the bank.
+    // A verifikat its proposals fully explain shows in its pair only, not again as missing on the other side.
     for (const item of dropProposedLedgerDuplicates(items?.items ?? [])) map.get(item.bucket)?.push(item)
     return map
   }, [items])

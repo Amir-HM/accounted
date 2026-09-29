@@ -273,7 +273,10 @@ export async function listAccountItems(
                 : 'unmatched_external'
           if (!buckets.includes(bucket)) continue
           // The matcher persists only the verifikat id; attachEntries fills in
-          // its label, date and text once every item is built.
+          // its label, date and text once every item is built. Live proposals
+          // only: a matched row can keep a stale pointer (a multi-row
+          // bulk_book links through the junction and never clears it), and a
+          // real voucher label there would read as the row's link.
           const persisted: ReconciliationProposal | null = tx.potential_journal_entry_id
             ? {
                 journal_entry_id: tx.potential_journal_entry_id,
@@ -286,7 +289,7 @@ export async function listAccountItems(
                 reasons: [tx.potential_match_method ?? 'föreslagen av matcharen'],
               }
             : null
-          if (persisted) persistedProposals.push(persisted)
+          if (persisted && bucket === 'proposed') persistedProposals.push(persisted)
           push({
             item_id: tx.id,
             item_type: 'transaction',
