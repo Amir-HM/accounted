@@ -751,7 +751,7 @@ describe('getSkattekontoReconciliationStatus', () => {
     it('settles neither half when one half has a live link', async () => {
       const { supabase, enqueue } = createQueuedMockSupabase()
       // A5 mirrors V463 too, but V290 is V463's annulment partner.
-      const A5 = head('A5', '2026-08-20', { description: 'Momsdebitering augusti' })
+      const A5 = head('A5', '2026-08-20', { source_type: 'import', description: 'Momsdebitering augusti' })
       enqueueBase(enqueue, {
         saldo: -65484,
         rows: [row('r1', '2026-08-03', -65484, { journal_entry_id: 'V290' })],
@@ -768,10 +768,30 @@ describe('getSkattekontoReconciliationStatus', () => {
       expect(s.is_reconciled).toBe(false)
     })
 
+    it('keeps a same-day mirror of two entries made here listed: only imported pairs settle', async () => {
+      const { supabase, enqueue } = createQueuedMockSupabase()
+      // Anchored by the date, so the content detector pairs them, but an
+      // entry made here is corrected through storno, never by a bare mirror.
+      const payment = head('A30', '2026-04-10', { description: 'Inbetalning till skattekontot' })
+      const refund = head('A31', '2026-04-10', { description: 'Utbetalning från skattekontot' })
+      enqueueBase(enqueue, { saldo: 0, rows: [] })
+      wholeLedger([ledgerLine(payment, 5000), ledgerLine(refund, -5000)])
+      detector([
+        withLines(payment, [['1630', 5000, 0], ['1930', 0, 5000]]),
+        withLines(refund, [['1630', 0, 5000], ['1930', 5000, 0]]),
+      ])
+
+      const s = await getSkattekontoReconciliationStatus(supabase as never, COMPANY, { today: TODAY })
+      if (!s) throw new Error('expected status')
+      expect(s.items.unmatched_ledger.map((i) => i.item_id)).toEqual(['A30', 'A31'])
+      expect(s.counts.unmatched_ledger).toBe(2)
+      expect(s.is_reconciled).toBe(false)
+    })
+
     it('keeps a payment and a later refund of the same amount listed: a mirror without an anchor', async () => {
       const { supabase, enqueue } = createQueuedMockSupabase()
-      const payment = head('A10', '2026-03-01', { description: 'Inbetalning till skattekontot' })
-      const refund = head('A20', '2026-03-20', { description: 'Utbetalning från skattekontot' })
+      const payment = head('A10', '2026-03-01', { source_type: 'import', description: 'Inbetalning till skattekontot' })
+      const refund = head('A20', '2026-03-20', { source_type: 'import', description: 'Utbetalning från skattekontot' })
       enqueueBase(enqueue, { saldo: 0, rows: [] })
       wholeLedger([ledgerLine(payment, 5000), ledgerLine(refund, -5000)])
       detector([

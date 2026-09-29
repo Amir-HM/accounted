@@ -234,8 +234,11 @@ async function sumLedgerAmountForEntries(
 
 /**
  * Imported annulment pairs among `open` (the ledger entries nothing else
- * settles): both halves must be in `open` and net to zero on 1630. Reads only
- * when two open entries mirror each other on 1630. A failed read settles
+ * settles): both halves must be in `open` and net to zero on 1630. The caller
+ * passes imported entries only: an annulment the previous system booked has
+ * no link fields to follow, whereas an entry made here is corrected through
+ * storno, so a same-day mirror of two entries made here stays listed. Reads
+ * only when two open entries mirror each other on 1630. A failed read settles
  * nothing, so both halves stay listed.
  */
 async function findSettledAnnulmentIds(
@@ -612,6 +615,7 @@ export async function getSkattekontoReconciliationStatus(
       ({ head, amount }) =>
         amount !== 0 &&
         head.status === 'posted' &&
+        head.source_type === 'import' &&
         !head.reverses_id &&
         !head.reversed_by_id &&
         !liveLinkedEntryIds.has(head.id) &&
