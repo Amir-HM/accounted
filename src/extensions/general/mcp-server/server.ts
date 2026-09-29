@@ -395,6 +395,7 @@ import {
   KONTANTMETOD_CUTOFF_DESCRIPTIONS,
   nextDay,
   reverseLines,
+  undatedSettlementsNote,
 } from '@/lib/core/bookkeeping/kontantmetod-cutoff'
 import { generateSIEExport } from '@/lib/reports/sie-export'
 import { generateFullArchive, estimateArchiveSize } from '@/lib/reports/full-archive-export'
@@ -20430,11 +20431,21 @@ export const tools: McpTool[] = [
           `${assessment.collection.strayVatOnZeroRate.slice(0, 10).join(', ')}. Rätta dem och försök igen.`,
         )
       }
+      // Disclosed wherever the cut-off is shown, including when the
+      // assumption leaves nothing to post: that answer rests on it too.
+      const undatedNote = undatedSettlementsNote(
+        assessment.collection.undatedSettlements.length,
+        period.period_end,
+      )
       if (
         assessment.lines.receivableLines.length === 0 &&
         assessment.lines.payableLines.length === 0
       ) {
-        throw new Error('Inga obetalda kund- eller leverantörsfakturor finns vid periodens slut')
+        throw new Error(
+          undatedNote
+            ? `Inga obetalda kund- eller leverantörsfakturor finns vid periodens slut. ${undatedNote}`
+            : 'Inga obetalda kund- eller leverantörsfakturor finns vid periodens slut',
+        )
       }
       if (
         assessment.postings.complete ||
@@ -20517,6 +20528,8 @@ export const tools: McpTool[] = [
           next_fiscal_period_id: nextPeriod.id,
           receivable_count: assessment.collection.receivables.length,
           payable_count: assessment.collection.payables.length,
+          undated_settlement_count: assessment.collection.undatedSettlements.length,
+          undated_settlements_sample: assessment.collection.undatedSettlements.slice(0, 10),
           entries,
         },
         actor,
@@ -20529,6 +20542,9 @@ export const tools: McpTool[] = [
           idempotencyKey:
             typeof args.idempotency_key === 'string' ? args.idempotency_key : undefined,
           dateForPeriodCheck: period.period_end,
+          // The approval guidance for this high-risk operation tells the
+          // agent to surface compliance_warning and get it acknowledged.
+          ...(undatedNote ? { complianceNote: undatedNote } : {}),
         },
       )
     },
