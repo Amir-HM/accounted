@@ -40,6 +40,26 @@ describe('resolveOutstandingAsOf', () => {
       .toEqual({ outstanding: 250, basis: 'assumed' })
   })
 
+  it('reopens an invoice a kreditfaktura dated after the date credited, after rows and paid_at', () => {
+    const credited = (rows: Array<{ id: string; paidThrough?: number }>): PaymentsAsOf => ({
+      ...payments(rows),
+      creditedAfter: new Set(['a']),
+    })
+    // The live state (0: the credit is already applied) is not the state on
+    // the day: the credit came later.
+    expect(resolveOutstandingAsOf({ id: 'a', paid_at: null }, 1000, 0, credited([]), AS_OF))
+      .toEqual({ outstanding: 1000, basis: 'credit_note' })
+    // Dated payments still count first.
+    expect(resolveOutstandingAsOf({ id: 'a', paid_at: null }, 1000, 0, credited([
+      { id: 'a', paidThrough: 400 },
+    ]), AS_OF)).toEqual({ outstanding: 600, basis: 'payment_rows' })
+    expect(resolveOutstandingAsOf({ id: 'a', paid_at: '2026-11-30' }, 1000, 0, credited([]), AS_OF))
+      .toEqual({ outstanding: 0, basis: 'paid_at' })
+    // Without the history (callers that do not read credit notes) nothing changes.
+    expect(resolveOutstandingAsOf({ id: 'a', paid_at: null }, 1000, 0, payments([]), AS_OF))
+      .toEqual({ outstanding: 0, basis: 'assumed' })
+  })
+
   it('stays the rule outstandingAsOf applies', () => {
     const cases: Array<[{ id: string; paid_at: string | null }, PaymentsAsOf]> = [
       [{ id: 'a', paid_at: null }, payments([{ id: 'a', paidThrough: 400 }])],

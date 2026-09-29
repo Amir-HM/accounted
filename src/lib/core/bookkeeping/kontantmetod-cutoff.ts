@@ -49,6 +49,7 @@ import { invoiceCustomerOutstanding, invoiceCustomerShare } from '@/lib/invoices
 import { createLogger } from '@/lib/logger'
 import { ORE_TOLERANCE, roundOre } from '@/lib/money'
 import {
+  fetchCreditedAfter,
   fetchPaymentsAsOf,
   resolveOutstandingAsOf,
   type PaymentsAsOf,
@@ -858,6 +859,25 @@ export async function collectKontantmetodCutoff(
     )
   }
 
+  // A kreditfaktura dated after period end settled its original only then, so
+  // on the day the original was still open. The live state below may already
+  // carry that credit (Kreditera zeroes a supplier original's
+  // remaining_amount, a migrated original holds the provider's netted
+  // balance), which would otherwise read as a settlement at period end.
+  try {
+    const [customerCredited, supplierCredited] = await Promise.all([
+      fetchCreditedAfter(supabase, 'invoices', companyId, periodEnd),
+      fetchCreditedAfter(supabase, 'supplier_invoices', companyId, periodEnd),
+    ])
+    invoicePayments = { ...invoicePayments, creditedAfter: customerCredited }
+    supplierPayments = { ...supplierPayments, creditedAfter: supplierCredited }
+  } catch (err) {
+    throw new Error(
+      'Kontantmetodens bokslutsavgränsning kunde inte läsa kreditfakturor: ' +
+        (err instanceof Error ? err.message : 'okänt fel'),
+    )
+  }
+
   const receivables: CutoffReceivable[] = []
   const unknownVatTreatment: string[] = []
   const strayVatOnZeroRate: string[] = []
@@ -971,7 +991,8 @@ export async function collectKontantmetodCutoff(
     // side, both credit paths apply a kreditfaktura there (Kreditera zeroes
     // the original, a migrated original carries the provider's netted
     // balance) and both leave the credit note itself at 0, so a credit is
-    // counted once whichever path wrote it.
+    // counted once whichever path wrote it. A credit dated after period end
+    // is not taken from here: the as-of rule reopens its original in full.
     const asOf = resolveOutstandingAsOf(
       { id: row.id as string, paid_at: (row.paid_at as string | null) ?? null },
       totalAbs,

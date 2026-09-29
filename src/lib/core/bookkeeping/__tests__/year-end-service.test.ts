@@ -55,7 +55,9 @@ function makeFilteringClient(tables: SeededTables, failTable?: string) {
       const neqs: Array<[string, unknown]> = []
       const ins: Array<[string, unknown[]]> = []
       const ltes: Array<[string, string]> = []
+      const gts: Array<[string, string]> = []
       const notNull: string[] = []
+      const notIns: Array<[string, string[]]> = []
       let head = false
       let orderColumn: string | null = null
       let orderAscending = true
@@ -71,7 +73,9 @@ function makeFilteringClient(tables: SeededTables, failTable?: string) {
             neqs.every(([c, v]) => r[c] !== v) &&
             ins.every(([c, vs]) => vs.includes(r[c])) &&
             ltes.every(([c, v]) => String(r[c] ?? '') <= v) &&
-            notNull.every((c) => r[c] != null)
+            gts.every(([c, v]) => String(r[c] ?? '') > v) &&
+            notNull.every((c) => r[c] != null) &&
+            notIns.every(([c, vs]) => !vs.includes(String(r[c])))
         )
         if (orderColumn) {
           const col = orderColumn
@@ -100,8 +104,10 @@ function makeFilteringClient(tables: SeededTables, failTable?: string) {
       b.neq = vi.fn((c: string, v: unknown) => { neqs.push([c, v]); return b })
       b.in = vi.fn((c: string, v: unknown[]) => { ins.push([c, v]); return b })
       b.lte = vi.fn((c: string, v: string) => { ltes.push([c, v]); return b })
+      b.gt = vi.fn((c: string, v: string) => { gts.push([c, v]); return b })
       b.not = vi.fn((c: string, op: string, v: unknown) => {
         if (op === 'is' && v === null) notNull.push(c)
+        if (op === 'in') notIns.push([c, String(v).replace(/[()]/g, '').split(',')])
         return b
       })
       b.order = vi.fn((c: string, opts?: { ascending?: boolean }) => {
