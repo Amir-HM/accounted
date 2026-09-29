@@ -173,7 +173,7 @@ describe('GET /api/reports/ar-ledger/customer/[customerId]/invoices', () => {
       },
     ]
     const supabase = buildSupabase(
-      { id: 'cust-1', name: 'Stronger AB' },
+      { id: 'cust-1', name: 'Kunden AB' },
       { data: invoices, error: null },
       { data: [], error: null }
     )

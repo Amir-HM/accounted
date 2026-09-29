@@ -692,7 +692,7 @@ describe('generateARLedger: partially paid invoices (feedback seq 817399)', () =
   const partiallyPaid = {
     id: 'inv-pp',
     customer_id: 'cust-s',
-    customer: { id: 'cust-s', name: 'Stronger AB' },
+    customer: { id: 'cust-s', name: 'Kunden AB' },
     invoice_number: '2026024',
     invoice_date: '2026-06-01',
     due_date: '2026-07-01',
@@ -725,7 +725,7 @@ describe('generateARLedger: partially paid invoices (feedback seq 817399)', () =
 
     expect(invoiceStatusFilter()).toContain('partially_paid')
     expect(report.entries).toHaveLength(1)
-    expect(report.entries[0].customer_name).toBe('Stronger AB')
+    expect(report.entries[0].customer_name).toBe('Kunden AB')
     expect(report.entries[0].invoices[0]).toMatchObject({
       invoice_number: '2026024',
       total: 15625,

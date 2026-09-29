@@ -25,7 +25,7 @@ const invoiceRow = (overrides: Record<string, unknown> = {}) => ({
   valid_until: null,
   quote_status: null,
   default_dimensions: {},
-  customers: { name: 'Stronger AB' },
+  customers: { name: 'Kunden AB' },
   ...overrides,
 })
 
