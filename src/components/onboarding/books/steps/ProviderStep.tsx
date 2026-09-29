@@ -52,6 +52,15 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
   const providerId = state.provider
   const provName = useMemo(() => BRANCH_PROVIDERS.find((p) => p.id === providerId)?.name ?? t('provider_generic'), [providerId, t])
   const provLogo = useMemo(() => BRANCH_PROVIDERS.find((p) => p.id === providerId)?.logo ?? null, [providerId])
+  // What the provider charges or requires before its login can succeed,
+  // said before the click in the migration workspace's own words, so the
+  // paid add-on is not first met on the provider's page.
+  const tx = useTranslations('extensions')
+  const requirement = providerId === 'fortnox'
+    ? tx('ext_arcim_requirement_fortnox')
+    : providerId === 'visma'
+      ? tx('ext_arcim_requirement_visma')
+      : null
   const [phase, setPhase] = useState<Phase>('connect')
   const [error, setError] = useState<string | null>(null)
   const [consentId, setConsentId] = useState<string | null>(null)
@@ -296,6 +305,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
 
       {phase === 'connect' ? (
         <div className="bks-center-col">
+          {requirement ? <p className="brandreq">{requirement}</p> : null}
           <Button
             size="lg"
             className="brandbtn animate-fade-in gap-2 pl-2"
@@ -313,6 +323,17 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
         </div>
       ) : null}
       {phase === 'connecting' ? <Wait text={t('provider_connecting', { provider: provName })} /> : null}
+      {/* The SIE way round the login, on the same screen. Also while
+          connecting: a popup closed on the provider's licence page sends
+          no message back, so the step would otherwise wait there. */}
+      {phase === 'connect' || phase === 'connecting' ? (
+        <div className="bks-center-col" style={{ marginTop: 18 }}>
+          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => dispatch({ type: 'PICK_SIE' })}>
+            {t('provider_sie_instead')}
+          </Button>
+          <p className="brandhint">{t('provider_sie_instead_note', { provider: provName })}</p>
+        </div>
+      ) : null}
       {phase === 'loading' ? <Wait text={t('provider_reading', { provider: provName })} /> : null}
       {phase === 'token' ? (
         <div className="tokfields">

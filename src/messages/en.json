@@ -10391,6 +10391,8 @@
     "provider_generic": "the provider",
     "provider_failed": "The connection failed.",
     "provider_login": "Log in at {provider}",
+    "provider_sie_instead": "Upload a SIE file instead",
+    "provider_sie_instead_note": "A SIE file brings the vouchers. You upload the receipts afterwards, and the invoices stay in {provider}.",
     "provider_connecting": "Connecting to {provider} …",
     "provider_reading": "Reading {provider} …",
     "provider_connected": "{provider} is connected.",
