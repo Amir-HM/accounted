@@ -3149,6 +3149,9 @@ export const YEAR_END_BLOCKER_KIND: Record<YearEndBlockerCode, string> = {
   UNBOOKED_TRANSACTIONS: 'unbooked_transactions',
   UNBOOKED_CHECK_FAILED: 'unbooked_transactions',
   PRIOR_RESULT_NOT_DISPOSED: 'prior_result_left',
+  // Same kind, the other direction: more than the prior result was moved off.
+  // The message says which way to correct.
+  PRIOR_RESULT_OVER_DISPOSED: 'prior_result_left',
 }
 
 /**
@@ -20575,9 +20578,28 @@ export const tools: McpTool[] = [
       // The closing account is the form's (AB 2099, förening 2069, EF 2010):
       // the preview names the one executeYearEndClosing will post to, so
       // the approval card never promises 2099 to a förening.
-      const { closing, closingName } = resultClosingAccounts(
+      const { closing, closingName, priorYearCarry } = resultClosingAccounts(
         await resolveCompanyEntityType(supabase, companyId),
       )
+
+      // The close also books a second verifikat in the next period: the
+      // omföring of the result off the result account (executeYearEndClosing
+      // step 11). The card discloses it, estimated by the same rule, so it
+      // cannot surprise the approver (feedback seq 707985: it duplicated a
+      // disposition the migrated books already held). A form that closes
+      // straight into equity has none, and skips the preview.
+      const omforing = priorYearCarry
+        ? (await previewYearEndClosing(supabase, companyId, userId, fiscalPeriodId)).resultAppropriation
+        : null
+      const omforingWill = !omforing
+        ? ''
+        : omforing.skipped_reason === null
+          ? `, then book the omföring ${omforing.from_account} → ${omforing.to_account} of about ${omforing.amount} on ${omforing.entry_date}`
+          : `; no omföring ${omforing.from_account} → ${omforing.to_account}: ${
+              omforing.skipped_reason === 'already_disposed'
+                ? `already disposed by ${omforing.disposed_by.join(', ')}`
+                : 'one is already booked in the next period'
+            }`
 
       return stagePendingOperation(supabase, companyId, userId, 'run_year_end',
         `Bokslut: ${period.name}`,
@@ -20588,7 +20610,8 @@ export const tools: McpTool[] = [
           period_end: period.period_end,
           closing_account: closing,
           closing_account_name: closingName,
-          will: `zero result accounts into ${closing} ${closingName}, lock period, close period, create next period, generate opening balances`,
+          result_appropriation: omforing,
+          will: `zero result accounts into ${closing} ${closingName}, lock period, close period, create next period, generate opening balances${omforingWill}`,
         },
         actor,
         {

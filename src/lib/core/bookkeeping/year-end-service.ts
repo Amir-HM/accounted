@@ -20,7 +20,7 @@ import {
   createNextPeriod,
   findNextPeriod,
 } from './period-service'
-import { generateResultAppropriation } from './result-appropriation-service'
+import { generateResultAppropriation, previewResultAppropriation } from './result-appropriation-service'
 import {
   previewCurrencyRevaluation,
   executeCurrencyRevaluation,
@@ -29,7 +29,7 @@ import { validateBalanceContinuity } from '@/lib/reports/continuity-check'
 import { assessKontantmetodCutoff } from './kontantmetod-cutoff'
 import { ENTITY_TYPES, resolveCompanyEntityType, resultClosingAccounts } from '@/lib/company/entity-type'
 import { formatCurrency } from '@/lib/utils'
-import { resultAccountLeftover } from './prior-result-guard'
+import { overDisposedAmount, resultAccountLeftover, resultAccountResidual } from './prior-result-guard'
 import { priorResultCarry } from './prior-result-carry'
 import type {
   YearEndValidation,
@@ -269,7 +269,8 @@ export async function validateYearEndReadiness(
   // close: once a closing entry exists, CLOSING_ENTRY_EXISTS already blocks.
   // Fails open (logged): a lookup error must not block every close. The free
   // pre-check on the trial balance keeps the form lookup off the common path:
-  // only a leftover on one of the forms' result accounts is worth resolving.
+  // only a leftover on one of the forms' result accounts, or one that shows
+  // once this year's hand-closed result is taken off, is worth resolving.
   const resultAccountCandidates = [
     ...new Set(
       ENTITY_TYPES.map((t) => resultClosingAccounts(t))
@@ -279,7 +280,11 @@ export async function validateYearEndReadiness(
   ]
   if (
     !period.closing_entry_id &&
-    resultAccountCandidates.some((account) => resultAccountLeftover(trialBalance.rows, account) !== 0)
+    resultAccountCandidates.some(
+      (account) =>
+        resultAccountLeftover(trialBalance.rows, account) !== 0 ||
+        resultAccountResidual(trialBalance.rows, account) !== 0,
+    )
   ) {
     try {
       const { data: formSettings } = await supabase
@@ -300,6 +305,31 @@ export async function validateYearEndReadiness(
           message:
             `Konto ${carry.resultAccount} ${carry.resultAccountName} bär fortfarande ${formatCurrency(Math.abs(carry.remaining))} från föregående års resultat. ` +
             `Flytta det till ${carry.priorResultAccount} eller ${carry.retainedAccount} (resultatdisposition) innan bokslutet, annars räknas det in i årets resultat.`,
+        })
+      }
+      // The other way round (an SIE-migrated aktiebolag, 2026-09-29): the
+      // prior result moved off more than it was, typically the automatic
+      // omföring plus the previous system's own disposition imported into the
+      // same year. The account then carries the excess with the opposite sign
+      // and the close adds this year's result on top. Measured net of this
+      // year's result already closed onto the account by hand (899x), so the
+      // amount is what a correction must move back and the block clears once
+      // one is booked.
+      const excess = carry
+        ? overDisposedAmount(carry.overMoved, resultAccountResidual(trialBalance.rows, carry.resultAccount))
+        : 0
+      if (carry && excess !== 0) {
+        const amount = formatCurrency(Math.abs(excess))
+        const dispositionAccounts = `${carry.priorResultAccount} eller ${carry.retainedAccount}`
+        // A profit moved off too often leaves a debit, credited back; a loss the other way.
+        const [debit, credit] =
+          excess < 0 ? [dispositionAccounts, carry.resultAccount] : [carry.resultAccount, dispositionAccounts]
+        blockers.push({
+          code: 'PRIOR_RESULT_OVER_DISPOSED',
+          message:
+            `Från konto ${carry.resultAccount} ${carry.resultAccountName} har ${amount} mer än föregående års resultat förts bort (verifikat ${carry.movedBy.join(', ')}). ` +
+            `Boka en rättelse daterad i räkenskapsåret, senast ${period.period_end}, som för tillbaka ${amount} till ${carry.resultAccount} från ${dispositionAccounts}, där beloppet bokades för mycket (debet ${debit}, kredit ${credit}). ` +
+            'Annars stämmer årets resultat i balansräkningen inte med resultaträkningen.',
         })
       }
     } catch (err) {
@@ -520,13 +550,16 @@ export async function validateYearEndReadiness(
 
 /**
  * Preview year-end closing without persisting anything.
- * Shows the net result, closing account, and the journal entry lines that would be created.
+ * Shows the net result, closing account, and the journal entry lines that would be created,
+ * plus the omföring the close books in the next period (`resultAppropriation`) unless the
+ * caller opts out.
  */
 export async function previewYearEndClosing(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
-  fiscalPeriodId: string
+  fiscalPeriodId: string,
+  options: { resultAppropriation?: boolean } = {},
 ): Promise<YearEndPreview> {
 
   // Get entity type to determine closing account
@@ -654,6 +687,22 @@ export async function previewYearEndClosing(
   const bolagsskattMissing =
     closingAccount === '2099' && netResult > ORE_TOLERANCE && !hasTaxAccount
 
+  // The close books a second verifikat: step 11's omföring of the result off
+  // the result account in the next period. Disclose it with the same rule
+  // (feedback seq 707985). The next period's ingående balans on the result
+  // account will be what the account holds now plus this year's result,
+  // including the balansdagen revaluation step 2 books first.
+  const resultAppropriation = periodData && options.resultAppropriation !== false
+    ? await previewResultAppropriation(supabase, companyId, {
+        periodId: fiscalPeriodId,
+        periodEnd: periodData.period_end,
+        entityType,
+        projectedIbNet: roundOre(
+          resultAccountLeftover(rows, closingAccount) + netResult + (currencyRevaluation?.netEffect ?? 0),
+        ),
+      })
+    : null
+
   return {
     netResult,
     closingAccount,
@@ -662,6 +711,7 @@ export async function previewYearEndClosing(
     resultAccountSummary,
     currencyRevaluation,
     bolagsskattMissing,
+    resultAppropriation,
   }
 }
 
@@ -715,8 +765,12 @@ export async function executeYearEndClosing(
     userId
   )
 
-  // 3. Get closing preview (now includes revaluation effects in trial balance)
-  const preview = await previewYearEndClosing(supabase, companyId, userId, fiscalPeriodId)
+  // 3. Get closing preview (now includes revaluation effects in trial balance).
+  //    Without the omföring disclosure: step 11 books it from the real IB, and
+  //    here the estimate would only add queries that could fail the close.
+  const preview = await previewYearEndClosing(supabase, companyId, userId, fiscalPeriodId, {
+    resultAppropriation: false,
+  })
 
   if (preview.closingLines.length === 0) {
     throw new Error('No result accounts to close: period has no activity')

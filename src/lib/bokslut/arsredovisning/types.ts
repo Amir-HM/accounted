@@ -60,7 +60,11 @@ export interface StatementRow {
   label: string
   /** Stable integrity key for rows whose legal meaning must not depend on the
    * localized presentation label. */
-  semantic_key?: 'income_statement_result' | 'balance_sheet_current_year_result'
+  semantic_key?:
+    | 'income_statement_result'
+    | 'balance_sheet_current_year_result'
+    | 'balance_sheet_share_capital'
+    | 'balance_sheet_equity_total'
   /** Whole-SEK amount for the current year; null on heading rows. */
   current: number | null
   /** Previous-year amount (jämförelseår, ÅRL 3:5 §); null on heading rows
