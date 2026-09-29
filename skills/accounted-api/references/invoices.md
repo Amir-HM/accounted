@@ -1054,7 +1054,7 @@ Example response `200`:
 **Send a draft invoice to the customer by email.**
 `scope:invoices:write · risk:high · idempotent · dry-run`
 
-The full send pipeline: preflight PDF render → allocate F-series number atomically → final PDF render → email via the email extension (Resend or SMTP; PDF attachment, copy to company) → flip status to sent → post journal entry (real invoice, unless kontantmetoden or defer_invoice_booking; a deferred invoice is booked afterwards with POST /invoices/{id}/book) → archive PDF as underlag → emit invoice.sent. Email failure is a hard 502 before state changes; post-email failures surface as warnings but the invoice IS marked sent.
+The full send pipeline: preflight PDF render → allocate F-series number atomically → final PDF render → issue: flip status to sent and post the journal entry (real invoice, unless kontantmetoden or defer_invoice_booking; a deferred invoice is booked afterwards with POST /invoices/{id}/book) BEFORE the email, fail closed → email via the email extension (Resend or SMTP; PDF attachment, copy to company) → archive PDF as underlag → emit invoice.sent. A refused journal entry returns the engine's error and nothing is sent; post-email failures surface as warnings.
 
 **Use when:** You want Accounted to deliver the invoice to the customer via email. Peppol e-invoices go through POST /invoices/{id}/send-peppol (check readiness first with GET /invoices/{id}/peppol; per-company access grant requested with POST /peppol/access-request or under Inställningar > Fakturering (Settings > Invoicing); aktiebolag senders, standard invoices only, Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 % only, no ROT/RUT deductions). A successful Peppol send issues the invoice itself, so do not call :mark-sent after it; only if it reports that the invoice was sent via Peppol but could not be marked as sent (issuance.ok=false) does :mark-sent complete the issuance. For invoices delivered through another channel (an external e-invoice provider, postal, own SMTP) use :mark-sent instead.
 **Do not use for:** Re-sending an already-sent invoice (returns 409 INVOICE_UPDATE_NOT_DRAFT). Sending a delivery note (no F-series lifecycle). Sending a credit note (use the :credit endpoint to issue the kreditfaktura; subsequent re-send of the credit note via :mark-sent is the supported path).
@@ -1064,8 +1064,9 @@ The full send pipeline: preflight PDF render → allocate F-series number atomic
 - Email service must be configured: without RESEND_API_KEY + RESEND_FROM_EMAIL (or an SMTP relay via EMAIL_PROVIDER=smtp) the endpoint returns 503 INVOICE_SEND_EMAIL_NOT_CONFIGURED.
 - Customer must have an email address. 400 INVOICE_SEND_NO_CUSTOMER_EMAIL otherwise.
 - A cancelled invoice is rejected (400 INVOICE_SEND_CANCELLED): its F-series number is preserved for compliance but the document is not a valid faktura.
-- Email failure before the status flip leaves the F-series number consumed but the invoice in `draft` status. Same orphan window as :mark-sent (architecturally tracked, matches internal route).
-- After the email succeeds, journal-entry/archive/event failures become warnings on the response; the invoice IS marked sent regardless.
+- The journal entry is posted before the email leaves: a refusal (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) returns the engine's error, the invoice stays in `draft` and no email is sent. Fix the tag or the period and send again.
+- Email failure with nothing booked (kontantmetoden, deferred booking, proforma) returns 502 INVOICE_SEND_PROVIDER_FAILED with the invoice back in `draft`; the F-series number stays consumed (same orphan window as :mark-sent). Email failure after the journal entry posted returns 502 INVOICE_SEND_ISSUED_NOT_DELIVERED: the invoice stays issued (`sent`, booked, PDF archived) and must be delivered another way; do not call :send again.
+- After the email succeeds, archive-link/event failures become warnings on the response.
 - additional_cc and additional_bcc require the API key user to be an owner or admin of the company.
 - The deprecated cc response field contains only the first address. Use cc_addresses for the complete CC list.
 - BCC recipients are retained only in the restricted delivery archive and are omitted from normal and dry-run responses.
@@ -1150,7 +1151,7 @@ Example response `200`:
 **Send a customer invoice as a Peppol e-invoice (BIS Billing 3) through the access point.**
 `scope:invoices:write · risk:high · idempotent · dry-run`
 
-Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice's fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and, once the network accepted it, issued with the :mark-sent semantics: status sent, verifikat under faktureringsmetoden, PDF archived as underlag. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.
+Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice's fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and issued before the network gets it (status sent, verifikat under faktureringsmetoden); once the network accepted it the PDF is archived as underlag, as :mark-sent does. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.
 
 **Use when:** The buyer receives e-invoices over Peppol (typically public sector, where Lag 2018:1277 requires it, or a company that asks for it) and GET /invoices/{id}/peppol shows no blockers.
 **Do not use for:** Emailing the invoice (POST /invoices/{id}/send), recording one delivered another way (:mark-sent), credit notes, quotes or proformas.
@@ -1160,7 +1161,7 @@ Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with th
 - A buyer not registered in Peppol answers 422 PEPPOL_RECIPIENT_NOT_REACHABLE and nothing is transmitted; a failed lookup answers 502 PEPPOL_LOOKUP_FAILED and is safe to retry.
 - 422 PEPPOL_SUBMISSION_REJECTED is the access point's verdict on the document: fix the invoice (a correction is a credit note plus a new invoice once issued), do not resend unchanged.
 - 502 PEPPOL_SUBMISSION_FAILED and 409 PEPPOL_SEND_PRECONDITION_FAILED leave the delivery resendable: retry later or fix the Peppol settings.
-- If a draft was transmitted but could not be marked as sent, the response carries issuance.ok=false and a PEPPOL_SENT_NOT_ISSUED warning: complete it with POST /invoices/{id}/mark-sent, which reuses the number.
+- A draft whose verifikat the engine refuses (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) is not transmitted: the engine's error comes back and the invoice stays in draft. If the network then fails to take a draft that was booked on issue, the invoice stays issued (details.invoice_status sent) and the delivery can be resent.
 - An invoice date outside every fiscal year answers 422 PEPPOL_FISCAL_PERIOD_MISSING (the delivery needs its retention basis).
 - Peppol here is BIS Billing 3: aktiebolag senders, standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.
 

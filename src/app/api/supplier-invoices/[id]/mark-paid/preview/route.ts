@@ -13,15 +13,31 @@ import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { cashPartialBlockReason } from '@/lib/bookkeeping/booking-mode'
 import {
   buildSupplierInvoiceCashLines,
+  buildSupplierInvoicePaymentLines,
   DEFAULT_SUPPLIER_PAYMENT_ACCOUNT,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
-import type { SupplierInvoice, SupplierInvoiceItem } from '@/types'
+import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
+import type { CreateJournalEntryLineInput, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 type PreviewLine = {
   account_number: string
   debit_amount: number
   credit_amount: number
   description: string
+  /** The line's dimension bag, as the POST books it; absent when untagged. */
+  dimensions?: Record<string, string>
+}
+
+// What the grid holds is what gets booked: a row the user edits keeps the
+// bag it came with.
+function toPreviewLine(l: CreateJournalEntryLineInput): PreviewLine {
+  return {
+    account_number: l.account_number,
+    debit_amount: l.debit_amount,
+    credit_amount: l.credit_amount,
+    description: l.line_description ?? '',
+    ...(l.dimensions && Object.keys(l.dimensions).length > 0 ? { dimensions: l.dimensions } : {}),
+  }
 }
 
 const QuerySchema = z.object({
@@ -114,14 +130,7 @@ export const GET = withRouteContext(
           si.supplier?.supplier_type || 'swedish_business',
           { supplierName: si.supplier?.name ?? undefined, paymentAccount: creditAccount },
         )
-        for (const l of built.lines) {
-          lines.push({
-            account_number: l.account_number,
-            debit_amount: l.debit_amount,
-            credit_amount: l.credit_amount,
-            description: l.line_description ?? '',
-          })
-        }
+        lines.push(...built.lines.map(toPreviewLine))
       } catch (err) {
         // Same refusal the POST handler gives a foreign invoice with no usable
         // rate (toSekOrThrow), instead of previewing 1 EUR as 1 kr.
@@ -134,19 +143,16 @@ export const GET = withRouteContext(
         throw err
       }
     } else {
-      const rounded = Math.round(amount * 100) / 100
-      lines.push({
-        account_number: '2440',
-        debit_amount: rounded,
-        credit_amount: 0,
-        description: 'Kvittning leverantörsskuld',
+      // Clearing: the lines createSupplierInvoicePaymentEntry books for the
+      // POST's arguments (Dr 2440 / Cr the payment account, the invoice's
+      // dimensions on both legs).
+      const si = invoice as SupplierInvoice & { supplier?: { name?: string | null } | null }
+      const built = buildSupplierInvoicePaymentLines(si, {
+        paymentAmount: amount,
+        supplierName: si.supplier?.name ?? undefined,
+        paymentAccount: creditAccount,
       })
-      lines.push({
-        account_number: creditAccount,
-        debit_amount: 0,
-        credit_amount: rounded,
-        description: 'Utbetalning',
-      })
+      lines.push(...built.lines.map(toPreviewLine))
     }
 
     return NextResponse.json({
@@ -154,6 +160,8 @@ export const GET = withRouteContext(
       lines,
       invoice_already_booked: siAlreadyBooked,
       accounting_method: accountingMethod,
+      // The settled invoice's bag, for a row the user adds while editing.
+      document_dimensions: coerceDimensionsBag(invoice.default_dimensions),
     })
   },
 )

@@ -39,7 +39,7 @@ vi.mock('@/lib/salary/ytd', () => ({
 import { POST } from '../route'
 import { requireAuth } from '@/lib/auth/require-auth'
 import { eventBus } from '@/lib/events'
-import { createSalaryRunEntries } from '@/lib/salary/salary-entries'
+import { createSalaryRunEntries, SalaryRunPartiallyBookedError } from '@/lib/salary/salary-entries'
 
 const mockUser = { id: 'user-1', email: 'test@test.se' }
 
@@ -159,5 +159,59 @@ describe('POST /api/salary/runs/[id]/book: nollkörning', () => {
       employees: Array<{ employee_id: string; default_dimensions?: Record<string, string> }>
     }
     expect(runInput.employees[0].default_dimensions).toEqual({ '1': 'KS01' })
+  })
+})
+
+describe('POST /api/salary/runs/[id]/book: posted vouchers of the run that do not match', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('answers 409 naming the vouchers to reverse, and leaves the run unbooked', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    vi.mocked(requireAuth).mockResolvedValue({
+      user: mockUser as never,
+      supabase: supabase as never,
+      error: null,
+    })
+    vi.mocked(createSalaryRunEntries).mockRejectedValue(
+      new SalaryRunPartiallyBookedError([
+        { id: 'je-7', voucher_series: 'L', voucher_number: 7 },
+        { id: 'je-9', voucher_series: 'L', voucher_number: 9 },
+      ]),
+    )
+
+    enqueueMany([
+      { data: makePaidRun({ total_gross: 30000, total_tax: 7000, total_net: 23000, total_avgifter: 9426 }) },
+      {
+        data: [
+          {
+            employee_id: 'e1',
+            employee: { employment_type: 'employee' },
+            gross_salary: 30000,
+            tax_withheld: 7000,
+            net_salary: 23000,
+            avgifter_amount: 9426,
+            avgifter_rate: 0.3142,
+            vacation_accrual: 0,
+            vacation_accrual_avgifter: 0,
+            line_items: [],
+          },
+        ],
+      },
+    ])
+
+    const request = createMockRequest('/api/salary/runs/run-1/book', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'run-1' }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; message: string; details: unknown }
+    }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('SALARY_RUN_PARTIALLY_BOOKED')
+    // The user reads which vouchers to reverse, not a generic failure.
+    expect(body.error.message).toContain('(L7, L9)')
+    expect(body.error.details).toEqual({ voucher_numbers: ['L7', 'L9'], entry_ids: ['je-7', 'je-9'] })
+    expect(eventBus.emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'salary_run.booked' }))
   })
 })

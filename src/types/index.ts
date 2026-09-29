@@ -618,6 +618,10 @@ export interface CompanySettings {
   // reads absence and worked days from. 'previous_month' is the common
   // Swedish setup (innevarande månads lön, föregående månads avvikelser).
   salary_deviation_period: 'same_month' | 'previous_month'
+  // Semesterår basis (migration 20260713122000): 'calendar' (Jan to Dec, the
+  // default) or 'statutory_apr_mar' (Semesterlagen 3 §). Cannot change while
+  // open vacation-ledger rows exist.
+  salary_vacation_year_basis: 'calendar' | 'statutory_apr_mar'
   // Calculation conventions (migration 20260919120100): jsonb validated by
   // SalaryCalculationPolicySchema (lib/salary/calculation-policy.ts). The
   // column default is {} = every convention at its default = the historical
@@ -2153,8 +2157,11 @@ export interface MappingResult {
   // learned back into the template (it would flip the learned accounts).
   direction_mismatch?: boolean
   // Dimensions bag applied to the business (expense/revenue) lines of the
-  // generated entry: from a counterparty template's line pattern or an
+  // generated entry: a single-pair counterparty template's learned bag or an
   // explicit categorize param (dimensions PR7). Bank/VAT lines stay untagged.
+  // With all_lines_complete it can only be the explicit param (a pattern's
+  // learned bags live on its lines), and it overrides the bag of every
+  // business_line per key.
   dimensions?: Record<string, string>
 }
 
@@ -2167,6 +2174,10 @@ export interface VatJournalLine {
   // Set on business-type lines materialized from a LinePatternEntry that
   // carries dimensions (dimensions PR7); VAT/tax lines stay untagged.
   dimensions?: Record<string, string>
+  // Set on the lines materialized from a business-type LinePatternEntry: the
+  // lines an explicit categorize bag tags (buildTransactionEntryLines). VAT,
+  // tax and rounding lines never carry it.
+  business_line?: boolean
 }
 
 // Categorization template source
@@ -2631,6 +2642,10 @@ export type PendingOperationType =
   | 'create_dimension'
   | 'update_dimension'
   | 'delete_dimension'
+  // Account dimension rules (src/lib/operations/dimension-rules.ts).
+  | 'create_dimension_rule'
+  | 'update_dimension_rule'
+  | 'delete_dimension_rule'
   // Operation registry, wave 4: Peppol, årsredovisning, IB, AP actions.
   | 'send_invoice_peppol'
   | 'register_peppol_participant'

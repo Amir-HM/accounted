@@ -19,7 +19,9 @@ const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
 const serviceTables = createQueuedMockSupabase()
 const requireAuthMock = vi.fn()
 const serviceRpcMock = vi.fn()
-const issueAndBookMock = vi.fn()
+const markSentMock = vi.fn()
+const restoreDraftMock = vi.fn()
+const finishIssuedMock = vi.fn()
 
 /** One shared logger for the route and its wrapper, so refusal lines can be asserted. */
 const logMock = vi.hoisted(() => {
@@ -57,7 +59,9 @@ vi.mock('@/lib/supabase/server', () => ({
 }))
 
 vi.mock('@/lib/invoices/issue-and-book-invoice', () => ({
-  issueAndBookInvoice: (...args: unknown[]) => issueAndBookMock(...args),
+  markInvoiceSentAndBook: (...args: unknown[]) => markSentMock(...args),
+  restoreUnbookedDraft: (...args: unknown[]) => restoreDraftMock(...args),
+  finishIssuedInvoice: (...args: unknown[]) => finishIssuedMock(...args),
 }))
 
 import { POST } from '../route'
@@ -209,7 +213,9 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
     process.env.PEPPOL_TRANSPORT_PROVIDER = 'qvalia'
     process.env.QVALIA_PARTNER_REG_NO = 'SE5560000000'
     requireAuthMock.mockResolvedValue({ user, supabase: mockSupabase, error: null })
-    issueAndBookMock.mockResolvedValue({ ok: true, journalEntryId: 'je-1', partialFailures: [] })
+    markSentMock.mockResolvedValue({ ok: true, journalEntryId: 'je-1', partialFailures: [] })
+    restoreDraftMock.mockResolvedValue(true)
+    finishIssuedMock.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -508,11 +514,11 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
       expect(call[0]).toBe('record_peppol_delivery_event')
       expect((call[1] as Record<string, unknown>).p_provider_tenant_id).toBe('SE5560000000')
     }
-    expect(issueAndBookMock).not.toHaveBeenCalled()
+    expect(markSentMock).not.toHaveBeenCalled()
     expect(logMock.info).not.toHaveBeenCalledWith('peppol send refused', expect.anything())
   })
 
-  it('issues and books a draft only after the network accepted it', async () => {
+  it('issues and books a draft before the network gets it, then finishes it once accepted', async () => {
     const transport = makeTransport()
     unregister = registerPeppolTransport(transport)
     realCompany()
@@ -528,28 +534,39 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
       journal_entry_id: 'je-1',
       issuance: { ok: true, partial_failures: [] },
     })
-    expect(issueAndBookMock).toHaveBeenCalledTimes(1)
+    expect(markSentMock).toHaveBeenCalledTimes(1)
     const submitOrder = (transport.submit as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
-    const issueOrder = issueAndBookMock.mock.invocationCallOrder[0]
-    expect(submitOrder).toBeLessThan(issueOrder)
+    expect(markSentMock.mock.invocationCallOrder[0]).toBeLessThan(submitOrder)
+    // The mark-sent tail (underlag, delivery record, invoice.sent) after acceptance.
+    expect(finishIssuedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ journalEntryId: 'je-1', recordDelivery: true }),
+    )
+    expect(finishIssuedMock.mock.invocationCallOrder[0]).toBeGreaterThan(submitOrder)
   })
 
-  it('reports a failed issuance without pretending the network send did not happen', async () => {
-    unregister = registerPeppolTransport(makeTransport())
+  it('a refused verifikat transmits nothing: the engine error comes back and the draft stays', async () => {
+    const transport = makeTransport()
+    unregister = registerPeppolTransport(transport)
     realCompany()
     grantAccess()
-    issueAndBookMock.mockResolvedValue({ ok: false, errorCode: 'INVOICE_MARK_SENT_RACE' })
+    const { MandatoryDimensionMissingError } = await import('@/lib/bookkeeping/dimension-errors')
+    markSentMock.mockResolvedValue({
+      ok: false,
+      errorCode: 'INVOICE_MARK_SENT_BOOK_FAILED',
+      reason: 'Konto 3001 kräver Projekt',
+      bookingError: new MandatoryDimensionMissingError([
+        { account_number: '3001', sie_dim_no: '6', dimension_name: 'Projekt' },
+      ]),
+    })
     stageInvoice({ status: 'draft' })
 
     const response = await send()
     const body = await response.json()
 
-    expect(response.status).toBe(201)
-    expect(body.data).toMatchObject({
-      network_submitted: true,
-      invoice_status: 'draft',
-      issuance: { ok: false, error_code: 'INVOICE_MARK_SENT_RACE' },
-    })
+    expect(response.status).toBe(400)
+    expect(body.error.code).toBe('MANDATORY_DIMENSION_MISSING')
+    expect(transport.submit).not.toHaveBeenCalled()
+    expect(finishIssuedMock).not.toHaveBeenCalled()
   })
 
   it('replays idempotently when the exact XML was already handed to the network', async () => {
@@ -599,7 +616,38 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
       p_normalized_status: 'failed',
       p_is_terminal: true,
     })
-    expect(issueAndBookMock).not.toHaveBeenCalled()
+    // The draft was issued and booked before the submit, and a posted
+    // verifikat is never undone: it stays issued (finished without a delivery
+    // record) and the failure says so.
+    expect(body.error.details).toMatchObject({ invoice_status: 'sent', journal_entry_id: 'je-1' })
+    expect(restoreDraftMock).not.toHaveBeenCalled()
+    expect(finishIssuedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ journalEntryId: 'je-1', recordDelivery: false }),
+    )
+  })
+
+  it('a draft with nothing booked goes back to draft when the access point rejects it', async () => {
+    const transport = makeTransport({
+      submit: vi.fn().mockRejectedValue(
+        new PeppolTransportError('Qvalia rejected the document (422)', {
+          retryable: false,
+          detail: 'BR-CO-10 Sum of invoice line net amount',
+        }),
+      ),
+    })
+    unregister = registerPeppolTransport(transport)
+    realCompany()
+    grantAccess()
+    markSentMock.mockResolvedValue({ ok: true, journalEntryId: null, partialFailures: [] })
+    stageInvoice({ status: 'draft' })
+
+    const response = await send()
+    const body = await response.json()
+
+    expect(response.status).toBe(422)
+    expect(restoreDraftMock).toHaveBeenCalledWith(expect.anything(), 'company-1', INVOICE_ID, expect.anything())
+    expect(body.error.details).not.toHaveProperty('invoice_status')
+    expect(finishIssuedMock).not.toHaveBeenCalled()
   })
 
   it('still records a terminal rejection for a non-retryable CONNECTOR_UPSTREAM_ERROR (the access point refused the document)', async () => {

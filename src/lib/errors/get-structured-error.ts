@@ -43,6 +43,7 @@ import {
   JournalLineBothSidesNonZeroError,
   JournalLineNegativeAmountError,
   CurrencyRevaluationAlreadyExistsError,
+  MandatoryDimensionMissingError,
   MeaninglessCorrectionError,
   NoOpenPeriodForDateError,
   TargetPeriodClosedError,
@@ -603,6 +604,12 @@ function extractBookkeepingDetails(err: unknown): { code: string; details?: unkn
   }
   if (err instanceof DimensionValidationError) {
     return { code: err.code, details: { issues: err.issues } }
+  }
+  // Without this arm a required-dimension refusal (account_dimension_rules)
+  // fell through to the INTERNAL_ERROR default: a 500 that never said which
+  // account needs which dimension, so the user could not fix the tag.
+  if (err instanceof MandatoryDimensionMissingError) {
+    return { code: err.code, details: { violations: err.violations } }
   }
   if (err instanceof NoOpenPeriodForDateError) {
     return { code: err.code, details: { date: err.date } }
