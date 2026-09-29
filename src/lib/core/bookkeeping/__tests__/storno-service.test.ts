@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { eventBus } from '@/lib/events/bus'
 import { makeJournalEntry, makeJournalEntryLine } from '@/tests/helpers'
+import type { CreateJournalEntryLineInput } from '@/types'
 import {
   BookkeepingDatabaseError,
   CorrectionChainTooDeepError,
@@ -674,5 +675,108 @@ describe('correctEntry: date/period override (recordate engine)', () => {
         newFiscalPeriodId: 'fp-2',
       })
     ).rejects.toMatchObject({ code: 'FISCAL_PERIOD_NOT_FOUND' })
+  })
+})
+
+/**
+ * A wrong tag in a locked period can only be fixed by storno plus
+ * correction (the retag path is open-period only), so a correction that
+ * changes nothing but a line's dimensions bag is a real change. The bag is
+ * compared normalized: key order, '01' vs '1', the deprecated aliases and an
+ * empty value vs a missing key are not differences.
+ */
+describe('correctEntry: dimension-only corrections', () => {
+  const taggedOriginal = makeJournalEntry({
+    id: 'orig-1',
+    status: 'posted',
+    description: 'Material',
+    fiscal_period_id: 'fp-1',
+    voucher_series: 'A',
+    lines: [
+      makeJournalEntryLine({
+        account_number: '4010',
+        debit_amount: 1000,
+        credit_amount: 0,
+        dimensions: { '1': 'KS01', '6': 'P001' },
+      }),
+      makeJournalEntryLine({ account_number: '1930', debit_amount: 0, credit_amount: 1000 }),
+    ],
+  })
+
+  function fullRunResults() {
+    const reversalEntry = makeJournalEntry({ id: 'reversal-1', reverses_id: 'orig-1' })
+    const correctedEntry = makeJournalEntry({ id: 'corrected-1', correction_of_id: 'orig-1' })
+    return [
+      { data: taggedOriginal, error: null }, // fetch original
+      { data: [{ id: 'acc-4010', account_number: '4010' }, { id: 'acc-1930', account_number: '1930' }], error: null },
+      { data: reversalEntry, error: null }, // insert reversal
+      { data: null, error: null }, // reversal lines
+      { data: null, error: null }, // post reversal
+      { data: correctedEntry, error: null }, // insert corrected
+      { data: null, error: null }, // corrected lines
+      { data: null, error: null }, // post corrected
+      { data: [{ id: 'orig-1' }], error: null }, // CAS original to reversed
+      { data: null, error: null }, // relink transactions
+      { data: null, error: null }, // relink voucher links
+      { data: null, error: null }, // relink documents
+      { data: { ...reversalEntry, lines: [] }, error: null },
+      { data: { ...correctedEntry, lines: [] }, error: null },
+    ]
+  }
+
+  it('accepts a correction that only moves a line to another project', async () => {
+    results = fullRunResults()
+    const supabase = makeClient()
+    const retagged = [
+      { account_number: '4010', debit_amount: 1000, credit_amount: 0, dimensions: { '1': 'KS01', '6': 'P002' } },
+      { account_number: '1930', debit_amount: 0, credit_amount: 1000 },
+    ]
+
+    const result = await correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', retagged)
+
+    expect(result.corrected).toBeDefined()
+    const correctedLineInsert = inserts
+      .filter((i) => i.table === 'journal_entry_lines')
+      .map((i) => i.payload as Array<{ account_number: string; dimensions: Record<string, string> }>)[1]
+    expect(correctedLineInsert.find((l) => l.account_number === '4010')?.dimensions).toEqual({
+      '1': 'KS01',
+      '6': 'P002',
+    })
+  })
+
+  it('accepts a correction that only removes a tag', async () => {
+    results = fullRunResults()
+    const supabase = makeClient()
+    const untagged = [
+      { account_number: '4010', debit_amount: 1000, credit_amount: 0, dimensions: { '1': 'KS01' } },
+      { account_number: '1930', debit_amount: 0, credit_amount: 1000 },
+    ]
+
+    const result = await correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', untagged)
+
+    expect(result.corrected).toBeDefined()
+  })
+
+  it('still rejects lines identical up to key order, aliases, leading zeros and empty values', async () => {
+    const supabase = makeClient()
+    results = [{ data: taggedOriginal, error: null }]
+    const sameBag: CreateJournalEntryLineInput[] = [
+      {
+        account_number: '4010',
+        debit_amount: 1000,
+        credit_amount: 0,
+        cost_center: 'KS01',
+        dimensions: { '06': 'P001', '7': '' },
+      },
+      { account_number: '1930', debit_amount: 0, credit_amount: 1000, dimensions: {} },
+    ]
+
+    await expect(
+      correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', sameBag)
+    ).rejects.toMatchObject({
+      code: 'MEANINGLESS_CORRECTION',
+      reason: 'identical_to_original',
+    })
+    expect(inserts.filter((i) => i.table === 'journal_entries')).toHaveLength(0)
   })
 })

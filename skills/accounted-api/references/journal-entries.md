@@ -92,6 +92,7 @@ Creates a draft journal entry via the engine's createDraftEntry(). The draft has
 - Every account_number must resolve in the company's chart of accounts: a standard BAS 2026 account that is not in the chart yet is added automatically, but a deactivated account, or a non-BAS number the chart does not contain, fails with ACCOUNTS_NOT_IN_CHART.
 - voucher_series defaults to "A" if omitted. Must be a single uppercase letter.
 - This creates a DRAFT only: call POST /{id}/commit to assign the voucher_number and post atomically, or DELETE /{id} to discard it. A draft left uncommitted blocks the year-end close (DRAFT_ENTRIES).
+- source_type defaults to "manual". A business source type may label your own vouchers (e.g. "webshop_order", "bank_transaction", "invoice_created"), and "import" marks history replayed from another system. Engine-owned types exempt from the dimension rules (opening_balance, year_end, result_appropriation, currency_revaluation, storno, correction, credit_note, supplier_credit_note, system, accrual, vat_settlement, rot_rut_payout, rot_rut_reclaim, expense_payout, stripe_payout) are refused with 400 VALIDATION_ERROR: they belong to their own endpoints.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -104,7 +105,7 @@ Request body:
   fiscal_period_id: string,
   entry_date: string,
   description: string,
-  source_type?: "manual" | "bank_transaction" | "invoice_created" | "invoice_paid" | "invoice_cash_payment" | "credit_note" | "salary_payment" | "opening_balance" | "year_end" | "storno" | "correction" | "import" | "system" | "inbox_item" | "supplier_invoice_registered" | "supplier_invoice_paid" | "supplier_invoice_cash_payment" | "supplier_invoice_privately_paid" | "supplier_credit_note" | "currency_revaluation" | "reminder_fee" | "accrual" | "result_appropriation" | "rot_rut_payout" | "vat_settlement" | "stripe_payout" | "webshop_order" | "expense_claim" | "expense_payout" | "rot_rut_reclaim",
+  source_type?: "manual" | "bank_transaction" | "inbox_item" | "invoice_created" | "invoice_paid" | "invoice_cash_payment" | "supplier_invoice_registered" | "supplier_invoice_paid" | "supplier_invoice_cash_payment" | "supplier_invoice_privately_paid" | "salary_payment" | "webshop_order" | "expense_claim" | "reminder_fee" | "import",
   source_id?: string,
   bank_booking_context?: { transaction_id: string, cash_account_id: string | null, target_cash_account_id?: string, settlement_account: string, date: string, amount: number, currency: string }[],
   voucher_series?: string,
@@ -1217,6 +1218,7 @@ Bulk-create endpoint mirroring /invoices/bulk-create and /suppliers/bulk-create.
 - Idempotency-Key is mandatory and covers the WHOLE batch.
 - all_or_nothing: true returns 501 NOT_IMPLEMENTED. Today only partial-success batches exist.
 - Each entry must balance independently. Per-item JOURNAL_ENTRY_NOT_BALANCED appears in the results array.
+- source_type follows the single POST: "manual" by default, a business source type or "import" (history replayed from another system). An engine-owned, rule-exempt type (e.g. opening_balance, storno, accrual, system) fails the whole batch with 400 VALIDATION_ERROR.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1226,7 +1228,7 @@ Bulk-create endpoint mirroring /invoices/bulk-create and /suppliers/bulk-create.
 Request body:
 ```ts
 {
-  journal_entries: { fiscal_period_id: string, entry_date: string, description: string, source_type?: "manual" | "bank_transaction" | "invoice_created" | "invoice_paid" | "invoice_cash_payment" | "credit_note" | "salary_payment" | "opening_balance" | "year_end" | "storno" | "correction" | "import" | "system" | "inbox_item" | "supplier_invoice_registered" | "supplier_invoice_paid" | "supplier_invoice_cash_payment" | "supplier_invoice_privately_paid" | "supplier_credit_note" | "currency_revaluation" | "reminder_fee" | "accrual" | "result_appropriation" | "rot_rut_payout" | "vat_settlement" | "stripe_payout" | "webshop_order" | "expense_claim" | "expense_payout" | "rot_rut_reclaim", source_id?: string, bank_booking_context?: { transaction_id: string, cash_account_id: string | null, target_cash_account_id?: string, settlement_account: string, date: string, amount: number, currency: string }[], voucher_series?: string, notes?: string, lines: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, currency?: string, amount_in_currency?: number, exchange_rate?: number, tax_code?: string, dimensions?: Record<string, string>, cost_center?: string, project?: string }[] }[],
+  journal_entries: { fiscal_period_id: string, entry_date: string, description: string, source_type?: "manual" | "bank_transaction" | "inbox_item" | "invoice_created" | "invoice_paid" | "invoice_cash_payment" | "supplier_invoice_registered" | "supplier_invoice_paid" | "supplier_invoice_cash_payment" | "supplier_invoice_privately_paid" | "salary_payment" | "webshop_order" | "expense_claim" | "reminder_fee" | "import", source_id?: string, bank_booking_context?: { transaction_id: string, cash_account_id: string | null, target_cash_account_id?: string, settlement_account: string, date: string, amount: number, currency: string }[], voucher_series?: string, notes?: string, lines: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, currency?: string, amount_in_currency?: number, exchange_rate?: number, tax_code?: string, dimensions?: Record<string, string>, cost_center?: string, project?: string }[] }[],
   all_or_nothing?: boolean
 }
 ```

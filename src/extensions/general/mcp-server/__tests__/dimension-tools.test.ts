@@ -988,6 +988,12 @@ describe('gnubok_bulk_book_transactions: dimensions bag', () => {
     enqueue({ data: null, error: null })
     enqueue({ data: REGISTRY_ROWS, error: null })
     enqueue({ data: VALUE_ROWS, error: null })
+    // enforceBulkBookDimensionPolicy: rules (none) → validateEntryDimensions
+    // (settings → dimensions → dimension_values)
+    enqueue({ data: [], error: null })
+    enqueue({ data: { dimensions_enabled: true }, error: null })
+    enqueue({ data: REGISTRY_ROWS, error: null })
+    enqueue({ data: VALUE_ROWS, error: null })
     // transactions fetch
     enqueue({
       data: [{ id: 'tx-1', amount: -400, currency: 'SEK', date: '2026-05-12', journal_entry_id: null }],
@@ -1104,6 +1110,11 @@ describe('gnubok_bulk_book_transactions: approval-queue title', () => {
     enqueue({ data: null, error: null })
     enqueue({ data: REGISTRY_ROWS, error: null })
     enqueue({ data: VALUE_ROWS, error: null })
+    // enforceBulkBookDimensionPolicy: rules (none), then registry validation.
+    enqueue({ data: [], error: null })
+    enqueue({ data: { dimensions_enabled: true }, error: null })
+    enqueue({ data: REGISTRY_ROWS, error: null })
+    enqueue({ data: VALUE_ROWS, error: null })
     enqueue({
       data: [
         { id: 'tx-1', amount: -400, currency: 'SEK', date: '2026-05-12', journal_entry_id: null, description: 'NORDNET UTTAG', merchant_name: null },
@@ -1148,5 +1159,76 @@ describe('gnubok_bulk_book_transactions: approval-queue title', () => {
     expect(title).toContain('2026-05-12')
     expect(title).toContain('NORDNET UTTAG')
     expect(title).toContain('(+1 till)')
+  })
+})
+
+/**
+ * The staging door runs the same dimension policy as the dashboard and v1
+ * bulk-book doors (enforceBulkBookDimensionPolicy): account rules applied and
+ * asserted, registry validation. The staged lines, and so the approval card,
+ * carry exactly what the executor posts.
+ */
+describe('gnubok_bulk_book_transactions: dimension policy at stage', () => {
+  const untaggedEntry = {
+    description: 'Samlingsverifikation material',
+    lines: [
+      { account_number: '4010', debit_amount: 400, credit_amount: 0, currency: 'SEK' },
+      { account_number: '1930', debit_amount: 0, credit_amount: 400, currency: 'SEK' },
+    ],
+  }
+  const ruleRow = (overrides: Record<string, unknown>) => ({
+    account_number: '4010',
+    rule_type: 'default',
+    dimensions: { sie_dim_no: 6, name: 'Projekt' },
+    dimension_values: { code: 'P001' },
+    ...overrides,
+  })
+
+  it('refuses to stage when a required rule is unsatisfied', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const inserts = captureInserts(supabase)
+    // Untagged lines: the resolver makes no query; the policy reads the rules.
+    enqueue({ data: [ruleRow({ rule_type: 'required', dimension_values: null })], error: null })
+
+    await expect(
+      bulkBookTransactions.execute(
+        { tx_ids: ['tx-1'], new_entry: untaggedEntry },
+        'company-1',
+        'user-1',
+        supabase as never,
+      )
+    ).rejects.toMatchObject({ code: 'MANDATORY_DIMENSION_MISSING' })
+    expect(inserts.find((i) => i.table === 'pending_operations')).toBeUndefined()
+  })
+
+  it('stages the tag a default rule applies, so the approval matches the commit', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const inserts = captureInserts(supabase)
+    enqueue({ data: [ruleRow({})], error: null }) // account_dimension_rules
+    enqueue({ data: { dimensions_enabled: true }, error: null }) // registry validation: settings
+    enqueue({ data: REGISTRY_ROWS, error: null })
+    enqueue({ data: VALUE_ROWS, error: null })
+    enqueue({
+      data: [{ id: 'tx-1', amount: -400, currency: 'SEK', date: '2026-05-12', journal_entry_id: null }],
+      error: null,
+    })
+    enqueue({ data: [], error: null }) // chart_of_accounts names
+    enqueue({ data: null, error: null }) // resolvePeriodStatusForDate
+    enqueue({ data: null, error: null })
+    enqueue({ data: { id: 'op-bulk-rule' }, error: null }) // pending_operations insert
+
+    const result = (await bulkBookTransactions.execute(
+      { tx_ids: ['tx-1'], new_entry: untaggedEntry },
+      'company-1',
+      'user-1',
+      supabase as never,
+    )) as { staged: boolean }
+
+    expect(result.staged).toBe(true)
+    const params = inserts.find((i) => i.table === 'pending_operations')!.payload.params as {
+      new_entry: { lines: Array<{ account_number: string; dimensions?: Record<string, string> }> }
+    }
+    expect(params.new_entry.lines[0].dimensions).toEqual({ '6': 'P001' })
+    expect(params.new_entry.lines[1].dimensions).toBeUndefined()
   })
 })

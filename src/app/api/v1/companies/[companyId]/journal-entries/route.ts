@@ -28,7 +28,7 @@ import { v1ErrorResponse, v1ErrorResponseFromCode, v1ValidationError } from '@/l
 import { readV1JsonBody } from '@/lib/api/v1/body'
 import { checkPeriodLock } from '@/lib/api/v1/check-period-lock'
 import { ownsFiscalPeriod } from '@/lib/api/v1/owns-fiscal-period'
-import { CreateJournalEntrySchema } from '@/lib/api/schemas'
+import { CreateApiJournalEntrySchema } from '@/lib/api/schemas'
 import { createDraftEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
@@ -255,6 +255,7 @@ registerEndpoint({
     'Every account_number must resolve in the company\'s chart of accounts: a standard BAS 2026 account that is not in the chart yet is added automatically, but a deactivated account, or a non-BAS number the chart does not contain, fails with ACCOUNTS_NOT_IN_CHART.',
     'voucher_series defaults to "A" if omitted. Must be a single uppercase letter.',
     'This creates a DRAFT only: call POST /{id}/commit to assign the voucher_number and post atomically, or DELETE /{id} to discard it. A draft left uncommitted blocks the year-end close (DRAFT_ENTRIES).',
+    'source_type defaults to "manual". A business source type may label your own vouchers (e.g. "webshop_order", "bank_transaction", "invoice_created"), and "import" marks history replayed from another system. Engine-owned types exempt from the dimension rules (opening_balance, year_end, result_appropriation, currency_revaluation, storno, correction, credit_note, supplier_credit_note, system, accrual, vat_settlement, rot_rut_payout, rot_rut_reclaim, expense_payout, stripe_payout) are refused with 400 VALIDATION_ERROR: they belong to their own endpoints.',
   ],
   example: {
     request: {
@@ -276,7 +277,7 @@ registerEndpoint({
   idempotent: true,
   reversible: true,
   dryRunSupported: true,
-  request: { body: CreateJournalEntrySchema },
+  request: { body: CreateApiJournalEntrySchema },
   response: { success: dataEnvelope(JournalEntryDetail) },
 })
 
@@ -287,7 +288,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
     if (!rawBodyResult.ok) return rawBodyResult.response
     const rawBody = rawBodyResult.body
 
-    const parsed = CreateJournalEntrySchema.safeParse(rawBody)
+    // source_type is limited to the caller-authorable labels: an engine-owned
+    // one would claim its dimension-policy exemption and a false source.
+    const parsed = CreateApiJournalEntrySchema.safeParse(rawBody)
     if (!parsed.success) return v1ValidationError(ctx, parsed.error)
     const input = parsed.data
 

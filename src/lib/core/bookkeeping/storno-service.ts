@@ -6,7 +6,11 @@ import type {
   JournalEntryLine,
 } from '@/types'
 import { validateBalance, getNextVoucherNumber } from '@/lib/bookkeeping/engine'
-import { normalizeLineDimensions } from '@/lib/bookkeeping/dimension-resolver'
+import {
+  dimensionsBagKey,
+  normalizeLineDimensions,
+  type DimensionAliasInput,
+} from '@/lib/bookkeeping/dimension-resolver'
 import { backfillStandardBASAccounts } from '@/lib/bookkeeping/account-backfill'
 import { resolvePeriodStatusForDate } from '@/lib/core/bookkeeping/period-service'
 import {
@@ -53,20 +57,30 @@ function netsToZeroPerAccount(lines: CreateJournalEntryLineInput[]): boolean {
 
 /**
  * True when proposed lines are the same multiset as the original lines
- * (account_number + debit + credit). A rättelse must actually change something.
+ * (account_number + debit + credit + dimensions bag). A rättelse must actually
+ * change something, and a changed tag is a change: in a locked period storno
+ * plus correction is the only way to fix a wrong project or cost center (the
+ * retag path is open-period only). The bag is compared normalized, so key
+ * order, '01' vs '1', the cost_center/project aliases and '' vs a missing key
+ * are not differences.
  */
 function isIdenticalToOriginal(
   proposed: CreateJournalEntryLineInput[],
   original: JournalEntryLine[]
 ): boolean {
   if (proposed.length !== original.length) return false
-  const key = (acc: string, d: number, c: number) =>
-    `${acc}|${round2(d).toFixed(2)}|${round2(c).toFixed(2)}`
+  const key = (line: DimensionAliasInput & { account_number: string }, d: number, c: number) =>
+    JSON.stringify([
+      line.account_number,
+      round2(d),
+      round2(c),
+      dimensionsBagKey(normalizeLineDimensions(line)),
+    ])
   const proposedKeys = proposed
-    .map((l) => key(l.account_number, l.debit_amount || 0, l.credit_amount || 0))
+    .map((l) => key(l, l.debit_amount || 0, l.credit_amount || 0))
     .sort()
   const originalKeys = original
-    .map((l) => key(l.account_number, Number(l.debit_amount) || 0, Number(l.credit_amount) || 0))
+    .map((l) => key(l, Number(l.debit_amount) || 0, Number(l.credit_amount) || 0))
     .sort()
   return proposedKeys.every((k, i) => k === originalKeys[i])
 }

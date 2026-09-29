@@ -17,6 +17,7 @@ import {
 } from '@/lib/invariants/zod'
 import { ISO_DATE_RE, ISO_DATE_MESSAGE_SV } from '@/lib/invariants/iso-date'
 import { orgNumberKey } from '@/lib/invariants/org-number'
+import { DIMENSION_RULE_POLICY } from '@/lib/bookkeeping/dimension-rule-policy'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import { DimensionsBagSchema } from '@/lib/bookkeeping/dimension-resolver'
 import { DIMENSION_RULE_TYPES, ruleValueProblem } from '@/lib/dimensions/rule-value'
@@ -49,7 +50,13 @@ import {
   orgNumberHoldsPersonalNumber,
   personalNumberDigits,
 } from '@/lib/customers/personal-number-shape'
-import { CURRENCIES, type AuditAction, type Currency, type InvoiceDocumentType } from '@/types'
+import {
+  CURRENCIES,
+  type AuditAction,
+  type Currency,
+  type InvoiceDocumentType,
+  type JournalEntrySourceType,
+} from '@/types'
 import type { BankFileFormatId } from '@/lib/import/bank-file/types'
 import {
   mentionsPeriodPlaceholder,
@@ -1784,6 +1791,60 @@ export const CreateJournalEntrySchema = z.object({
   voucher_series: z.string().regex(/^[A-Z]$/, 'Verifikationsserie måste vara en bokstav A-Z').optional(),
   notes: z.string().max(2000).optional(),
   lines: z.array(CreateJournalEntryLineSchema).min(2, 'At least two lines are required for double-entry'),
+})
+
+/**
+ * source_type values a caller may put on a voucher it authors through a
+ * generic create door. The label is load-bearing, not decoration: it decides
+ * the dimension-rule and registry-validation exemptions
+ * (lib/bookkeeping/dimension-rules.ts), keeps 'vat_settlement' out of the VAT
+ * return, scopes SIE replacement to 'import' and gates storno/correction
+ * handling. A caller-chosen engine-owned label let a business voucher claim
+ * a policy exemption and show a false source in the ledger.
+ *
+ *   API (v1 POST /journal-entries and /journal-entries/batch-create): every
+ *     source type the dimension-rule policy ENFORCES, plus 'import' for
+ *     history replayed from another system (the documented batch-create use;
+ *     imported history is rule-exempt by design, and the label says so in
+ *     the ledger). Integrations label their own business vouchers with the
+ *     enforced types (a webshop integration posts 'webshop_order' vouchers
+ *     through this door), and those labels claim nothing. The rule-exempt,
+ *     engine-owned types (opening balances, bokslut, storno, corrections,
+ *     credit notes, accruals, settlements, 'system') are refused. Derived
+ *     from DIMENSION_RULE_POLICY, so a new source type is classified once
+ *     there and this door follows.
+ *   Dashboard (POST /api/bookkeeping/journal-entries): 'manual', plus
+ *     'vat_settlement' for the reviewed momsredovisning proposal and VAT
+ *     booking templates (lib/bookkeeping/template-source-type.ts).
+ */
+export const API_VOUCHER_SOURCE_TYPES: readonly JournalEntrySourceType[] = [
+  ...(Object.keys(DIMENSION_RULE_POLICY) as JournalEntrySourceType[]).filter(
+    (sourceType) => DIMENSION_RULE_POLICY[sourceType] === 'enforced'
+  ),
+  'import',
+]
+export const DASHBOARD_VOUCHER_SOURCE_TYPES = ['manual', 'vat_settlement'] as const
+
+/** POST /api/v1/companies/{companyId}/journal-entries (+ batch-create items). */
+export const CreateApiJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(API_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan inte vara en motorägd källtyp här: ingående balans, bokslut, storno, rättelser, ' +
+        'kreditnotor, periodiseringar, avräkningar och systemverifikat sätts av sina egna flöden och undantas ' +
+        `från dimensionsreglerna. Tillåtna värden: ${API_VOUCHER_SOURCE_TYPES.join(', ')}.`,
+    })
+    .default('manual'),
+})
+
+/** POST /api/bookkeeping/journal-entries: what the dashboard's own forms send. */
+export const CreateDashboardJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(DASHBOARD_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan bara vara "manual" eller "vat_settlement" här. Övriga källtyper sätts av sina egna flöden.',
+    })
+    .default('manual'),
 })
 
 export const CorrectJournalEntrySchema = z.object({
