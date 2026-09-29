@@ -303,6 +303,7 @@ import { fetchPortfolioOverview, type DeadlineKindFilter, type PortfolioCompanyR
 import { getByraMembership } from '@/lib/clients/fetch-client-overview'
 import { companyCurrentResource } from './resources/company-current'
 import { findUnknownArgKeys, listArgKeys, shortestExampleFor } from './arg-guard'
+import { parseVatPeriodArgs } from './vat-period-args'
 import { describeAliasConflicts, normalizeReportArgAliases, suggestArgKey } from './report-arg-aliases'
 import { decodeToolArgs } from './unicode-escape-guard'
 import { findSupplierCandidates, type SupplierRow } from './supplier-candidates'
@@ -2633,21 +2634,12 @@ async function computeVatReportWithRutor(
   companyId: string,
   supabase: SupabaseClient
 ): Promise<VatReportWithRutor> {
-  const periodType = args.period_type as string
-  const year = Number(args.year)
-  const period = Number(args.period)
-
-  if (!['monthly', 'quarterly', 'yearly'].includes(periodType)) {
-    throw new Error('period_type must be: monthly, quarterly, yearly')
-  }
-  if (!year || year < 2000 || year > 2100) throw new Error('year must be between 2000 and 2100')
-  if (periodType === 'monthly' && (period < 1 || period > 12)) throw new Error('period must be 1-12 for monthly')
-  if (periodType === 'quarterly' && (period < 1 || period > 4)) throw new Error('period must be 1-4 for quarterly')
+  const { periodType, year, period } = parseVatPeriodArgs(args)
 
   const { start: startDate, end: endDate, source: periodSource } = await resolvePeriodDates(
     supabase,
     companyId,
-    periodType as 'monthly' | 'quarterly' | 'yearly',
+    periodType,
     year,
     period,
   )
@@ -17171,9 +17163,7 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_READ_ONLY_OPEN_WORLD,
     async execute(args, companyId, userId, supabase) {
       assertSkatteverketEnabled()
-      const periodType = args.period_type as VatPeriodType
-      const year = args.year as number
-      const period = args.period as number
+      const { periodType, year, period } = parseVatPeriodArgs(args)
       const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
 
       // LOCAL pre-flight first, and deliberately outside the SKV try/catch so a
@@ -17261,9 +17251,7 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_WRITE_OPEN_WORLD,
     async execute(args, companyId, userId, supabase, actor) {
       assertSkatteverketEnabled()
-      const periodType = args.period_type as VatPeriodType
-      const year = args.year as number
-      const period = args.period as number
+      const { periodType, year, period } = parseVatPeriodArgs(args)
       const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       // Mandatory stage-time validation: the preview carries the real
       // kontrollresultat and we never stage a declaration SKV would reject.
@@ -17330,9 +17318,7 @@ export const tools: McpTool[] = [
     annotations: ANNOTATIONS_READ_ONLY_OPEN_WORLD,
     async execute(args, companyId, userId, supabase) {
       assertSkatteverketEnabled()
-      const periodType = args.period_type as VatPeriodType
-      const year = args.year as number
-      const period = args.period as number
+      const { periodType, year, period } = parseVatPeriodArgs(args)
       const state = (args.state as string) ?? 'both'
       const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       try {
