@@ -42,6 +42,7 @@ import {
   supabaseAuthCookieOptions,
 } from '@/lib/supabase/cookie-options'
 import { upgradeLegacyAuthCookies } from '@/lib/supabase/auth-cookies'
+import { authForwardingFetch, clientIpFromHeaders } from '@/lib/supabase/auth-forwarding'
 import {
   isSessionAuthMethod,
   SESSION_AUTH_METHOD_HINT_COOKIE,
@@ -118,11 +119,15 @@ async function updateSessionInner(
   // session cookie included: see lib/supabase/cookie-options.ts.
   const requestProtocol =
     requestProtocolFromHeaders(request.headers) ?? request.nextUrl.protocol
+  // GoTrue calls (getUser, refresh) carry the end user's IP when IP address
+  // forwarding is configured (lib/supabase/auth-forwarding.ts).
+  const forwardingFetch = authForwardingFetch(clientIpFromHeaders(request.headers))
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      ...(forwardingFetch ? { global: { fetch: forwardingFetch } } : {}),
       cookieOptions: supabaseAuthCookieOptions(requestProtocol),
       cookies: {
         getAll() {

@@ -4,6 +4,7 @@ import {
   requestProtocolFromHeaders,
   supabaseAuthCookieOptions,
 } from '@/lib/supabase/cookie-options'
+import { authForwardingFetch, clientIpFromHeaders } from '@/lib/supabase/auth-forwarding'
 
 // During Docker builds, NEXT_PUBLIC_* vars are placeholder sentinels
 // replaced at runtime by docker-entrypoint.sh.
@@ -35,15 +36,21 @@ const safeKey = isBuildPlaceholder ? 'placeholder' : key
  * The session cookie is server-held: HttpOnly, and Secure over TLS
  * (lib/supabase/cookie-options.ts). Only server code reads it; the browser
  * client gets a short-lived access token from /api/auth/session-token.
+ *
+ * Its GoTrue calls carry the end user's IP when IP address forwarding is
+ * configured (lib/supabase/auth-forwarding.ts); off, the default fetch.
  */
 export async function createClient() {
   const cookieStore = await cookies()
-  const requestProtocol = await currentRequestProtocol()
+  const requestHeaders = await currentRequestHeaders()
+  const requestProtocol = requestProtocolFromHeaders(requestHeaders)
+  const forwardingFetch = authForwardingFetch(clientIpFromHeaders(requestHeaders))
 
   return createServerClient(
     safeUrl,
     safeKey,
     {
+      ...(forwardingFetch ? { global: { fetch: forwardingFetch } } : {}),
       cookieOptions: supabaseAuthCookieOptions(requestProtocol),
       cookies: {
         getAll() {
@@ -66,13 +73,14 @@ export async function createClient() {
 }
 
 /**
- * The protocol of the request being served, when there is one. Outside a
+ * The headers of the request being served, when there is one. Outside a
  * request scope (scripts, tests without a request) headers() throws: the
- * cookie attributes then follow the deployment alone.
+ * cookie attributes then follow the deployment alone, and GoTrue calls go
+ * out without a forwarded IP.
  */
-async function currentRequestProtocol(): Promise<string | null> {
+async function currentRequestHeaders(): Promise<Pick<Headers, 'get'> | null> {
   try {
-    return requestProtocolFromHeaders(await headers())
+    return await headers()
   } catch {
     return null
   }

@@ -90,4 +90,26 @@ describe('createClient (cookie session)', () => {
     }
     expect(options.cookieOptions).toMatchObject({ httpOnly: true, secure: false })
   })
+
+  it('gives GoTrue calls the forwarding fetch when a secret key is configured', async () => {
+    vi.stubEnv('SUPABASE_SECRET_KEY', 'sb_secret_test-key')
+    headersMock.mockResolvedValue(new Headers({ 'x-forwarded-for': '203.0.113.7', 'x-forwarded-proto': 'https' }))
+    const { createClient } = await import('../server')
+
+    await createClient()
+
+    const options = createServerClientMock.mock.calls[0][2] as { global?: { fetch?: unknown } }
+    expect(typeof options.global?.fetch).toBe('function')
+  })
+
+  it('keeps the default fetch without a secret key (local dev, self-hosted, CI)', async () => {
+    vi.stubEnv('SUPABASE_SECRET_KEY', '')
+    headersMock.mockResolvedValue(new Headers({ 'x-forwarded-for': '203.0.113.7' }))
+    const { createClient } = await import('../server')
+
+    await createClient()
+
+    const options = createServerClientMock.mock.calls[0][2] as { global?: unknown }
+    expect(options.global).toBeUndefined()
+  })
 })

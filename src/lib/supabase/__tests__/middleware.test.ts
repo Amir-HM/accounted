@@ -1368,6 +1368,28 @@ describe('updateSession redirect destinations', () => {
       }
     })
 
+    it('hands GoTrue calls the IP-forwarding fetch only when a secret key is configured', async () => {
+      const { createServerClient } = await import('@supabase/ssr')
+      const previous = { key: process.env.SUPABASE_SECRET_KEY, url: process.env.NEXT_PUBLIC_SUPABASE_URL }
+      try {
+        process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://project.supabase.co'
+        delete process.env.SUPABASE_SECRET_KEY
+        await run('/api/health', { headers: { 'x-forwarded-for': '203.0.113.7' } })
+        let options = vi.mocked(createServerClient).mock.calls.at(-1)?.[2] as { global?: { fetch?: unknown } }
+        expect(options.global).toBeUndefined()
+
+        process.env.SUPABASE_SECRET_KEY = 'sb_secret_test-key'
+        await run('/api/health', { headers: { 'x-forwarded-for': '203.0.113.7' } })
+        options = vi.mocked(createServerClient).mock.calls.at(-1)?.[2] as { global?: { fetch?: unknown } }
+        expect(typeof options.global?.fetch).toBe('function')
+      } finally {
+        if (previous.key === undefined) delete process.env.SUPABASE_SECRET_KEY
+        else process.env.SUPABASE_SECRET_KEY = previous.key
+        if (previous.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL
+        else process.env.NEXT_PUBLIC_SUPABASE_URL = previous.url
+      }
+    })
+
     it('writes every other proxy cookie HttpOnly (company hint, locale)', async () => {
       state.user = SIGNED_IN
 
