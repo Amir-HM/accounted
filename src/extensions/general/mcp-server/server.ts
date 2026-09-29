@@ -1541,6 +1541,57 @@ function skvPeriodToEndDate(redovisningsperiod: string): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
 }
 
+// ── Typed refusals for lookups and links ──────────────────────
+//
+// A plain `throw new Error(text)` reaches the agent as UNKNOWN_ERROR, "Något
+// gick fel. Försök igen.": retry advice for a call that cannot succeed.
+
+/**
+ * Whether a lookup by id failed only because no row can match: `.single()`
+ * found none (PGRST116) or the id is not a UUID at all (22P02). Any other
+ * database failure is thrown as itself (dbError keeps the SQLSTATE), so a
+ * statement timeout stays TRANSIENT_ERROR instead of reading as a wrong id.
+ */
+function isLookupMiss(error: { code?: string | null } | null): boolean {
+  return !error || error.code === 'PGRST116' || error.code === '22P02'
+}
+
+/**
+ * Supabase Storage's refusal of an object over the bucket's file_size_limit:
+ * HTTP 413, "The object exceeded the maximum allowed size".
+ */
+function isStorageObjectTooLarge(error: unknown): boolean {
+  const e = error as { status?: unknown; statusCode?: unknown; message?: unknown }
+  return e.status === 413 || e.statusCode === '413' || /exceeded the maximum allowed size/i.test(String(e.message ?? ''))
+}
+
+/** NOT_FOUND for a document_attachments id, naming the id the agent sent. */
+function documentNotFound(documentId: string): Error {
+  return codedRefusal('NOT_FOUND', `Document not found: no document with id ${documentId} in this company.`)
+}
+
+/** NOT_FOUND for the operation id sent to approve or reject. */
+function pendingOperationNotFound(operationId: string): Error {
+  return codedRefusal(
+    'NOT_FOUND',
+    `Pending operation not found: no operation with id ${operationId}. List open ones with gnubok_list_pending_operations.`,
+  )
+}
+
+/**
+ * A voucher-link validator's refusal: its registry code on `.code` (it used
+ * to ride in the message text only), the registry's English and the details
+ * the validator names (amounts, currencies, status).
+ */
+function voucherLinkRefusal(failure: { code: string; details?: Record<string, unknown> }): Error {
+  const text = [
+    `Cannot link voucher: ${failure.code}.`,
+    getErrorEntry(failure.code)?.message_en,
+    failure.details ? `Details: ${JSON.stringify(failure.details)}` : undefined,
+  ]
+  return codedRefusal(failure.code, text.filter(Boolean).join(' '))
+}
+
 // ── Journal entry reference resolution ────────────────────────
 
 /**
@@ -1570,11 +1621,14 @@ async function resolveJournalEntryRef(
   }
 
   // Voucher ref: letters (series) + optional separator + digits (number).
+  // Both callers (correct_entry, reverse_journal_entry) take it as entry_id.
   const match = trimmed.match(/^([A-Za-z]+)\s*[-:/ ]?\s*(\d+)$/)
   if (!match) {
-    throw new Error(
-      `Could not parse entry reference "${ref}". Expected a UUID or a voucher ref like "A-113".`
-    )
+    throw fieldValidationError('Invalid arguments', [{
+      field: 'entry_id',
+      en: `Could not parse entry reference "${ref}". Expected a UUID or a voucher ref like "A-113".`,
+      sv: `Kunde inte tolka "${ref}": ange verifikationens id (UUID) eller en verifikationsreferens som "A-113".`,
+    }])
   }
   const series = match[1].toUpperCase()
   const number = parseInt(match[2], 10)
@@ -1594,22 +1648,27 @@ async function resolveJournalEntryRef(
   const matches = (data ?? []) as Array<{ id: string; entry_date: string; description: string }>
 
   if (matches.length === 0) {
-    throw new Error(
+    throw codedRefusal(
+      'NOT_FOUND',
       `No journal entry found for voucher "${series}-${number}" in this company. ` +
       `Verify the series and number, or supply the full UUID.`
     )
   }
 
   // Voucher numbers reset per fiscal period. The same (series, number) pair
-  // can therefore appear in multiple years: refuse to guess.
+  // can therefore appear in multiple years: refuse to guess. The candidates
+  // stay in message_en: they are how the agent picks the id to send instead.
   if (matches.length > 1) {
     const summary = matches
       .map((m) => `${m.entry_date} "${m.description}" (id=${m.id})`)
       .join('; ')
-    throw new Error(
-      `Voucher "${series}-${number}" matches multiple entries across fiscal periods: ${summary}. ` +
-      `Supply the specific UUID instead.`
-    )
+    throw fieldValidationError('Invalid arguments', [{
+      field: 'entry_id',
+      en:
+        `Voucher "${series}-${number}" matches multiple entries across fiscal periods: ${summary}. ` +
+        `Supply the specific UUID instead.`,
+      sv: `Verifikation ${series}-${number} finns i flera räkenskapsår: ange verifikationens id (UUID) i stället.`,
+    }])
   }
 
   return matches[0].id
@@ -1668,15 +1727,19 @@ async function categorizeTransactionCore(
 }> {
   // Validate category
   if (!VALID_CATEGORIES.includes(category as typeof VALID_CATEGORIES[number])) {
-    throw new Error(
-      `Invalid category "${category}". Valid categories: ${VALID_CATEGORIES.join(', ')}`
-    )
+    throw fieldValidationError('Invalid arguments', [{
+      field: 'category',
+      en: `Invalid category "${category}". Valid categories: ${VALID_CATEGORIES.join(', ')}`,
+      sv: `Okänd kategori "${category}". Giltiga kategorier: ${VALID_CATEGORIES.join(', ')}.`,
+    }])
   }
 
   if (vatTreatment && !VALID_VAT_TREATMENTS.includes(vatTreatment as typeof VALID_VAT_TREATMENTS[number])) {
-    throw new Error(
-      `Invalid vat_treatment "${vatTreatment}". Valid: ${VALID_VAT_TREATMENTS.join(', ')}`
-    )
+    throw fieldValidationError('Invalid arguments', [{
+      field: 'vat_treatment',
+      en: `Invalid vat_treatment "${vatTreatment}". Valid: ${VALID_VAT_TREATMENTS.join(', ')}`,
+      sv: `Okänd momsbehandling "${vatTreatment}". Giltiga: ${VALID_VAT_TREATMENTS.join(', ')}.`,
+    }])
   }
 
   const isBusiness = category !== 'private'
@@ -6175,7 +6238,9 @@ export const tools: McpTool[] = [
     },
     annotations: ANNOTATIONS_STAGED_WRITE,
     async execute(args, companyId, userId, supabase) {
-      const input = CreateSkillArgsSchema.parse(args)
+      const parsedArgs = CreateSkillArgsSchema.safeParse(args)
+      if (!parsedArgs.success) throw fieldValidationError('Invalid skill', zodFieldIssues(parsedArgs.error, args))
+      const input = parsedArgs.data
       const skill = input.kind === 'workflow'
         ? buildOwnSkill(
           { kind: 'summary', name: input.name, lede: input.description, steps: input.steps, rules: input.rules, facts: [] },
@@ -6184,7 +6249,23 @@ export const tools: McpTool[] = [
         )
         : buildOwnText(input.name, input.description, input.text)
       if (!skill.name || !skill.description) throw new Error('name and description are required')
-      SkillBodySchema.parse(skill.body)
+      const body = SkillBodySchema.safeParse(skill.body)
+      if (!body.success) {
+        // buildOwnSkill cleans every field it writes, so a flow's body always
+        // passes: a failure there is a server bug, not the caller's mistake.
+        // buildOwnText keeps knowledge and analysis text as written, so there
+        // the problem is in the caller's `text`.
+        if (input.kind === 'workflow') {
+          throw codedRefusal(
+            'INTERNAL_ERROR',
+            `The skill body built from these arguments failed its own validation (a server bug): ${body.error.issues.map((issue) => issue.message).join(' ')}`,
+          )
+        }
+        throw fieldValidationError(
+          'Invalid skill',
+          zodFieldIssues(body.error, skill.body).map((issue) => ({ ...issue, field: 'text' })),
+        )
+      }
       const { data, error } = await supabase
         .from('company_skills')
         .insert({ company_id: companyId, team_id: null, created_by: userId, atom_id: null, kind: input.kind, name: skill.name, description: skill.description, body: skill.body, draft: true })
@@ -8025,13 +8106,10 @@ export const tools: McpTool[] = [
         }
       }
 
-      const parsed = UpdateCustomerParamsSchema.safeParse({
-        customer_id: args.customer_id,
-        changes,
-      })
+      const update = { customer_id: args.customer_id, changes }
+      const parsed = UpdateCustomerParamsSchema.safeParse(update)
       if (!parsed.success) {
-        const issue = parsed.error.issues[0]
-        throw new Error(`Invalid customer update: ${issue ? `${issue.path.join('.')}: ${issue.message}` : 'validation failed'}`)
+        throw fieldValidationError('Invalid customer update', zodFieldIssues(parsed.error, update))
       }
 
       const { data: current, error } = await supabase
@@ -10148,7 +10226,11 @@ export const tools: McpTool[] = [
     catalogVisibility: 'search',
     async execute(args, companyId, userId, supabase) {
       const invoiceId = args.invoice_id as string
-      if (!invoiceId) throw new Error('invoice_id is required')
+      if (!invoiceId) {
+        throw fieldValidationError('Invalid arguments', [
+          { field: 'invoice_id', en: 'is required', sv: 'Obligatoriskt fält saknas: ange fakturans id.' },
+        ])
+      }
 
       const { data: invoice, error: invoiceError } = await supabase
         .from('invoices')
@@ -11916,15 +11998,27 @@ export const tools: McpTool[] = [
           : undefined
 
       if (groupBy && groupByDimension) {
-        throw new Error('Use either group_by or group_by_dimension, not both')
+        throw fieldValidationError('Invalid arguments', [{
+          field: 'group_by',
+          en: 'use either group_by or group_by_dimension, not both',
+          sv: 'Ange antingen group_by eller group_by_dimension, inte båda.',
+        }])
       }
       if (groupBy && !GROUP_BY_FIELDS.includes(groupBy)) {
-        throw new Error(`group_by must be one of: ${GROUP_BY_FIELDS.join(', ')}`)
+        throw fieldValidationError('Invalid arguments', [{
+          field: 'group_by',
+          en: `must be one of: ${GROUP_BY_FIELDS.join(', ')}`,
+          sv: `Måste vara ett av: ${GROUP_BY_FIELDS.join(', ')}.`,
+        }])
       }
       // Positive-integer guard: the schema says string but hosts don't always
       // validate, and the value keys into the dimensions jsonb bag.
       if (groupByDimension && !/^[1-9]\d{0,3}$/.test(groupByDimension)) {
-        throw new Error('group_by_dimension must be a positive SIE dimension number, e.g. "6" (projekt)')
+        throw fieldValidationError('Invalid arguments', [{
+          field: 'group_by_dimension',
+          en: 'must be a positive SIE dimension number, e.g. "6" (projekt)',
+          sv: 'Måste vara ett positivt SIE-dimensionsnummer, t.ex. "6" (projekt).',
+        }])
       }
       const wantsGroups = Boolean(groupBy || groupByDimension)
 
@@ -13059,8 +13153,13 @@ export const tools: McpTool[] = [
           const totalDebit = lines.reduce((s, l) => s + Number(l.debit_amount), 0)
           const totalCredit = lines.reduce((s, l) => s + Number(l.credit_amount), 0)
           if (Math.abs(totalDebit - totalCredit) > 0.005) {
-            throw new Error(
-              `new_entry.lines must balance: debits=${totalDebit.toFixed(2)} credits=${totalCredit.toFixed(2)}`
+            // Coded with both totals, so message_sv names the two sides as it
+            // does for every other unbalanced verifikat.
+            const debit = roundOre(totalDebit)
+            const credit = roundOre(totalCredit)
+            throw Object.assign(
+              codedRefusal('JOURNAL_ENTRY_NOT_BALANCED', `new_entry.lines must balance: debits=${debit} credits=${credit}`),
+              { totalDebit: debit, totalCredit: credit },
             )
           }
         }
@@ -13540,11 +13639,7 @@ export const tools: McpTool[] = [
         invoice as never,
         journalEntryId,
       )
-      if (!validation.ok) {
-        throw new Error(
-          `${validation.code}${validation.details ? `: ${JSON.stringify(validation.details)}` : ''}`,
-        )
-      }
+      if (!validation.ok) throw voucherLinkRefusal(validation)
 
       const voucherLabel = validation.voucher.voucher_series && validation.voucher.voucher_number != null
         ? `${validation.voucher.voucher_series}-${validation.voucher.voucher_number}`
@@ -13687,11 +13782,7 @@ export const tools: McpTool[] = [
         invoice as never,
         journalEntryId,
       )
-      if (!validation.ok) {
-        throw new Error(
-          `${validation.code}${validation.details ? `: ${JSON.stringify(validation.details)}` : ''}`,
-        )
-      }
+      if (!validation.ok) throw voucherLinkRefusal(validation)
 
       const voucherLabel = validation.voucher.voucher_series && validation.voucher.voucher_number != null
         ? `${validation.voucher.voucher_series}-${validation.voucher.voucher_number}`
@@ -15876,8 +15967,8 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .maybeSingle()
 
-      if (docError) throw dbError(docError)
-      if (!doc) throw new Error('Document not found')
+      if (!isLookupMiss(docError)) throw dbError(docError)
+      if (!doc) throw documentNotFound(documentId)
 
       const ttlSeconds = 300
       const { data: signed, error: signError } = await supabase.storage
@@ -15941,7 +16032,8 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .maybeSingle()
 
-      if (docError || !doc) throw new Error('Document not found')
+      if (!isLookupMiss(docError)) throw dbError(docError)
+      if (!doc) throw documentNotFound(documentId)
 
       // If the tx already has a different doc pinned, fetch its identity so the
       // human approver sees "replaces X.pdf with Y.pdf" rather than just a flag.
@@ -16073,8 +16165,14 @@ export const tools: McpTool[] = [
           .maybeSingle(),
       ])
 
-      if (docRes.error || !docRes.data) throw new Error('Document not found')
-      if (jeRes.error || !jeRes.data) throw new Error('Journal entry not found')
+      // A database error stays one (a timeout is TRANSIENT_ERROR); only a
+      // missing row, or an id no row can have, is NOT_FOUND.
+      if (!isLookupMiss(docRes.error)) throw dbError(docRes.error)
+      if (!docRes.data) throw documentNotFound(documentId)
+      if (!isLookupMiss(jeRes.error)) throw dbError(jeRes.error)
+      if (!jeRes.data) {
+        throw codedRefusal('NOT_FOUND', `Journal entry not found: no verifikat with id ${journalEntryId} in this company.`)
+      }
 
       const doc = docRes.data as {
         id: string; file_name: string; mime_type: string; journal_entry_id: string | null
@@ -19046,8 +19144,9 @@ export const tools: McpTool[] = [
       })
       if (!preflight.ok) {
         const entry = getErrorEntry(preflight.code)
-        throw new Error(
-          `Cannot ${restore ? 'restore' : 'ignore'} transaction: ${preflight.code}. ${entry?.message_en ?? ''}`.trim()
+        throw codedRefusal(
+          preflight.code,
+          `Cannot ${restore ? 'restore' : 'ignore'} transaction: ${preflight.code}. ${entry?.message_en ?? ''}`.trim(),
         )
       }
 
@@ -19836,7 +19935,8 @@ export const tools: McpTool[] = [
       }
 
       if (includeDocuments && !withinLimit) {
-        throw new Error(
+        throw codedRefusal(
+          'AUDIT_PACKAGE_TOO_LARGE',
           `Archive would exceed ${Math.round(SIZE_LIMIT_BYTES / 1024 / 1024)} MB (estimate: ${Math.round(sizeBytes / 1024 / 1024)} MB). Retry with include_documents=false to omit receipt binaries.`
         )
       }
@@ -19856,7 +19956,21 @@ export const tools: McpTool[] = [
           contentType: 'application/zip',
           upsert: false,
         })
-      if (uploadErr) throw new Error(`Failed to upload archive: ${uploadErr.message}`)
+      if (uploadErr) {
+        // Storage refuses an object over the documents bucket's cap per file
+        // (50 MB, below the 80 MB estimate gate above). That is the archive's
+        // size, not a fault: the identical call can never succeed.
+        if (isStorageObjectTooLarge(uploadErr)) {
+          throw codedRefusal(
+            'AUDIT_PACKAGE_TOO_LARGE',
+            `The ${Math.round(zipBuffer.byteLength / 1024 / 1024)} MB archive is over the storage limit per file and was not saved (${uploadErr.message}). ` +
+              (includeDocuments
+                ? 'Retry with include_documents=false to omit receipt binaries, or download the complete archive in the web app.'
+                : 'Download the complete archive in the web app.'),
+          )
+        }
+        throw new Error(`Failed to upload archive: ${uploadErr.message}`)
+      }
 
       // Sign for 1 hour
       const SIGNED_URL_TTL_SECONDS = 3600
@@ -20896,8 +21010,9 @@ export const tools: McpTool[] = [
         .single()
 
       if (fetchError || !period) throw new Error('Fiscal period not found')
-      if (period.is_closed) throw new Error('Cannot unlock a closed period')
-      if (!period.locked_at) throw new Error('Period is not locked')
+      // The codes the dashboard and v1 unlock answer with (fiscal-year-service).
+      if (period.is_closed) throw codedRefusal('PERIOD_UNLOCK_CLOSED', 'Cannot unlock a closed period')
+      if (!period.locked_at) throw codedRefusal('PERIOD_UNLOCK_NOT_LOCKED', 'Period is not locked')
 
       return stagePendingOperation(supabase, companyId, userId, 'unlock_period',
         `Lås upp period: ${period.name} (${period.period_start} till ${period.period_end})`,
@@ -21214,7 +21329,8 @@ export const tools: McpTool[] = [
         // ROT/RUT staging gate: everything buildInvoiceWriteData would refuse
         // at commit time that this staged set already determines must fail
         // HERE, where the agent can fix it, not after approval. (The staging
-        // VAT gate above exists for the same reason.)
+        // VAT gate above exists for the same reason.) Each refusal carries the
+        // code buildInvoiceWriteData answers with, INVOICE_CREATE_ROT_RUT_VALIDATION.
         const deductionLines = items.filter((item) => item.line_type !== 'text' && item.deduction_type)
         if (deductionLines.length > 0) {
           const claimErrors = validateDeductionLines(
@@ -21229,7 +21345,10 @@ export const tools: McpTool[] = [
             })),
           )
           if (claimErrors.length > 0) {
-            throw new Error(`ROT/RUT: ${claimErrors.join(' ')} Read the current lines with gnubok_get_invoice and pass the deduction fields back.`)
+            throw codedRefusal(
+              'INVOICE_CREATE_ROT_RUT_VALIDATION',
+              `ROT/RUT: ${claimErrors.join(' ')} Read the current lines with gnubok_get_invoice and pass the deduction fields back.`,
+            )
           }
           // Commit derives the invoice-level property info from the FIRST
           // deduction line (commitUpdateInvoice), mirrored here.
@@ -21238,7 +21357,8 @@ export const tools: McpTool[] = [
             Boolean(firstDeduction.housing_designation?.trim()) ||
             (Boolean(firstDeduction.apartment_number?.trim()) && Boolean(firstDeduction.brf_org_number?.trim()))
           if (deductionLines.some((item) => item.deduction_type === 'rot') && !housingProvided) {
-            throw new Error(
+            throw codedRefusal(
+              'INVOICE_CREATE_ROT_RUT_VALIDATION',
               'ROT lines need housing_designation (fastighetsbeteckning), or apartment_number + brf_org_number, on the first deduction line. ' +
               'gnubok_get_invoice returns them; pass them back or the update will fail at approval.',
             )
@@ -21250,7 +21370,8 @@ export const tools: McpTool[] = [
             Boolean(invoice.deduction_personnummer_encrypted) ||
             (customer.customer_type === 'individual' && Boolean(customer.personal_number))
           if (!personnummerAvailable) {
-            throw new Error(
+            throw codedRefusal(
+              'INVOICE_CREATE_ROT_RUT_VALIDATION',
               'ROT/RUT lines need a personnummer, which cannot be passed through MCP. ' +
               'Add it on the invoice in the web UI or on the customer card first, then retry.',
             )
@@ -23619,7 +23740,8 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .single()
 
-      if (fetchError || !op) throw new Error('Pending operation not found')
+      if (!isLookupMiss(fetchError)) throw dbError(fetchError)
+      if (!op) throw pendingOperationNotFound(operationId)
 
       // High-risk operations require explicit confirmation in addition to the
       // standard pending_operations:approve scope. Mirrors the web-UI gate
@@ -23713,13 +23835,16 @@ export const tools: McpTool[] = [
         .eq('company_id', companyId)
         .single()
 
-      if (fetchError || !op) throw new Error('Pending operation not found')
+      if (!isLookupMiss(fetchError)) throw dbError(fetchError)
+      if (!op) throw pendingOperationNotFound(operationId)
       if (op.status !== 'pending') {
         // No auto-commit path exists (removed in 20260505190027). A non-pending
         // status means the op was resolved explicitly: usually the user
         // approved it in the Att göra / pending UI in parallel. Make that
         // explicit so the agent doesn't read it as a silent auto-commit.
-        throw new Error(
+        // CONFLICT, as the REST reject route answers 409 for the same state.
+        throw codedRefusal(
+          'CONFLICT',
           op.status === 'rejected'
             ? 'Operation already rejected.'
             : op.status === 'failed_partial'
@@ -23754,7 +23879,7 @@ export const tools: McpTool[] = [
 
       if (updateError) throw new Error(`Failed to reject operation: ${updateError.message}`)
       if (!updated || updated.length === 0) {
-        throw new Error('Operation no longer pending: another caller claimed it')
+        throw codedRefusal('CONFLICT', 'Operation no longer pending: another caller claimed it')
       }
 
       // Audit the rejection so the trail mirrors the approval path.
@@ -23819,7 +23944,17 @@ export const tools: McpTool[] = [
       const inboxItemId = args.inbox_item_id as string
       if (!inboxItemId) throw new Error('inbox_item_id is required')
 
-      const parsed = AgentExtractionSchema.parse(args.extracted_data)
+      const extraction = AgentExtractionSchema.safeParse(args.extracted_data)
+      if (!extraction.success) {
+        throw fieldValidationError(
+          'Invalid extracted_data',
+          zodFieldIssues(extraction.error, args.extracted_data).map((issue) => ({
+            ...issue,
+            field: issue.field === 'arguments' ? 'extracted_data' : `extracted_data.${issue.field}`,
+          })),
+        )
+      }
+      const parsed = extraction.data
       // BYO extraction: confidence 0.95 marks the result as agent-supplied
       // (vs 1.0 the AI extractor uses on a perfect parse) so downstream UI
       // can render the provenance differently (ISO 27001 A.8.12).
