@@ -230,6 +230,76 @@ describe('förlängt first year (15 months)', () => {
     expect(result.amount).toBe(3_000)
     expect(result.proRated).toBe(false)
   })
+
+  it('a disposal inside the long year gets its months of use', () => {
+    // Held 2025-06-01..2026-02-28: 9 months, 273/457 days.
+    // 2 400 x 273/457 x 15/12 = 1 792 (9 x 200 = 1 800). Before: 1 434.
+    // buildAssetDisposalPlan compares posted schedules with this amount.
+    const result = computeAnnualDepreciation(
+      makeAsset({ acquisition_date: '2025-06-01', disposed_at: '2026-02-28' }),
+      LONG_15_MONTHS,
+    )
+    expect(result).toEqual({ amount: 1_792, proRated: true })
+  })
+})
+
+/**
+ * Known residual at life end, pinned so it is visible rather than hidden.
+ *
+ * The year-length factor turns the day share of a long or short year into
+ * months at that year's average month length, while a 12-month year keeps
+ * converting at 365 or 366 days. The plain linear path computes every year
+ * from cost with no cap at the remaining value and no catch-up at life end,
+ * so a life that ends in or after a year that is not 12 months can land a
+ * few kronor under cost, or up to about 0.3 percent over it. Scale only is
+ * the scoped fix; the cap and the life-end catch-up are a separate issue.
+ * When that lands, these expectations change to land exactly on cost.
+ */
+describe('life end with a year that is not 12 months: residual (scale only)', () => {
+  /** Förlängt first year of 18 months, the longest a first year may run. */
+  const LONG_18_MONTHS = { period_start: '2025-01-01', period_end: '2026-06-30' }
+
+  it('a life that ends inside an 18-month year books more than cost', () => {
+    // 100 000 kr over 12 months, held 2025-01-01..2025-12-31: 365/546 days
+    // x 18/12 x 100 000 = 100 275, 275 kr over cost. Before: 66 850, and
+    // the other 33 150 was never booked.
+    const result = computeAnnualDepreciation(
+      makeAsset({ acquisition_cost: 100_000, useful_life_months: 12 }),
+      LONG_18_MONTHS,
+    )
+    expect(result).toEqual({ amount: 100_275, proRated: true })
+  })
+
+  it('a life that ends in the 12-month year after an 18-month year books more than cost', () => {
+    // 100 000 kr over 24 months: 18 months in the long year (75 000), then
+    // 2026-07-01..2026-12-31 as 184/365 of a 12-month charge (25 205).
+    const asset = makeAsset({ acquisition_cost: 100_000, useful_life_months: 24 })
+    const long = computeAnnualDepreciation(asset, LONG_18_MONTHS)
+    const next = computeAnnualDepreciation(asset, {
+      period_start: '2026-07-01',
+      period_end: '2027-06-30',
+    })
+    expect(long).toEqual({ amount: 75_000, proRated: false })
+    expect(next).toEqual({ amount: 25_205, proRated: true })
+    expect(long.amount + next.amount).toBe(100_205)
+  })
+
+  it('a mid-year acquisition in a 15-month year strands a few kronor over the life', () => {
+    // 12 000 kr over 60 months, acquired 2025-09-01: 2 396 in the long year,
+    // then four full 12-month years to the end of the life on 2030-08-31.
+    // Total 11 996: 4 kr are never booked.
+    const asset = makeAsset({ acquisition_date: '2025-09-01' })
+    const years = [
+      LONG_15_MONTHS,
+      { period_start: '2026-09-01', period_end: '2027-08-31' },
+      { period_start: '2027-09-01', period_end: '2028-08-31' },
+      { period_start: '2028-09-01', period_end: '2029-08-31' },
+      { period_start: '2029-09-01', period_end: '2030-08-31' },
+    ]
+    const amounts = years.map((year) => computeAnnualDepreciation(asset, year).amount)
+    expect(amounts).toEqual([2_396, 2_400, 2_400, 2_400, 2_400])
+    expect(amounts.reduce((sum, amount) => sum + amount, 0)).toBe(11_996)
+  })
 })
 
 describe('förkortat year (6 months)', () => {
