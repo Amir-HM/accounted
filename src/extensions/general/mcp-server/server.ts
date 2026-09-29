@@ -327,7 +327,11 @@ import { listAccountItems } from '@/lib/reconciliation/items'
 import { matchPairs } from '@/lib/reconciliation/actions'
 import { signOffAccount } from '@/lib/reconciliation/signoff'
 import { bookResidualAndLink, RESIDUAL_MAX_AMOUNT } from '@/lib/reconciliation/residual'
-import { parseAccountKey, type ReconciliationItemBucket } from '@/lib/reconciliation/schemas'
+import {
+  parseAccountKey,
+  reconciliationLinksBodyFields,
+  type ReconciliationItemBucket,
+} from '@/lib/reconciliation/schemas'
 import { unknownAccountKeyError } from './reconciliation-key-error'
 import { decryptPersonnummer, maskEmployeeForResponse, maskPersonnummer } from '@/lib/salary/personnummer'
 import {
@@ -14164,15 +14168,16 @@ export const tools: McpTool[] = [
         throw codedError('VALIDATION_ERROR', 'Pass pairs, or use_proposals: true')
       }
       // No host enforces inputSchema: a pair without both id arrays used to
-      // crash the engine ("Cannot read properties of undefined").
-      const malformed = pairs.findIndex(
-        (p) => !p || !Array.isArray(p.external_ids) || !Array.isArray(p.journal_entry_ids),
-      )
-      if (malformed !== -1) {
-        throw codedError(
-          'VALIDATION_ERROR',
-          `pairs[${malformed}] needs external_ids and journal_entry_ids, each an array of ids`,
-        )
+      // crash the engine ("Cannot read properties of undefined"). The same
+      // schema as the dashboard and v1 links routes, so the limits are one
+      // definition too: at most 200 pairs of at most 50 ids each, which also
+      // bounds the ledger reads a stage-time dry run makes.
+      const pairsCheck = reconciliationLinksBodyFields.pairs.safeParse(pairs)
+      if (!pairsCheck.success) {
+        throw fieldValidationError('Invalid pairs', zodFieldIssues(pairsCheck.error, pairs).map((issue) => ({
+          ...issue,
+          field: issue.field === 'arguments' ? 'pairs' : `pairs.${issue.field}`,
+        })))
       }
       const confidenceThreshold =
         typeof args.confidence_threshold === 'number' ? (args.confidence_threshold as number) : 0.9

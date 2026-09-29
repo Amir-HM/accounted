@@ -387,7 +387,21 @@ describe('reconciliation MCP tools', () => {
       .then(() => null, (e: unknown) => e)
     const error = toToolError(err, { toolName: 'gnubok_reconcile_match' }).error
     expect(error.code).toBe('VALIDATION_ERROR')
-    expect(error.message_en).toBe('pairs[0] needs external_ids and journal_entry_ids, each an array of ids')
+    expect(error.message_en).toMatch(/^Invalid pairs: pairs\.0\.journal_entry_ids: /)
+    expect(matchMock).not.toHaveBeenCalled()
+  })
+
+  it('reconcile_match refuses more pairs than the links routes accept, before any ledger read', async () => {
+    // The stage-time dry run reads every id it is given, so the MCP door takes
+    // the dashboard and v1 routes' limit: at most 200 pairs.
+    const { supabase } = createQueuedMockSupabase()
+    const pairs = Array.from({ length: 201 }, () => ({ external_ids: [ROW], journal_entry_ids: [ENTRY] }))
+    const err = await tool('gnubok_reconcile_match')
+      .execute({ account_key: 'skattekonto', pairs, dry_run: true }, COMPANY, USER, supabase as never)
+      .then(() => null, (e: unknown) => e)
+    const error = toToolError(err, { toolName: 'gnubok_reconcile_match' }).error
+    expect(error.code).toBe('VALIDATION_ERROR')
+    expect(error.message_en).toMatch(/^Invalid pairs: pairs: /)
     expect(matchMock).not.toHaveBeenCalled()
   })
 
