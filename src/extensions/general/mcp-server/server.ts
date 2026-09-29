@@ -302,8 +302,8 @@ import { runAcrossCompanies, summarizeCompanyResult } from '@/lib/portfolio/runn
 import { fetchPortfolioOverview, type DeadlineKindFilter, type PortfolioCompanyRow } from '@/lib/portfolio/overview'
 import { getByraMembership } from '@/lib/clients/fetch-client-overview'
 import { companyCurrentResource } from './resources/company-current'
-import { findUnknownArgKeys, listArgKeys, shortestExampleFor } from './arg-guard'
-import { describeAliasConflicts, normalizeReportArgAliases, suggestArgKey } from './report-arg-aliases'
+import { findUnknownArgKeys, listArgKeys, listRequiredArgKeys, shortestExampleFor } from './arg-guard'
+import { describeAliasConflicts, describeArgHint, normalizeReportArgAliases } from './report-arg-aliases'
 import { decodeToolArgs } from './unicode-escape-guard'
 import { findSupplierCandidates, type SupplierRow } from './supplier-candidates'
 import { creditNoteHandoff } from './inbox-credit-note'
@@ -10307,7 +10307,8 @@ export const tools: McpTool[] = [
     // Specialized: found through gnubok_search_tools and named from the list
     // tools' party_id; keeps the default tools/list under its byte budget.
     catalogVisibility: 'search',
-    keywords: ['motpart', 'part', 'leverantör', 'kund', 'företagsregistret', 'scb', 'org.nr', 'organisationsnummer', 'bolagsform', 'f-skatt'],
+    // English too: a guessed gnubok_get_customer matched only 'kund' before.
+    keywords: ['motpart', 'part', 'leverantör', 'kund', 'företagsregistret', 'scb', 'org.nr', 'organisationsnummer', 'bolagsform', 'f-skatt', 'customer', 'supplier', 'counterparty'],
     title: 'Get Party (Motpart) Behind a Supplier or Customer',
     description:
       'The party (motpart) behind a supplier or customer: legal name, org/VAT number, country, the SCB register summary (status, legal form, industry, seat, size, registrations, contact) and what the ledger has seen. Pass exactly one of party_id, supplier_id, customer_id. Read-only.',
@@ -14017,7 +14018,9 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_list_reconciliation_items',
-    keywords: ['avstämning', 'skattekonto', 'avstämningsposter'],
+    // The English words carry guesses like gnubok_list_skattekonto_rows here,
+    // not to the two skattekonto booking writes.
+    keywords: ['avstämning', 'skattekonto', 'avstämningsposter', 'skattekonto rows', 'tax account transactions', 'bank rows'],
     title: 'Reconciliation Items',
     description: 'Rows behind one account\'s reconciliation bridge, by bucket: side, qualified id, amount, proposal, allowed actions. Link via gnubok_reconcile_match.',
     inputSchema: {
@@ -23401,7 +23404,9 @@ export const tools: McpTool[] = [
   // Mirrors the /pending web UI for agents that self-review before committing.
   {
     name: 'gnubok_list_pending_operations',
-    keywords: ['väntande åtgärder', 'att godkänna', 'godkännanden'],
+    // There is no get_pending_operation or rejections tool: this list with
+    // status "rejected" is both, so the guesses need English words to land.
+    keywords: ['väntande åtgärder', 'att godkänna', 'godkännanden', 'pending operation', 'get pending operation', 'rejected operations', 'rejections'],
     title: 'List Pending Operations',
     description: 'List staged pending_operations. Approve via gnubok_approve_pending_operation, reject via gnubok_reject_pending_operation; without pending_operations:approve use /pending. render_ui=true opens the approval widget.',
     inputSchema: {
@@ -25666,11 +25671,15 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           // wrong key has no way to guess the right one from a key list alone.
           const validArgKeys = listArgKeys(tool.inputSchema as Record<string, unknown>)
           const example = shortestExampleFor(tool.inputSchema as Record<string, unknown>)
+          // Hints only, the call is refused either way: the synonym table,
+          // then the id-shaped fallback, with the exact record_ref when the
+          // call already holds it (document_id=<uuid>).
+          const hintContext = {
+            required: listRequiredArgKeys(tool.inputSchema as Record<string, unknown>),
+            args: toolArgs,
+          }
           const hints = unknownArgKeys
-            .map((k) => {
-              const suggestion = suggestArgKey(k, validArgKeys)
-              return suggestion ? `"${k}" -> "${suggestion}"` : null
-            })
+            .map((k) => describeArgHint(k, validArgKeys, hintContext))
             .filter((h): h is string => h !== null)
           throw codedError(
             'VALIDATION_ERROR',
