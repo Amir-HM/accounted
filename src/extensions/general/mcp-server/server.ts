@@ -12933,7 +12933,7 @@ export const tools: McpTool[] = [
       // gives the agent a clean error before the user is asked to approve.
       const { data: tx, error: txError } = await supabase
         .from('transactions')
-        .select('id, date, amount, currency, journal_entry_id, description, merchant_name')
+        .select('id, date, amount, currency, cash_account_id, journal_entry_id, description, merchant_name')
         .eq('id', transactionId)
         .eq('company_id', companyId)
         .maybeSingle()
@@ -12944,6 +12944,12 @@ export const tools: McpTool[] = [
       if (tx.journal_entry_id && (await hasLiveJournalEntryLink(supabase, companyId, tx.journal_entry_id))) {
         throw new Error('Transaction is already linked to a journal entry')
       }
+      // Approval anchors the row on its bank account's ledger
+      // (bank_anchor_settlement_account), which refuses an account in another
+      // currency than the row. Resolving it here makes that refusal
+      // BANK_BOOKING_CURRENCY_MISMATCH at staging instead of an approval
+      // failure that reads "reload and try again" (feedback seq 753539).
+      await resolveSettlementAccount(supabase, companyId, tx.cash_account_id, log, tx.currency)
 
       const { data: je, error: jeError } = await supabase
         .from('journal_entries')

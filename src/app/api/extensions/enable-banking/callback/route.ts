@@ -6,6 +6,7 @@ import { createLogger } from '@/lib/logger'
 import { createSession, extractBban, type AccountInfo } from '@/extensions/general/enable-banking/lib/api-client'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
 import { isMirrorCardAccount } from '@/extensions/general/enable-banking/lib/mirror-card-account'
+import { resolveAccountCurrency } from '@/extensions/general/enable-banking/lib/account-currency'
 import { eventBus } from '@/lib/events/bus'
 import {
   resolvePsd2LedgerAccount,
@@ -493,15 +494,28 @@ async function persistBankSession(
   // user deselects never have their balance pulled.
   const priorAccounts = pendingConnection.accounts_data ?? []
   const priorByNewUid = new Map<string, StoredAccount>()
+  // One currency rule for everything compared or stored below
+  // (lib/account-currency.ts): an account reported as 'XXX' is stored under a
+  // real currency. A prior still stored as 'XXX' compares as what it resolves
+  // to, so finalize_bank_callback refuses the stale row until it is repaired
+  // instead of this code missing the pair and re-keying a no-IBAN account's
+  // dedup scope (a re-import of its history).
+  const currencyOf = (row: { currency?: string | null }) => resolveAccountCurrency(row.currency)
+  const ibanCompatible = (a?: string | null, b?: string | null) =>
+    !normalizeIban(a) || !normalizeIban(b) || normalizeIban(a) === normalizeIban(b)
   const compatible = (prior: { currency: string; iban?: string | null }, current: { currency: string; iban?: string | null }) =>
-    prior.currency.toUpperCase() === current.currency.toUpperCase() &&
-    (!normalizeIban(prior.iban) || !normalizeIban(current.iban) || normalizeIban(prior.iban) === normalizeIban(current.iban))
+    currencyOf(prior) === currencyOf(current) && ibanCompatible(prior.iban, current.iban)
   const accountsMetadata: StoredAccount[] = accounts.map((account: AccountInfo) => {
     const iban = normalizeIban(account.account_id?.iban)
-    const currency = account.currency.toUpperCase()
+    // An unknown reported currency keeps the one this physical account
+    // already has here: the same uid, else the only prior with its IBAN.
+    const sameIban = iban ? priorAccounts.filter(p => normalizeIban(p.iban) === iban) : []
+    const known = priorAccounts.find(p => p.uid === account.uid && ibanCompatible(p.iban, iban))
+      ?? (sameIban.length === 1 ? sameIban[0] : undefined)
+    const currency = resolveAccountCurrency(account.currency, [known?.currency])
     let prior = priorAccounts.find(p => p.uid === account.uid && compatible(p, { currency, iban }))
     if (!prior && iban) {
-      const matches = priorAccounts.filter(p => p.currency.toUpperCase() === currency && normalizeIban(p.iban) === iban)
+      const matches = priorAccounts.filter(p => currencyOf(p) === currency && normalizeIban(p.iban) === iban)
       if (matches.length > 1) throw new Error('Bank callback identity ambiguous')
       prior = matches[0]
     }
@@ -518,7 +532,7 @@ async function persistBankSession(
   const matchedPriorUids = new Set([...priorByNewUid.values()].map(p => p.uid))
   for (const account of accountsMetadata) {
     if (priorByNewUid.has(account.uid) || normalizeIban(account.iban)) continue
-    const old = priorAccounts.filter(p => !matchedPriorUids.has(p.uid) && p.currency.toUpperCase() === account.currency)
+    const old = priorAccounts.filter(p => !matchedPriorUids.has(p.uid) && currencyOf(p) === account.currency)
     const fresh = accountsMetadata.filter(a => !priorByNewUid.has(a.uid) && a.currency === account.currency)
     if (old.length !== 1 || fresh.length !== 1 || normalizeIban(old[0].iban)) continue
     const prior = old[0]

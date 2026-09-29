@@ -630,6 +630,21 @@ const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
     message_en:
       'The transaction currency does not match the target account currency. A transaction can only be moved to an account in the same currency.',
   },
+  // resolveSettlementAccount: the transaction's cash account is in another
+  // currency than the transaction. The bank-booking guards look the account up
+  // by the transaction's currency and refuse every booking and link on it, so
+  // this is raised before a preview or a staged operation promises one.
+  BANK_BOOKING_CURRENCY_MISMATCH: {
+    httpStatus: 409,
+    message_sv:
+      'Transaktionens valuta stämmer inte med valutan på bankkontot den hör till, så den kan inte bokföras eller kopplas mot det kontot. Flytta transaktionen till ett bankkonto i samma valuta, eller kontakta supporten om bankkontot har fel valuta.',
+    message_en:
+      "The transaction's currency does not match the currency of its bank account, so it cannot be booked or linked on that account.",
+    remediation: {
+      description:
+        'Retrying does not help: the database refuses every booking and link of this row on that bank account. If the row sits under the wrong bank account, move it to the company account in its currency (transactions.update with account_number); if the bank account itself has the wrong currency, only support can correct it.',
+    },
+  },
   TX_CATEGORIZE_INVALID_ACCOUNT: {
     httpStatus: 400,
     message_sv: 'Det valda kontot finns inte i kontoplanen.',

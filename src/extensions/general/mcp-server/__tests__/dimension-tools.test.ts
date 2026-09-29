@@ -868,7 +868,7 @@ describe('gnubok_categorize_transaction: dimensions bag', () => {
     })
     enqueue({ data: tx, error: null })
     enqueue({ data: { entity_type: 'enskild_firma', fiscal_year_start_month: 1 }, error: null })
-    enqueue({ data: { ledger_account: '1931' }, error: null }) // resolveSettlementAccount: explicit cash_account_id lookup
+    enqueue({ data: { ledger_account: '1931', currency: 'SEK' }, error: null }) // resolveSettlementAccount: explicit cash_account_id lookup
     enqueue({ data: tx, error: null })
     enqueue({ data: null, error: null })
     enqueue({ data: null, error: null })
