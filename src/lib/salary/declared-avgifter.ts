@@ -111,8 +111,9 @@ export function resolveDeclaredAvgifterParams(
 /**
  * AGI reporting category for a roster row. Legacy rows (category null)
  * resolve by rate: at/below the 10,21/10,22 band → 65+-reduced, at/below
- * the 20,81/20,82 band → youth, else standard. Växa-stöd reports under
- * standard (its FK062/FK063 flags live on the IU, not the category map).
+ * the 20,81/20,82 band → youth, else standard. A legacy 'vaxa_stod' row
+ * (the engine stopped writing them when växa-stöd became a refund, Lag
+ * 2025:1334) reports under standard.
  */
 export function reportingCategory(row: Pick<DeclaredAvgifterRow, 'rate' | 'category'>): DeclaredAvgifterCategory {
   switch (row.category) {
