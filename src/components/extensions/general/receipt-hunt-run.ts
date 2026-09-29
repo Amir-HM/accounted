@@ -42,6 +42,10 @@ export type HuntOutcome =
   | { kind: 'mailbox_unreadable'; fetched: number; proposed: number; remaining: number }
   /** The company does not hold the paid `ai` capability (403 capability_blocked). */
   | { kind: 'blocked'; fetched: number; proposed: number }
+  /** Another pass is already running for this company (409): wait for it. */
+  | { kind: 'busy'; fetched: number; proposed: number }
+  /** The company's daily pass budget is spent (429): pressing again cannot help today. */
+  | { kind: 'limited'; fetched: number; proposed: number }
   /** Our side failed: network, a 5xx, or an answer that is not a pass. */
   | { kind: 'failed'; fetched: number; proposed: number }
 
@@ -98,6 +102,8 @@ export async function runReceiptHunt({
       const response = await request()
       if (!response.ok) {
         if (await isCapabilityRefusal(response)) return { kind: 'blocked', fetched, proposed }
+        if (response.status === 409) return { kind: 'busy', fetched, proposed }
+        if (response.status === 429) return { kind: 'limited', fetched, proposed }
         return { kind: 'failed', fetched, proposed }
       }
 

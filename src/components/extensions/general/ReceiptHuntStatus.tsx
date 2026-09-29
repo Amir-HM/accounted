@@ -62,7 +62,13 @@ export function ReceiptHuntStatus({
       attention = true
       content = [
         fetched,
-        result.kind === 'mailbox_unreadable' ? t('hunt_mailbox_unreadable') : t('hunt_failed'),
+        result.kind === 'mailbox_unreadable'
+          ? t('hunt_mailbox_unreadable')
+          : result.kind === 'busy'
+            ? t('hunt_busy')
+            : result.kind === 'limited'
+              ? t('hunt_limited')
+              : t('hunt_failed'),
       ]
         .filter(Boolean)
         .join(' ')

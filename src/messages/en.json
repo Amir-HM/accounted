@@ -429,6 +429,8 @@
     "hunt_remaining": "{count, plural, =1 {1 purchase left to look for.} other {# purchases left to look for.}}",
     "hunt_mailbox_unreadable": "A mailbox could not be read, so we do not know whether the receipts are there. Try again in a while.",
     "hunt_failed": "The search could not be completed. Try again.",
+    "hunt_busy": "The receipt hunt is already searching for this company. Wait until it is done.",
+    "hunt_limited": "The receipt hunt has searched as many times today as it may. Try again tomorrow.",
     "hunt_blocked": "Searching the email requires a subscription.",
     "hunt_upgrade": "Upgrade",
     "access_group": "What the access means",

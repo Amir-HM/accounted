@@ -22,6 +22,15 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/lib/init', () => ({ ensureInitialized: vi.fn() }))
 
+// No Redis unless a test provides one: then the pass slot is not claimed and
+// the daily budget is not counted, exactly the local and self-hosted shape.
+let redis: { set: ReturnType<typeof vi.fn>; eval: ReturnType<typeof vi.fn> } | null = null
+const mockCheckRateLimit = vi.fn()
+vi.mock('@/lib/auth/rate-limit-http', () => ({
+  getRedis: () => redis,
+  checkRateLimit: (...args: unknown[]) => mockCheckRateLimit(...args),
+}))
+
 const context = {
   requestId: 'req-1',
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn(() => context.log) },
@@ -47,6 +56,8 @@ import { POST } from '../route'
 beforeEach(() => {
   vi.clearAllMocks()
   unauthorized = false
+  redis = null
+  mockCheckRateLimit.mockResolvedValue({ ok: true })
   mockRequireCapability.mockResolvedValue(null)
   mockHuntCompany.mockResolvedValue({
     companyId: 'co-1',
@@ -146,5 +157,58 @@ describe('POST /api/receipt-hunt/run', () => {
     )
     expect(response.status).toBe(200)
     expect(body.data).toMatchObject({ searched: 0, fetched: 0 })
+  })
+})
+
+describe('POST /api/receipt-hunt/run: one pass at a time, and a daily budget', () => {
+  const run = () => POST(createMockRequest('http://localhost/api/receipt-hunt/run'), undefined as never)
+
+  it('answers 409 while another pass holds the company, and does not hunt', async () => {
+    redis = { set: vi.fn().mockResolvedValue(null), eval: vi.fn() }
+
+    const response = await run()
+
+    expect(response.status).toBe(409)
+    expect((await response.json()).code).toBe('RECEIPT_HUNT_IN_PROGRESS')
+    expect(mockHuntCompany).not.toHaveBeenCalled()
+  })
+
+  it('claims the slot for the company with an expiry and frees it after the pass', async () => {
+    redis = { set: vi.fn().mockResolvedValue('OK'), eval: vi.fn().mockResolvedValue(1) }
+
+    const response = await run()
+
+    expect(response.status).toBe(200)
+    const [key, runId, options] = redis.set.mock.calls[0]
+    expect(key).toBe('receipt-hunt:lease:co-1')
+    expect(options).toMatchObject({ nx: true })
+    expect(options.px).toBeGreaterThan(300_000)
+    // Compare-and-delete with this run's id, so a later run's slot survives.
+    expect(redis.eval).toHaveBeenCalledWith(expect.any(String), ['receipt-hunt:lease:co-1'], [runId])
+  })
+
+  it('frees the slot even when the pass throws', async () => {
+    redis = { set: vi.fn().mockResolvedValue('OK'), eval: vi.fn().mockResolvedValue(1) }
+    mockHuntCompany.mockRejectedValue(new Error('gmail down'))
+
+    await expect(run()).rejects.toThrow('gmail down')
+    expect(redis.eval).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers the limiter 429 once the day is spent, frees the slot and does not hunt', async () => {
+    redis = { set: vi.fn().mockResolvedValue('OK'), eval: vi.fn().mockResolvedValue(1) }
+    mockCheckRateLimit.mockResolvedValue({
+      ok: false,
+      response: new Response(JSON.stringify({ error: 'För många förfrågningar. Försök igen om en stund.' }), { status: 429 }),
+    })
+
+    const response = await run()
+
+    expect(response.status).toBe(429)
+    expect(mockHuntCompany).not.toHaveBeenCalled()
+    expect(redis.eval).toHaveBeenCalledTimes(1)
+    expect(mockCheckRateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({ identifier: 'co-1', maxRequests: 40, windowMs: 86_400_000 }),
+    )
   })
 })

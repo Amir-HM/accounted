@@ -5,6 +5,7 @@ import { createServiceClient } from '@/lib/supabase/server'
 import { requireCapability } from '@/lib/entitlements/has-capability'
 import { CAPABILITY } from '@/lib/entitlements/keys'
 import { huntCompany } from '@/lib/receipt-hunt/hunt'
+import { checkRateLimit, getRedis } from '@/lib/auth/rate-limit-http'
 
 // The hunt uploads documents, and uploading emits document.uploaded, which is
 // what makes the extraction extension read the amount out of a fetched PDF.
@@ -56,6 +57,55 @@ const RECEIPTS_PER_RUN = 3
 
 export const maxDuration = 300
 
+/**
+ * Passes one company may run in a day. A full sweep of a busy ledger takes a
+ * handful (PURCHASES_PER_RUN purchases each), and every pass may spend up to
+ * RECEIPTS_PER_RUN paid AI reads, so this caps the cost of a press loop that
+ * someone, or something, keeps restarting.
+ */
+const PASSES_PER_COMPANY_PER_DAY = 40
+
+/**
+ * One pass per company at a time. Held for the longest a pass can run, so a
+ * function that dies mid-pass frees the company on its own.
+ */
+const LEASE_MS = (maxDuration + 15) * 1000
+
+function leaseKey(companyId: string): string {
+  return `receipt-hunt:lease:${companyId}`
+}
+
+/**
+ * Claim the company's single pass slot. Without Redis (local development,
+ * self-hosted installs without one) there is no shared store to claim it in,
+ * and the per-pass bounds above remain the only limit, as before. A Redis
+ * error does not refuse the press either: the lease guards cost, not access.
+ */
+async function claimPassSlot(companyId: string, runId: string): Promise<boolean> {
+  const redis = getRedis()
+  if (!redis) return true
+  try {
+    return (await redis.set(leaseKey(companyId), runId, { nx: true, px: LEASE_MS })) === 'OK'
+  } catch {
+    return true
+  }
+}
+
+/** Free the slot, but only if this run still holds it (compare and delete). */
+async function releasePassSlot(companyId: string, runId: string): Promise<void> {
+  const redis = getRedis()
+  if (!redis) return
+  try {
+    await redis.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+      [leaseKey(companyId)],
+      [runId],
+    )
+  } catch {
+    // The lease expires on its own after LEASE_MS.
+  }
+}
+
 // requireWrite: a press archives documents, files inbox items and stages
 // proposals, all through the service role, so RLS cannot stop a viewer.
 export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) => {
@@ -72,14 +122,40 @@ export const POST = withRouteContext('receipt_hunt.run', async (_request, ctx) =
   const supabase = createServiceClient()
   const runId = crypto.randomUUID()
 
-  log.info('manual receipt hunt starting', { companyId, runId, userId: user.id })
+  // One pass at a time per company: the page runs passes one after another,
+  // so a second pass in flight is a duplicate press, another tab, or a
+  // script, and running both would double the mail reads and the AI spend.
+  if (!(await claimPassSlot(companyId, runId))) {
+    return NextResponse.json(
+      {
+        error: 'Kvittojakten letar redan i det här företaget. Vänta tills den är klar.',
+        code: 'RECEIPT_HUNT_IN_PROGRESS',
+      },
+      { status: 409 },
+    )
+  }
 
-  const result = await huntCompany(supabase, companyId, runId, {
-    searchMail: true,
-    mailSearchLimit: PURCHASES_PER_RUN,
-    maxMails: MAILS_PER_RUN,
-    maxReceipts: RECEIPTS_PER_RUN,
-  })
+  let result: Awaited<ReturnType<typeof huntCompany>>
+  try {
+    const budget = await checkRateLimit({
+      prefix: 'receipt-hunt-day',
+      identifier: companyId,
+      maxRequests: PASSES_PER_COMPANY_PER_DAY,
+      windowMs: 24 * 60 * 60 * 1000,
+    })
+    if (!budget.ok) return budget.response as NextResponse
+
+    log.info('manual receipt hunt starting', { companyId, runId, userId: user.id })
+
+    result = await huntCompany(supabase, companyId, runId, {
+      searchMail: true,
+      mailSearchLimit: PURCHASES_PER_RUN,
+      maxMails: MAILS_PER_RUN,
+      maxReceipts: RECEIPTS_PER_RUN,
+    })
+  } finally {
+    await releasePassSlot(companyId, runId)
+  }
 
   const searched = result.mail?.searched ?? 0
   // Only purchases the search can look for at all: salary and tax runs, the

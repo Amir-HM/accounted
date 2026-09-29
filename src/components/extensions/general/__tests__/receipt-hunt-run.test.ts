@@ -75,6 +75,20 @@ describe('runReceiptHunt', () => {
     expect(outcome).toEqual({ kind: 'blocked', fetched: 0, proposed: 0 })
   })
 
+  it('tells "another pass is running" and "the day is spent" apart from a failure', async () => {
+    const busy = new Response(JSON.stringify({ code: 'RECEIPT_HUNT_IN_PROGRESS' }), { status: 409 })
+    const limited = new Response(JSON.stringify({ error: 'För många förfrågningar.' }), { status: 429 })
+
+    expect(await runReceiptHunt({ request: passes(busy), shouldStop: () => false })).toEqual({
+      kind: 'busy',
+      fetched: 0,
+      proposed: 0,
+    })
+    expect(
+      await runReceiptHunt({ request: passes(pass({ ...base, fetched: 1 }), limited), shouldStop: () => false }),
+    ).toEqual({ kind: 'limited', fetched: 1, proposed: 0 })
+  })
+
   it('treats a 403 without the capability marker as a failure', async () => {
     const forbidden = new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 })
 

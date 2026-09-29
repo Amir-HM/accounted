@@ -429,6 +429,8 @@
     "hunt_remaining": "{count, plural, =1 {1 köp kvar att leta efter.} other {# köp kvar att leta efter.}}",
     "hunt_mailbox_unreadable": "En brevlåda kunde inte läsas, så vi vet inte om kvittona finns där. Försök igen om en stund.",
     "hunt_failed": "Sökningen kunde inte slutföras. Försök igen.",
+    "hunt_busy": "Kvittojakten letar redan i det här företaget. Vänta tills den är klar.",
+    "hunt_limited": "Kvittojakten har letat så många gånger i dag som den får. Försök igen i morgon.",
     "hunt_blocked": "Att leta i mejlen kräver ett abonnemang.",
     "hunt_upgrade": "Uppgradera",
     "access_group": "Vad åtkomsten innebär",
