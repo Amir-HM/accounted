@@ -913,6 +913,47 @@ describe('validateYearEndReadiness: kontantmetoden cut-off gate', () => {
       code: 'KONTANTMETOD_CUTOFF_CHECK_FAILED',
     }))
   })
+
+  // Feedback seq 798354: the year was closed outside the year-end
+  // (close_fiscal_period_external) and readiness kept reporting a cut-off
+  // blocker for a period nothing can be posted into any more.
+  it('does not run the cut-off check on a closed period', async () => {
+    const tables = cashTables()
+    tables.fiscal_periods = tables.fiscal_periods!.map((row) => ({ ...row, is_closed: true }))
+    // Also when the check could not even start: a skipped check must not
+    // resurface as KONTANTMETOD_CUTOFF_CHECK_FAILED.
+    for (const failTable of [undefined, 'company_settings']) {
+      const client = makeFilteringClient(tables, failTable)
+      const result = await validateYearEndReadiness(client as never, 'company-1', 'user-1', 'fp-1')
+      const codes = result.blockers.map((blocker) => blocker.code)
+      expect(codes).toContain('PERIOD_ALREADY_CLOSED')
+      expect(codes).not.toContain('KONTANTMETOD_CUTOFF_REQUIRED')
+      expect(codes).not.toContain('KONTANTMETOD_CUTOFF_CHECK_FAILED')
+      expect(client.from).not.toHaveBeenCalledWith('kontantmetod_cutoff_entries')
+    }
+  })
+
+  it('warns, without blocking, about invoices settled with neither a payment row nor a date', async () => {
+    // What a Fortnox migration imports: paid, paid_amount = total, no row,
+    // no paid_at. Nothing is outstanding, so there is no cut-off to post,
+    // but the answer rests on an assumption the user can check.
+    const migratedPaid = {
+      ...openInvoice, status: 'paid', currency: 'SEK',
+      paid_amount: 1250, remaining_amount: 0, paid_at: null,
+    }
+    const result = await validateYearEndReadiness(
+      makeFilteringClient({ ...cashTables(), invoices: [migratedPaid] }) as never,
+      'company-1', 'user-1', 'fp-1',
+    )
+    expect(result.blockers.some((blocker) =>
+      blocker.code === 'KONTANTMETOD_CUTOFF_REQUIRED' ||
+      blocker.code === 'KONTANTMETOD_CUTOFF_CHECK_FAILED',
+    )).toBe(false)
+    expect(result.ready).toBe(true)
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/^1 faktura saknar betalningsdatum: .* per 2024-12-31 som i dag\./),
+    )
+  })
 })
 
 describe('validateYearEndReadiness: open FX items at balansdagen (ÅRL 4 kap. 13 §)', () => {
