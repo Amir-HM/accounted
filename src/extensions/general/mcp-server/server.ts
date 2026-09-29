@@ -766,26 +766,56 @@ function salaryRunIdRequired(): Error {
  * through gnubok_link_transaction_to_journal_entry (which can settle a
  * kundfaktura at the same time); several need the bank 1:N pair on
  * gnubok_reconcile_match.
+ *
+ * `keyScopes` is the calling key's grant (undefined outside the dispatcher).
+ * Without reconciliation:write, gnubok_reconcile_match is not callable, so
+ * the refusal says so and points where the key can go: one voucher through
+ * gnubok_link_transaction_to_journal_entry (transactions:write, which this
+ * tool already needs), several through a person on the Avstämning page or a
+ * reconnected connector. Keys minted before the reconciliation scopes existed
+ * (#1833) never gain them (feedback seqs 817176, 817189).
  */
 function alreadyExplainedRefusal(
   outcome: Extract<AlreadyExplainedOutcome, { status: 'blocked' }>,
   transactionId: string,
   cashAccountId: string | null,
+  keyScopes?: ApiKeyScope[],
 ): Error {
   const { set } = outcome
   const ids = set.vouchers.map((v) => v.journal_entry_id)
   const accountKey = `bank:${cashAccountId ?? '<cash_account_id>'}`
-  const link =
-    ids.length === 1
-      ? `gnubok_link_transaction_to_journal_entry (transaction_id="${transactionId}", journal_entry_id="${ids[0]}", invoice_id om en kundfaktura ska markeras betald samtidigt) ` +
-        `eller gnubok_reconcile_match (account_key "${accountKey}", pairs [{ external_ids: ["${transactionId}"], journal_entry_ids: ["${ids[0]}"] }])`
+  const canReconcile = !keyScopes || hasScope(keyScopes, 'reconciliation:write')
+  const linkOne = `gnubok_link_transaction_to_journal_entry (transaction_id="${transactionId}", journal_entry_id="${ids[0]}", invoice_id om en kundfaktura ska markeras betald samtidigt)`
+  const missingScope =
+    'den här API-nyckeln saknar behörigheten reconciliation:write, så gnubok_reconcile_match går inte att anropa med den'
+  const link = !canReconcile
+    ? ids.length === 1
+      ? `${linkOne}. Obs: ${missingScope}; användaren kan också koppla raden på sidan Avstämning i Accounted, eller koppla om connectorn så att den nya nyckeln får behörigheten`
+      : `användaren kopplar den på sidan Avstämning i Accounted, eller kopplar om connectorn så att den nya nyckeln får behörigheten (${missingScope})`
+    : ids.length === 1
+      ? `${linkOne} eller gnubok_reconcile_match (account_key "${accountKey}", pairs [{ external_ids: ["${transactionId}"], journal_entry_ids: ["${ids[0]}"] }])`
       : `gnubok_reconcile_match (account_key "${accountKey}", pairs [{ external_ids: ["${transactionId}"], journal_entry_ids: ${JSON.stringify(ids)}, allocations: [{ journal_entry_id, amount }] per verifikat, summan = radens belopp })`
   const message = outcome.force_rejected
     ? `force=true avvisad: expected_journal_entry_ids är inte exakt de verifikat som förklarar raden just nu (${describeExplainingSet(set)}). ` +
       `Koppla raden till dem i stället: ${link}. Om raden verkligen är en separat affärshändelse: anropa igen med force=true och expected_journal_entry_ids=${JSON.stringify(ids)}.`
     : `Transaktionen ser redan ut att vara bokförd som ${describeExplainingSet(set)}: bokförda verifikat utan bankkoppling på kontot summerar exakt till beloppet. ` +
       `Bokför inte igen; koppla raden till dem: ${link}. Endast om raden verkligen är en separat affärshändelse: anropa igen med force=true och expected_journal_entry_ids=${JSON.stringify(ids)}.`
-  return Object.assign(new Error(message), { code: 'BATCH_TX_POSSIBLE_DUPLICATE' })
+  // The registry hint names gnubok_reconcile_match; a key that cannot call it
+  // gets one it can act on.
+  const remediation = canReconcile
+    ? undefined
+    : ids.length === 1
+      ? {
+          description:
+            'This key lacks the reconciliation:write scope, so gnubok_reconcile_match is not callable. Link the row to the one voucher with gnubok_link_transaction_to_journal_entry (reach it through gnubok_stage_tool when it is not in tools/list). Do not book the row again.',
+          tool: 'gnubok_link_transaction_to_journal_entry',
+          args: { transaction_id: transactionId, journal_entry_id: ids[0] },
+        }
+      : {
+          description:
+            'This key lacks the reconciliation:write scope, and one bank row against several vouchers links only through gnubok_reconcile_match. Ask the user to link the row to the listed vouchers on the Avstämning page in Accounted, or to reconnect the connector so its new key carries reconciliation:write. Do not book the row again.',
+        }
+  return codedRefusal('BATCH_TX_POSSIBLE_DUPLICATE', message, remediation)
 }
 
 /**
@@ -3315,7 +3345,13 @@ async function getScopedReconciliationStatus(
   const scope = await resolveCashAccountScope(supabase, companyId, accountNumber)
 
   if (!scope.found && accountNumber !== undefined && accountNumber !== '1930') {
-    throw new Error(`Okänt kassakonto ${accountNumber} för det här företaget`)
+    // Coded: as a plain Error it reached agents as UNKNOWN_ERROR ("Försök
+    // igen") for 1630, 1931, 1932 and 1940, and no retry finds an account the
+    // company does not have. 1630 is the skattekonto, keyed on its own.
+    throw codedRefusal('CASH_ACCOUNT_NOT_FOUND', `Okänt kassakonto ${accountNumber} för det här företaget`, {
+      description: `No bank account of this company books to ${accountNumber}. Pick a ledger_account from gnubok_list_cash_accounts, or pass account_key "bank:<cash_account_id>" instead of account_number; the skattekonto (1630) is account_key "skattekonto".`,
+      tool: 'gnubok_list_cash_accounts',
+    })
   }
 
   const status = await getReconciliationStatus(
@@ -12711,7 +12747,10 @@ export const tools: McpTool[] = [
         },
       )
       if (explained.status === 'blocked') {
-        throw alreadyExplainedRefusal(explained, transactionId, transaction.cash_account_id ?? null)
+        // The dispatcher injects the key's scopes for this tool, so the
+        // refusal never sends the agent to a link tool the key cannot call.
+        const keyScopes = Array.isArray(args.__keyScopes) ? (args.__keyScopes as ApiKeyScope[]) : undefined
+        throw alreadyExplainedRefusal(explained, transactionId, transaction.cash_account_id ?? null, keyScopes)
       }
       if (explained.status === 'unverifiable') {
         throw registryError('BATCH_TX_EXPLAINED_CHECK_FAILED')
@@ -14122,7 +14161,18 @@ export const tools: McpTool[] = [
           | undefined) ?? []
       const useProposals = args.use_proposals === true
       if (pairs.length === 0 && !useProposals) {
-        throw new Error('Pass pairs, or use_proposals: true')
+        throw codedError('VALIDATION_ERROR', 'Pass pairs, or use_proposals: true')
+      }
+      // No host enforces inputSchema: a pair without both id arrays used to
+      // crash the engine ("Cannot read properties of undefined").
+      const malformed = pairs.findIndex(
+        (p) => !p || !Array.isArray(p.external_ids) || !Array.isArray(p.journal_entry_ids),
+      )
+      if (malformed !== -1) {
+        throw codedError(
+          'VALIDATION_ERROR',
+          `pairs[${malformed}] needs external_ids and journal_entry_ids, each an array of ids`,
+        )
       }
       const confidenceThreshold =
         typeof args.confidence_threshold === 'number' ? (args.confidence_threshold as number) : 0.9
@@ -14178,14 +14228,29 @@ export const tools: McpTool[] = [
       }
       if (resolvedPairs.length === 0) {
         // The dry run's skipped list holds the actual reason; without it the
-        // agent saw only "No linkable pairs" (feedback seq 292682).
+        // agent saw only "No linkable pairs" (feedback seq 292682). Coded:
+        // as a plain Error it was UNKNOWN_ERROR, whose "Försök igen" invited
+        // retries of a call that cannot succeed unchanged (26 calls in 10
+        // companies, 2026-09-23..28). One reason for every skip is the code
+        // itself (a mistyped journal_entry_id is ENTRY_NOT_FOUND); mixed
+        // reasons, or no proposal at all, are VALIDATION_ERROR.
         const reasons = preview.skipped
           .slice(0, 5)
           .map((sk) => `${sk.code}: ${sk.message}`)
-        throw new Error(
-          'No linkable pairs: nothing to stage' +
-            (reasons.length ? `. Skipped: ${reasons.join(' | ')}` : ''),
-        )
+        const more = preview.skipped.length - reasons.length
+        const detail = reasons.length
+          ? `. Skipped: ${reasons.join(' | ')}${more > 0 ? ` (+${more} more)` : ''}`
+          : useProposals
+            ? `. No proposal at or above confidence_threshold ${confidenceThreshold} on ${accountKey}: pass explicit pairs (ids from gnubok_list_reconciliation_items) or a lower confidence_threshold.`
+            : ''
+        const message = `No linkable pairs: nothing to stage${detail}`
+        const skipCodes = new Set(preview.skipped.map((sk) => sk.code))
+        const sharedCode = skipCodes.size === 1 ? [...skipCodes][0] : null
+        // An unexpected failure keeps no code, so the transient inference
+        // still tells a timeout from a bug.
+        throw sharedCode === 'UNKNOWN'
+          ? new Error(message)
+          : codedRefusal(sharedCode ?? 'VALIDATION_ERROR', message)
       }
 
       return stagePendingOperation(
@@ -14423,7 +14488,7 @@ export const tools: McpTool[] = [
       properties: {
         skattekonto_transaction_id: {
           type: 'string',
-          description: 'The skattekonto_transactions row id (from the skattekonto reconciliation bridge).',
+          description: 'item_id of an unmatched_external row from gnubok_list_reconciliation_items (account_key "skattekonto").',
         },
         dry_run: { type: 'boolean' },
         idempotency_key: { type: 'string' },
@@ -14519,7 +14584,7 @@ export const tools: McpTool[] = [
           items: { type: 'string' },
           minItems: 1,
           maxItems: 200,
-          description: 'skattekonto_transactions row ids to book (duplicates are ignored).',
+          description: 'item_ids of unmatched_external rows from gnubok_list_reconciliation_items (account_key "skattekonto"); duplicates are ignored.',
         },
         dry_run: { type: 'boolean' },
         idempotency_key: { type: 'string' },
@@ -26045,6 +26110,8 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           toolName === 'gnubok_search_tools' ||
           toolName === 'gnubok_get_agent_briefing' ||
           toolName === 'gnubok_list_skills' ||
+          // Its already-explained refusal names the link tool this key can call.
+          toolName === 'gnubok_match_batch_allocate' ||
           // The cross-company tools check the INNER tool's scope per call.
           isScopedTool(toolName)
         ) {

@@ -35,7 +35,7 @@ Then tell the user in two lines what you found: the month, the accounts, which a
 
 \`gnubok_list_reconciliation_items({ account_key, bucket, date_from, date_to })\` (limit default 50, max 200; page with \`offset\`). Each item carries \`item_id\`, \`side\`, \`amount\`, a \`proposal\` and the \`actions\` it allows.
 
-1. **proposed**: outside rows with an exact twin verifikat. Link them in one call: \`gnubok_reconcile_match({ account_key, use_proposals: true, dry_run: true })\`, show the user the preview, then call again without \`dry_run\`. It stages. Rows in \`skipped[]\` are information: ALREADY_LINKED (done already), ENTRY_REVERSED or ENTRY_NOT_FOUND (the verifikat is gone or reversed: treat the row as unmatched), PAIR_NOT_CLOSED (amounts do not add up: see Step 3), UNSUPPORTED_PAIR_SHAPE (see Rules).
+1. **proposed**: outside rows with an exact twin verifikat. Link them in one call: \`gnubok_reconcile_match({ account_key, use_proposals: true, dry_run: true })\`, show the user the preview, then call again without \`dry_run\`. It stages. Rows in \`skipped[]\` are information: ALREADY_LINKED (done already), ENTRY_NOT_FOUND (no posted verifikat with that id in the company: a mistyped id is the usual cause, so copy the \`item_id\` again from \`unmatched_ledger\`; never book a residual for it), ENTRY_REVERSED (the verifikat is makulerat: treat the row as unmatched), NOT_FOUND (no such outside row: copy the \`item_id\` again from \`unmatched_external\`), ROW_IGNORED (restore the row first), PAIR_NOT_CLOSED (amounts do not add up: see Step 3), UNSUPPORTED_PAIR_SHAPE (see Rules). When every pair is skipped nothing is staged: the error code is the skip code they share, or VALIDATION_ERROR when the reasons differ.
 2. **unmatched_external** (only on the outside): see "Items on one side only" below.
 3. **unmatched_ledger** (only in the books): see the same section.
 4. **matched**, **ignored**, **upcoming**: explain the bridge and need no work. \`upcoming\` skattekonto rows are not yet settled at Skatteverket and cannot be booked.
@@ -83,8 +83,8 @@ The bank bridge runs from the start of the fiscal period, so a wrong ingående b
 
 ### The skattekonto is not imported
 
-- Error "Skattekontot är inte kopplat": Skatteverket is not connected. \`gnubok_connect_skatteverket\` returns the link where the user authorises with BankID. Tell the user, skip the skattekonto for now and continue with the other accounts.
-- Error "inga skattekontohändelser har hämtats ännu": connected but the first fetch has not finished. Skip it and say so.
+- SKATTEVERKET_NOT_CONNECTED: Skatteverket is not connected, or the connection expired before anything was fetched. \`gnubok_connect_skatteverket\` returns the link where the user authorises with BankID. Tell the user, skip the skattekonto for now and continue with the other accounts; do not ask again until they say they connected.
+- SKATTEKONTO_NOT_SYNCED: connected but the first fetch has not finished. Skip it, say so, and ask again later.
 - State \`stale\`, or NOT_FETCHED_THROUGH at sign-off: the snapshot is older than the month end. Ask the user to fetch in Accounted, then re-read. A skattekonto sign-off date can never pass the snapshot date.
 
 ### Other balance accounts (manual:BAS)
