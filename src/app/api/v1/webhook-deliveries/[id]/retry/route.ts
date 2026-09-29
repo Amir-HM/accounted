@@ -26,6 +26,7 @@ import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { kickWebhookDispatch } from '@/lib/webhooks/dispatch-kick'
 import { minimisePayload } from '@/lib/webhooks/handler'
 import { validateWebhookUrl } from '@/lib/webhooks/url-guard'
+import { verificationAllowsDelivery, webhookVerificationStatus } from '@/lib/webhooks/verification'
 import { hasScope } from '@/lib/auth/api-keys'
 
 registerEndpoint({
@@ -41,6 +42,7 @@ registerEndpoint({
     'Retrying live deliveries (pending / in_flight / failed): the dispatcher is already managing them.',
   pitfalls: [
     'Retrying a delivered delivery causes the receiver to see the event twice. Receivers MUST be idempotent (check the X-Gnubok-Delivery header).',
+    "The webhook must be deliverable: an endpoint whose verification_status is 'pending' or 'paused' answers 409 WEBHOOK_NOT_VERIFIED until it passes POST /webhooks/{id}/verify.",
   ],
   example: {
     response: {
@@ -147,7 +149,7 @@ export const POST = withApiV1<{ params: Promise<{ id: string }> }>(
     // the caller redeliver an event to a webhook they never created.
     const { data: webhook, error: webhookErr } = await ctx.supabase
       .from('webhooks')
-      .select('id, webhook_url, active, disabled_at')
+      .select('id, webhook_url, active, disabled_at, verified_at, verification_grace_ends_at')
       .eq('id', o.webhook_id)
       .eq('company_id', o.company_id)
       .maybeSingle()
@@ -159,11 +161,27 @@ export const POST = withApiV1<{ params: Promise<{ id: string }> }>(
       // the resource the caller targeted is genuinely gone.
       return v1ErrorResponseFromCode('NOT_FOUND', ctx.log, { requestId: ctx.requestId })
     }
-    const w = webhook as { id: string; webhook_url: string; active: boolean; disabled_at: string | null }
+    const w = webhook as {
+      id: string
+      webhook_url: string
+      active: boolean
+      disabled_at: string | null
+      verified_at: string | null
+      verification_grace_ends_at: string | null
+    }
     if (!w.active || w.disabled_at) {
       return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
         requestId: ctx.requestId,
         details: { field: 'webhook.active', message: 'Webhook is disabled: re-enable before retrying.' },
+      })
+    }
+
+    // Ownership gate (ADA CASA 7.1.2): a replay is a delivery, so it needs a
+    // verified endpoint (or one still inside its legacy grace window).
+    if (!verificationAllowsDelivery(w)) {
+      return v1ErrorResponseFromCode('WEBHOOK_NOT_VERIFIED', ctx.log, {
+        requestId: ctx.requestId,
+        details: { verification_status: webhookVerificationStatus(w) },
       })
     }
 
