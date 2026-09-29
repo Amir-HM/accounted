@@ -606,13 +606,14 @@ describe('GET /reports/dimension-pnl', () => {
     })
   })
 
-  it('400 VALIDATION_ERROR for a from_date outside the period or after to_date', async () => {
-    for (const window of ['from_date=2024-12-31', 'from_date=2025-09-30&to_date=2025-07-01']) {
+  it.each(['from_date=2024-12-31', 'from_date=2025-09-30&to_date=2025-07-01'])(
+    '400 VALIDATION_ERROR for a from_date outside the period or after to_date (%s)',
+    async (window) => {
       useClient({ fiscal_periods: PERIOD })
       expect((await get(getDimPnl, `/reports/dimension-pnl?period_id=${PERIOD_ID}&${window}`)).status).toBe(400)
-    }
-    expect(m.dimPnl).not.toHaveBeenCalled()
-  })
+      expect(m.dimPnl).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('GET /audit-trail', () => {
