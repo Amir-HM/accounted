@@ -115,5 +115,5 @@ return {
   area,
   pagesScanned: pages.length,
   findings: kept,
-  note: 'Dedupe these against open issues before filing any (see .claude/loops.md for the fingerprint convention).',
+  note: 'Dedupe these against open and closed issues (state:all) before filing any; see .claude/loops.md for the fingerprint convention.',
 }
