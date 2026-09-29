@@ -117,6 +117,8 @@ describe('buildSystemdokumentation', () => {
     const stripe = r.delsystem.find((d) => d.key === 'stripe')!
     expect(stripe.description).toContain('bokförs när användaren godkänner dem')
     expect(stripe.kontering).toContain('Utbetalning: debet 1930, kredit 1686')
+    // Fee rows are booked one way or the other, never twice.
+    expect(stripe.description).toContain('aldrig båda')
     const automatic = r.behandlingsregler.find((x) => x.rubrik === 'Maskinell och automatisk bokföring')!
     expect(automatic.text).not.toContain('Stripe')
   })
