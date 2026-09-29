@@ -99,6 +99,8 @@ import { applyAccountOverride } from '@/lib/bookkeeping/account-override'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 import { hasSIEFileExtension, SIE_FILE_EXTENSIONS_EN } from '@/lib/import/sie-file-extensions'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
+import { foldSellerVatIntoCost, sellerVatAsCostNote, sellerVatIsCost } from '@/lib/bookkeeping/vat-registration'
+import { supplierInvoiceRoundingItem } from '@/lib/supplier-invoices/rounding-item'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { dbError, errorCauseTag } from '@/lib/errors/db-error'
@@ -15705,11 +15707,26 @@ export const tools: McpTool[] = [
       // Paying it anyway or asking for a corrected invoice is a decision
       // taken against the underlag, not one this tool makes.
       const reverseCharge = vatTreatment === 'reverse_charge'
+      // Icke momsregistrerad (feedback seq 708521): the extracted rates say
+      // what the seller charged, not what this company may deduct. An ideell
+      // förening got 2000 + 500 with the 500 on 2641, which it can never
+      // reclaim. For a non-registered company the seller's moms is cost and
+      // stays in the payable (lib/bookkeeping/vat-registration.ts), whatever
+      // the treatment label says, reverse charge aside.
+      const { data: vatSettings } = await supabase
+        .from('company_settings')
+        .select('vat_registered')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      const vatIsCost = sellerVatIsCost(
+        (vatSettings as { vat_registered?: boolean | null } | null)?.vat_registered,
+        reverseCharge,
+      )
       // Exempt (undantagen omsättning, ML 10 kap) and export purchases carry
       // no Swedish moms either, so nothing on them is deductible ingående
       // moms (issue #2553). The executor zeroes the same fields; staging
       // mirrors it so the preview shows what will actually be written.
-      const noDeductibleSellerVat = reverseCharge || !treatmentDeductsInputVat(vatTreatment)
+      const noDeductibleSellerVat = !vatIsCost && (reverseCharge || !treatmentDeductsInputVat(vatTreatment))
 
       // FX: a non-SEK invoice needs a rate before approve can post it (the
       // executor refuses with SI_FX_RATE_MISSING otherwise). Resolved through
@@ -15827,10 +15844,46 @@ export const tools: McpTool[] = [
 
       // Under reverse charge, and under exempt / export, no line carries
       // deductible seller VAT: the executor zeroes the item rows too, so the
-      // staged preview shows what will be written.
-      const lineItems = noDeductibleSellerVat
-        ? extractedLineItems.map((li) => ({ ...li, vat_rate: 0, vat_amount: 0 }))
-        : extractedLineItems
+      // staged preview shows what will be written. A non-registered company
+      // keeps the seller's VAT, on the cost line instead of 2641.
+      const sellerVatFold = vatIsCost ? foldSellerVatIntoCost(extractedLineItems) : null
+      const pricedLineItems = sellerVatFold
+        ? sellerVatFold.lines
+        : noDeductibleSellerVat
+          ? extractedLineItems.map((li) => ({ ...li, vat_rate: 0, vat_amount: 0 }))
+          : extractedLineItems
+
+      // Öresavrundning (feedback seq 753539): where the document total is
+      // the payable, the registration entry still credits 2440 with the
+      // lines plus their VAT, so a total rounded to the krona lost its öre
+      // (444 192.00 billed, 444 191.91 booked). The web editor carries that
+      // gap as a zero-VAT 3740 item; the same item, under the same rule (SEK
+      // only, at most 0.50), carries the gap between the document total and
+      // the extracted lines here. A larger gap is not rounding and is left
+      // to the approver; the net path registers the lines as payable, so it
+      // has no gap to carry.
+      const oreRounding = noDeductibleSellerVat
+        ? null
+        : supplierInvoiceRoundingItem(
+            roundOre(total) - roundOre(pricedLineItems.reduce((sum, li) => sum + li.line_total + li.vat_amount, 0)),
+            currency,
+          )
+      const lineItems = oreRounding
+        ? [
+            ...pricedLineItems,
+            {
+              line_number: pricedLineItems.length + 1,
+              description: oreRounding.description,
+              quantity: 1,
+              unit: 'st',
+              unit_price: oreRounding.amount,
+              line_total: oreRounding.amount,
+              account_number: oreRounding.account_number,
+              vat_rate: oreRounding.vat_rate,
+              vat_amount: 0,
+            },
+          ]
+        : pricedLineItems
 
       // Derive from the actual per-line VAT rather than trusting
       // totalsExt.vat: that header figure comes straight from OCR/agent-
@@ -15876,6 +15929,15 @@ export const tools: McpTool[] = [
           : sellerChargedVat !== 0
             ? `${treatmentLabel}: the underlag carries VAT ${sellerChargedVat} (document total ${roundOre(total)}), but a supply under this treatment carries no Swedish moms, so none of it is deductible ingående moms and none is booked on 2641. Only the net ${payableNet} is registered as payable on 2440. If the supplier really did charge Swedish moms, the treatment is wrong: re-run with the right vat_treatment_override.`
             : `${treatmentLabel}: the document total ${roundOre(total)} differs from the sum of the line nets ${payableNet}. The net is registered as payable on 2440 so the reskontra matches the registration entry; verify the lines against the underlag.`
+      // A non-registered company registers the folded lines as payable, the
+      // same sum the registration entry credits on 2440, so the reskontra
+      // cannot drift from the GL; a document total that disagrees is named.
+      const vatRegistrationNote = !sellerVatFold
+        ? null
+        : sellerVatAsCostNote(sellerVatFold.sellerVat, lineNetSum)
+          + (lineNetSum !== roundOre(total)
+            ? ` That differs from the document total ${roundOre(total)}: verify the lines against the underlag.`
+            : '')
 
       const params = {
         inbox_item_id: inboxItemId,
@@ -15887,9 +15949,15 @@ export const tools: McpTool[] = [
         currency,
         exchange_rate: exchangeRate,
         vat_treatment: vatTreatment,
-        subtotal: noDeductibleSellerVat ? payableNet : Math.round(subtotal * 100) / 100,
+        // A rounding item is an ordinary zero-VAT line, so the subtotal that
+        // pairs with the billed total includes it, as the create route sums it.
+        subtotal: noDeductibleSellerVat
+          ? payableNet
+          : sellerVatFold || oreRounding
+            ? lineNetSum
+            : Math.round(subtotal * 100) / 100,
         vat_amount: noDeductibleSellerVat ? 0 : Math.round(vatAmount * 100) / 100,
-        total: noDeductibleSellerVat ? payableNet : Math.round(total * 100) / 100,
+        total: noDeductibleSellerVat ? payableNet : sellerVatFold ? lineNetSum : Math.round(total * 100) / 100,
         notes: (args.notes as string | undefined) ?? null,
         items: lineItems,
         ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
@@ -15925,6 +15993,24 @@ export const tools: McpTool[] = [
         vat_amount: params.vat_amount,
         total: params.total,
         ...(payableRecomputed ? { payable_recomputed: payableRecomputed, warning: payableWarning } : {}),
+        ...(sellerVatFold
+          ? {
+              vat_registration: {
+                vat_registered: false,
+                seller_vat_added_to_cost: sellerVatFold.sellerVat,
+                note: vatRegistrationNote,
+              },
+            }
+          : {}),
+        ...(oreRounding
+          ? {
+              ore_rounding: {
+                account_number: oreRounding.account_number,
+                amount: oreRounding.amount,
+                note: `The document total ${roundOre(total)} differs from the lines incl. VAT by ${oreRounding.amount}: a zero-VAT öresavrundning line on ${oreRounding.account_number} carries it, so 2440 is credited with the billed total.`,
+              },
+            }
+          : {}),
         line_count: lineItems.length,
         items_preview: lineItems.slice(0, 5),
         // Echoed for every non-exact dimension resolution (resolve-don't-
