@@ -11666,14 +11666,15 @@ export const tools: McpTool[] = [
     catalogVisibility: 'search',
     keywords: ['projektresultat', 'kostnadsställe', 'resultat per projekt'],
     title: 'P&L per Dimension (Resultat per projekt)',
-    description: 'Resultat per projekt/kostnadsställe: P&L matrix over one SIE dimension: each value with activity becomes a column plus an untagged bucket, and the Totalt column reconciles exactly with the resultatrapport. sie_dim_no: 1 = kostnadsställe, 6 = projekt.',
+    description: 'Resultat per projekt/kostnadsställe for a period or a from_date/to_date window in it: P&L matrix over one SIE dimension, a column per value with activity plus an untagged bucket; Totalt equals the resultatrapport for the same window. sie_dim_no: 1 = kostnadsställe, 6 = projekt.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         sie_dim_no: { type: 'string', description: "SIE dimension number: '1' = kostnadsställe, '6' = projekt, or a custom dim from gnubok_list_dimensions." },
-        period_id: { type: 'string', description: 'Fiscal period UUID (default: most recent)' },
-        to_date: { type: 'string', description: 'Optional end date (YYYY-MM-DD); the matrix is always cumulative from period start (closing-balance semantics, reconciles with resultatrapport)' },
+        period_id: { type: 'string', description: 'Fiscal period UUID (default: the one containing from_date/to_date, else the most recent)' },
+        from_date: { type: 'string', description: 'Start YYYY-MM-DD inside the period (default: period start)' },
+        to_date: { type: 'string', description: 'End YYYY-MM-DD inside the period (default: period end)' },
       },
       required: ['sie_dim_no'],
     },
@@ -11741,40 +11742,24 @@ export const tools: McpTool[] = [
         throw new Error("sie_dim_no must be a positive SIE dimension number, e.g. '1' (kostnadsställe) or '6' (projekt).")
       }
 
-      let periodId = args.period_id as string | undefined
-      const toDate = args.to_date as string | undefined
+      // A misspelled window (fromdate=) must not degrade to a full-year
+      // matrix the agent mistakes for the quarter it asked for.
+      rejectUnknownArgs(args, ['sie_dim_no', 'period_id', 'from_date', 'to_date'])
 
-      // No period but a date: the period that contains the date (#2185).
-      if (!periodId && typeof toDate === 'string' && ISO_DATE_RE.test(toDate)) {
-        periodId = (
-          await resolveReportPeriod(
-            supabase,
-            companyId,
-            undefined,
-            'No fiscal periods found. Categorize some transactions first to auto-create a period.',
-            toDate,
-          )
-        ).id
-      }
+      // No period but a date: the period that contains the date (#2185);
+      // neither: the most recent period.
+      const period = await resolveReportPeriod(
+        supabase,
+        companyId,
+        args.period_id,
+        'No fiscal periods found. Categorize some transactions first to auto-create a period.',
+        args.from_date ?? args.to_date,
+      )
+      // The resultatrapport routes' window rules: inside the period, from
+      // not after to. The window is what the matrix covers.
+      const range = parseReportRangeArgs(args, period, { from: 'from_date', to: 'to_date' })
 
-      // If no period specified, find the most recent one (same default as
-      // gnubok_get_trial_balance).
-      if (!periodId) {
-        const { data: periods } = await supabase
-          .from('fiscal_periods')
-          .select('id, name')
-          .eq('company_id', companyId)
-          .order('period_start', { ascending: false })
-          .limit(1)
-          .single()
-
-        if (!periods) {
-          throw new Error('No fiscal periods found. Categorize some transactions first to auto-create a period.')
-        }
-        periodId = periods.id
-      }
-
-      return await generateDimensionPnl(supabase, companyId, periodId!, sieDimNo, { toDate })
+      return await generateDimensionPnl(supabase, companyId, period.id, sieDimNo, range)
     },
   },
 
