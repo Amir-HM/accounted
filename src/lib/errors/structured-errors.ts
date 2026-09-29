@@ -1787,6 +1787,19 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'E-postleverantören kunde inte skicka meddelandet.',
     message_en: 'The email provider could not deliver the message.',
   },
+  // POST /api/invoices/[id]/send issues the invoice (status sent + verifikat)
+  // before the email leaves, so a verifikat refusal can stop the send. When
+  // the email itself then fails after a verifikat was posted, the invoice
+  // stays issued (a posted verifikat is never undone) and is delivered by
+  // hand; with nothing booked the draft is put back instead.
+  INVOICE_SEND_ISSUED_NOT_DELIVERED: {
+    httpStatus: 502,
+    message_sv:
+      'Fakturan är utfärdad men e-postmeddelandet kunde inte skickas. Ladda ned fakturan och skicka den till kunden.',
+    message_en:
+      'The invoice is issued (marked sent, and booked where the company books at issue) but the email could not be sent. Download the invoice and deliver it to the customer.',
+    retryable: false,
+  },
   INVOICE_SEND_SNAPSHOT_FAILED: {
     httpStatus: 500,
     message_sv: 'Utskicksinformationen kunde inte sparas. Ingen e-post skickades.',
@@ -4672,6 +4685,24 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     httpStatus: 409,
     message_sv: 'Lönekörningen är redan bokförd.',
     message_en: 'Salary run is already booked.',
+  },
+  // lib/salary/salary-entries.ts: a retried booking resumes by adopting the
+  // run's already-posted vouchers that are exactly what it would post, and
+  // stops here on any other posted voucher of the run (a duplicate, or one
+  // booked from data that has changed since) instead of posting it twice.
+  SALARY_RUN_PARTIALLY_BOOKED: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen har redan bokförda verifikationer från ett tidigare försök som inte stämmer med körningen. Återför dem och bokför sedan lönekörningen igen.',
+    message_en:
+      'The salary run already has posted vouchers from an earlier attempt that do not match the run (details.voucher_numbers). Reverse them, then book the run again.',
+    remediation: {
+      description:
+        'Reverse each voucher in details.entry_ids with storno (gnubok_reverse_journal_entry), then book the run again. Posted vouchers that match the run exactly are reused by the next booking, never posted twice.',
+      tool: 'gnubok_reverse_journal_entry',
+    },
+    retryable: false,
+    thrown_message_sv: true,
   },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,

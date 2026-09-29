@@ -38,9 +38,13 @@ vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(() => { throw new Error('no session client on the v1 door') }),
   createServiceClient: vi.fn(() => { throw new Error('the v1 door already runs on service role') }),
 }))
-const issueAndBookMock = vi.fn()
+const markSentMock = vi.fn()
+const restoreDraftMock = vi.fn()
+const finishIssuedMock = vi.fn()
 vi.mock('@/lib/invoices/issue-and-book-invoice', () => ({
-  issueAndBookInvoice: (...a: unknown[]) => issueAndBookMock(...a),
+  markInvoiceSentAndBook: (...a: unknown[]) => markSentMock(...a),
+  restoreUnbookedDraft: (...a: unknown[]) => restoreDraftMock(...a),
+  finishIssuedInvoice: (...a: unknown[]) => finishIssuedMock(...a),
 }))
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
@@ -211,7 +215,9 @@ beforeEach(() => {
   process.env.PEPPOL_TRANSPORT_PROVIDER = 'test-ap'
   transport = makeTransport()
   unregister = registerPeppolTransport(transport)
-  issueAndBookMock.mockResolvedValue({ ok: true, journalEntryId: JE_ID, partialFailures: [] })
+  markSentMock.mockResolvedValue({ ok: true, journalEntryId: JE_ID, partialFailures: [] })
+  restoreDraftMock.mockResolvedValue(true)
+  finishIssuedMock.mockResolvedValue([])
   mockValidate.mockResolvedValue({
     userId: 'user-1',
     companyId: COMPANY_ID,
@@ -375,7 +381,7 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     })
     expect(rpcNames(client)).not.toContain('generate_invoice_number')
     expect(wrote(client)).toBe(false)
-    expect(issueAndBookMock).not.toHaveBeenCalled()
+    expect(markSentMock).not.toHaveBeenCalled()
   })
 
   it('stages through the service-role RPC for the acting user, looks up, submits and records the lifecycle', async () => {
@@ -401,10 +407,10 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     expect(transport.lookupRecipient).toHaveBeenCalledWith({ scheme: '0007', identifier: '5566778899' })
     expect(transport.submit).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: IDEMPOTENCY_KEY, tenantReference: COMPANY_ID }))
     expect(rpcNames(client).filter((n) => n === 'record_peppol_delivery_event')).toHaveLength(3)
-    expect(issueAndBookMock).not.toHaveBeenCalled()
+    expect(markSentMock).not.toHaveBeenCalled()
   })
 
-  it('numbers a draft before building the document and issues it only after the network accepted it', async () => {
+  it('numbers a draft before building the document and issues it before the network gets it', async () => {
     const client = sendClient({
       invoices: { data: invoiceRow({ status: 'draft', invoice_number: null }), error: null },
       'rpc:generate_invoice_number': { data: 'F-2026-43', error: null },
@@ -421,20 +427,32 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     })
     const order = rpcNames(client)
     expect(order.indexOf('generate_invoice_number')).toBeLessThan(order.indexOf('stage_peppol_delivery_as_actor'))
-    expect(issueAndBookMock).toHaveBeenCalledWith(expect.objectContaining({ companyId: COMPANY_ID, userId: 'user-1' }))
+    expect(markSentMock).toHaveBeenCalledWith(expect.objectContaining({ companyId: COMPANY_ID, userId: 'user-1' }))
+    expect(markSentMock.mock.invocationCallOrder[0]).toBeLessThan(
+      (transport.submit as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+    )
+    expect(finishIssuedMock).toHaveBeenCalledWith(expect.objectContaining({ journalEntryId: JE_ID, recordDelivery: true }))
   })
 
-  it('reports a failed issuance as a warning without pretending the transmission did not happen', async () => {
-    issueAndBookMock.mockResolvedValue({ ok: false, errorCode: 'INVOICE_SEND_JOURNAL_ENTRY_FAILED' })
+  it('a refused verifikat transmits nothing: the engine error comes back and the draft stays', async () => {
+    const { MandatoryDimensionMissingError } = await import('@/lib/bookkeeping/dimension-errors')
+    markSentMock.mockResolvedValue({
+      ok: false,
+      errorCode: 'INVOICE_MARK_SENT_BOOK_FAILED',
+      reason: 'Konto 3001 kräver Projekt',
+      bookingError: new MandatoryDimensionMissingError([
+        { account_number: '3001', sie_dim_no: '6', dimension_name: 'Projekt' },
+      ]),
+    })
     mockServiceClient.mockReturnValue(sendClient({
       invoices: { data: invoiceRow({ status: 'draft' }), error: null },
     }))
     const res = await send()
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(400)
     const body = await res.json()
-    expect(body.data.issuance).toEqual({ ok: false, error_code: 'INVOICE_SEND_JOURNAL_ENTRY_FAILED' })
-    expect(body.data.invoice_status).toBe('draft')
-    expect(body.meta.warnings.map((w: { code: string }) => w.code)).toContain('PEPPOL_SENT_NOT_ISSUED')
+    expect(body.error.code).toBe('MANDATORY_DIMENSION_MISSING')
+    expect(transport.submit).not.toHaveBeenCalled()
+    expect(finishIssuedMock).not.toHaveBeenCalled()
   })
 
   it('replays an exact document already handed to the network instead of transmitting twice', async () => {
