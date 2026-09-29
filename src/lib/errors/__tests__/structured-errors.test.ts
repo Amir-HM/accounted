@@ -12,6 +12,7 @@ import {
   bookkeepingErrorResponse,
   EntryDateOutsideFiscalPeriodError,
   JournalEntryNotBalancedError,
+  MandatoryDimensionMissingError,
 } from '@/lib/bookkeeping/errors'
 
 const noopLogger = {
@@ -173,6 +174,19 @@ describe('errorResponse', () => {
     expect(body.error.message).toMatch(/balanserar inte/i)
     expect(body.error.requestId).toBe('req_1')
     expect(body.error.details).toMatchObject({ totalDebit: 100, totalCredit: 90 })
+  })
+
+  it('maps a required-dimension refusal to MANDATORY_DIMENSION_MISSING (400) with its violations, not a 500', async () => {
+    const err = new MandatoryDimensionMissingError([
+      { account_number: '7510', sie_dim_no: '6', dimension_name: 'Projekt' },
+    ])
+    const res = errorResponse(err, noopLogger, { requestId: 'req_dim' })
+    expect(res.status).toBe(400)
+    const body = await readEnvelope(res)
+    expect(body.error.code).toBe('MANDATORY_DIMENSION_MISSING')
+    expect(body.error.details).toEqual({
+      violations: [{ account_number: '7510', sie_dim_no: '6', dimension_name: 'Projekt' }],
+    })
   })
 
   it('preserves AccountsNotInChartError details', async () => {

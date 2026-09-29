@@ -185,7 +185,7 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'DELETE /api/bookkeeping/journal-entries/:id/no-document-required': covered([`DELETE ${V}/journal-entries/:id/no-document-required`]),
   'POST /api/bookkeeping/no-doc-required/batch': covered([`POST ${V}/journal-entries/no-document-required`, 'gnubok_mark_no_document_required']),
   'POST /api/bookkeeping/no-doc-required/bulk-missing': gap('P3', 'filter-wide "inget underlag krävs"'),
-  'POST /api/bookkeeping/journal-entry-lines/:lineId/retag': covered(['gnubok_tag_journal_lines']),
+  'POST /api/bookkeeping/journal-entry-lines/:lineId/retag': covered([`POST ${V}/dimensions/retag`, 'gnubok_tag_journal_lines']),
   'POST /api/bookkeeping/voucher-gaps': covered([`POST ${V}/voucher-gap-explanations`, 'gnubok_explain_voucher_gap']),
   'POST /api/bookkeeping/fix-cash-mismatch': uiOnly('one-off remediation of a historical matcher bug, reviewed payment by payment'),
 
@@ -230,11 +230,14 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'POST /api/dimensions/:id/values': covered([`POST ${V}/dimensions/:id/values`, 'gnubok_create_dimension_value']),
   'PATCH /api/dimensions/:id/values/:valueId': covered([`PATCH ${V}/dimensions/:id/values/:valueId`]),
   'DELETE /api/dimensions/:id/values/:valueId': covered([`DELETE ${V}/dimensions/:id/values/:valueId`]),
-  'POST /api/dimensions/rules': gap('P3', 'per-account dimension policy'),
-  'PATCH /api/dimensions/rules/:id': gap('P3'),
-  'DELETE /api/dimensions/rules/:id': gap('P3'),
-  'POST /api/dimensions/import-existing': gap('P3', 'backfill dimension values from existing journal lines'),
-  'POST /api/dimensions/tagging/apply': covered(['gnubok_tag_journal_lines']),
+  'POST /api/dimensions/rules': covered([`POST ${V}/dimensions/rules`, 'gnubok_create_dimension_rule']),
+  'PATCH /api/dimensions/rules/:id': covered([`PATCH ${V}/dimensions/rules/:id`, 'gnubok_update_dimension_rule']),
+  'DELETE /api/dimensions/rules/:id': covered([`DELETE ${V}/dimensions/rules/:id`, 'gnubok_delete_dimension_rule']),
+  'POST /api/dimensions/import-existing': covered(
+    [`PATCH ${V}/settings`, 'gnubok_update_company_settings'],
+    'runs when dimensions_enabled turns on (lib/company/settings-service.ts); turning it off and on again re-runs it',
+  ),
+  'POST /api/dimensions/tagging/apply': covered([`POST ${V}/dimensions/retag`, 'gnubok_tag_journal_lines']),
 
   // ── Bank transactions ──────────────────────────────────────────────
   'POST /api/transactions': covered([`POST ${V}/transactions/ingest`, 'gnubok_create_transactions']),
@@ -671,4 +674,4 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
  * The exact number of 'gap' entries today. Covering a gap means lowering
  * this; adding one means raising it in the same diff, visibly.
  */
-export const GAP_CEILING = 136
+export const GAP_CEILING = 132

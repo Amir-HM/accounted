@@ -17,8 +17,10 @@ import {
 } from '@/lib/invariants/zod'
 import { ISO_DATE_RE, ISO_DATE_MESSAGE_SV } from '@/lib/invariants/iso-date'
 import { orgNumberKey } from '@/lib/invariants/org-number'
+import { DIMENSION_RULE_POLICY } from '@/lib/bookkeeping/dimension-rule-policy'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import { DimensionsBagSchema } from '@/lib/bookkeeping/dimension-resolver'
+import { DIMENSION_RULE_TYPES, ruleValueProblem } from '@/lib/dimensions/rule-value'
 import { validateEmployeeBankAccount } from '@/lib/salary/payment/bank-account'
 import { validateJamkning } from '@/lib/salary/jamkning-rules'
 import { SalaryCalculationPolicySchema } from '@/lib/salary/calculation-policy'
@@ -48,7 +50,13 @@ import {
   orgNumberHoldsPersonalNumber,
   personalNumberDigits,
 } from '@/lib/customers/personal-number-shape'
-import { CURRENCIES, type AuditAction, type Currency, type InvoiceDocumentType } from '@/types'
+import {
+  CURRENCIES,
+  type AuditAction,
+  type Currency,
+  type InvoiceDocumentType,
+  type JournalEntrySourceType,
+} from '@/types'
 import type { BankFileFormatId } from '@/lib/import/bank-file/types'
 import {
   mentionsPeriodPlaceholder,
@@ -1748,9 +1756,21 @@ export const CreateJournalEntryLineSchema = z.object({
   // over the cost_center/project aliases.
   dimensions: DimensionsBagSchema.optional(),
   // Deprecated aliases for dimensions['1'] / dimensions['6'], kept forever
-  // for API/MCP compatibility.
-  cost_center: z.string().optional(),
-  project: z.string().optional(),
+  // for API/MCP compatibility. They land in the same bag, so they carry the
+  // bag's value rule (and the jel_dimensions_well_formed CHECK): a bad alias
+  // is a 400 here, not a database error at insert. Blank still means untagged.
+  cost_center: z
+    .string()
+    .trim()
+    .max(40, 'Kostnadsställe får vara högst 40 tecken')
+    .regex(/^[^"{}]*$/, 'Kostnadsställe får inte innehålla ", { eller }')
+    .optional(),
+  project: z
+    .string()
+    .trim()
+    .max(40, 'Projekt får vara högst 40 tecken')
+    .regex(/^[^"{}]*$/, 'Projekt får inte innehålla ", { eller }')
+    .optional(),
 }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
 
 export const CreateJournalEntrySchema = z.object({
@@ -1771,6 +1791,60 @@ export const CreateJournalEntrySchema = z.object({
   voucher_series: z.string().regex(/^[A-Z]$/, 'Verifikationsserie måste vara en bokstav A-Z').optional(),
   notes: z.string().max(2000).optional(),
   lines: z.array(CreateJournalEntryLineSchema).min(2, 'At least two lines are required for double-entry'),
+})
+
+/**
+ * source_type values a caller may put on a voucher it authors through a
+ * generic create door. The label is load-bearing, not decoration: it decides
+ * the dimension-rule and registry-validation exemptions
+ * (lib/bookkeeping/dimension-rules.ts), keeps 'vat_settlement' out of the VAT
+ * return, scopes SIE replacement to 'import' and gates storno/correction
+ * handling. A caller-chosen engine-owned label let a business voucher claim
+ * a policy exemption and show a false source in the ledger.
+ *
+ *   API (v1 POST /journal-entries and /journal-entries/batch-create): every
+ *     source type the dimension-rule policy ENFORCES, plus 'import' for
+ *     history replayed from another system (the documented batch-create use;
+ *     imported history is rule-exempt by design, and the label says so in
+ *     the ledger). Integrations label their own business vouchers with the
+ *     enforced types (a webshop integration posts 'webshop_order' vouchers
+ *     through this door), and those labels claim nothing. The rule-exempt,
+ *     engine-owned types (opening balances, bokslut, storno, corrections,
+ *     credit notes, accruals, settlements, 'system') are refused. Derived
+ *     from DIMENSION_RULE_POLICY, so a new source type is classified once
+ *     there and this door follows.
+ *   Dashboard (POST /api/bookkeeping/journal-entries): 'manual', plus
+ *     'vat_settlement' for the reviewed momsredovisning proposal and VAT
+ *     booking templates (lib/bookkeeping/template-source-type.ts).
+ */
+export const API_VOUCHER_SOURCE_TYPES: readonly JournalEntrySourceType[] = [
+  ...(Object.keys(DIMENSION_RULE_POLICY) as JournalEntrySourceType[]).filter(
+    (sourceType) => DIMENSION_RULE_POLICY[sourceType] === 'enforced'
+  ),
+  'import',
+]
+export const DASHBOARD_VOUCHER_SOURCE_TYPES = ['manual', 'vat_settlement'] as const
+
+/** POST /api/v1/companies/{companyId}/journal-entries (+ batch-create items). */
+export const CreateApiJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(API_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan inte vara en motorägd källtyp här: ingående balans, bokslut, storno, rättelser, ' +
+        'kreditnotor, periodiseringar, avräkningar och systemverifikat sätts av sina egna flöden och undantas ' +
+        `från dimensionsreglerna. Tillåtna värden: ${API_VOUCHER_SOURCE_TYPES.join(', ')}.`,
+    })
+    .default('manual'),
+})
+
+/** POST /api/bookkeeping/journal-entries: what the dashboard's own forms send. */
+export const CreateDashboardJournalEntrySchema = CreateJournalEntrySchema.extend({
+  source_type: z
+    .enum(DASHBOARD_VOUCHER_SOURCE_TYPES, {
+      error:
+        'source_type kan bara vara "manual" eller "vat_settlement" här. Övriga källtyper sätts av sina egna flöden.',
+    })
+    .default('manual'),
 })
 
 export const CorrectJournalEntrySchema = z.object({
@@ -1893,48 +1967,44 @@ export const CreateDimensionSchema = z.object({
   parent_sie_dim_no: z.coerce.number().int().min(1).max(9999).nullable().optional(),
 })
 
-const AccountDimensionRuleTypeSchema = z.enum(['required', 'default', 'fixed'])
+const AccountDimensionRuleTypeSchema = z
+  .enum(DIMENSION_RULE_TYPES)
+  .describe('required: no posting on the account without a value; default: pre-filled when a line has none; fixed: always applied.')
 
 /** GET /api/dimensions/rules query — optional exact-account filter. */
 export const ListDimensionRulesQuerySchema = z.object({
-  account_number: accountNumber.optional(),
+  account_number: accountNumber.optional().describe('Only the rules of this account.'),
 })
 
 /**
  * POST /api/dimensions/rules — per-account dimension policy (dimensions
  * PR10). 'required' carries no value; 'default'/'fixed' must carry the value
- * to apply. One rule per (account, dimension) — enforced by the DB UNIQUE.
+ * to apply (ruleValueProblem, lib/dimensions/rule-value.ts). One rule per
+ * (account, dimension): enforced by the DB UNIQUE. Also the input of the
+ * v1 and MCP doors (operation dimension-rules.create).
  */
 export const CreateAccountDimensionRuleSchema = z
   .object({
     account_number: accountNumber,
-    dimension_id: uuid,
+    dimension_id: uuid.describe('The dimension row id (dimension_id from the dimension list), not its sie_dim_no.'),
     rule_type: AccountDimensionRuleTypeSchema,
-    value_id: uuid.optional(),
-    is_active: z.boolean().optional(),
+    value_id: uuid.optional().describe('default/fixed: the dimension value to apply (dimension_value_id). Omit for required.'),
+    is_active: z.boolean().optional().describe('false saves the rule paused. Default true.'),
   })
   .superRefine((rule, ctx) => {
-    if (rule.rule_type === 'required' && rule.value_id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['value_id'],
-        message: 'En obligatorisk regel har inget värde — värden hör till Förval/Låst.',
-      })
-    }
-    if (rule.rule_type !== 'required' && !rule.value_id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['value_id'],
-        message: 'Välj vilket värde regeln ska använda.',
-      })
-    }
+    const problem = ruleValueProblem(rule.rule_type, Boolean(rule.value_id))
+    if (problem) ctx.addIssue({ code: 'custom', path: ['value_id'], message: problem })
   })
 
-/** PATCH /api/dimensions/rules/[id] — the value-presence rule re-checks in the route (partial update). */
+/**
+ * PATCH /api/dimensions/rules/[id]: a partial update, so the value rule is
+ * checked in lib/dimensions/rules-service.ts against the rule's effective
+ * type (the stored one when rule_type is not sent).
+ */
 export const UpdateAccountDimensionRuleSchema = z.object({
   rule_type: AccountDimensionRuleTypeSchema.optional(),
-  value_id: uuid.nullable().optional(),
-  is_active: z.boolean().optional(),
+  value_id: uuid.nullable().optional().describe('The value to apply; null clears it (required rules carry none).'),
+  is_active: z.boolean().optional().describe('false pauses the rule without losing it.'),
 })
 
 export const RetagLineDimensionsSchema = z.object({
@@ -2252,6 +2322,9 @@ export const MatchInvoiceSchema = z
       debit_amount: nonNegativeAmount.default(0),
       credit_amount: nonNegativeAmount.default(0),
       line_description: z.string().optional(),
+      // User-edited payment lines keep their tags, as on mark-paid (without
+      // this key Zod stripped a caller's bag before the route saw it).
+      dimensions: DimensionsBagSchema.optional(),
     }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2).optional(),
     // Optional caller-supplied SEK-per-invoice-currency rate for cross-currency
     // settlement. Used when the Riksbanken lookup returns nothing (rate not
@@ -2496,6 +2569,8 @@ export const MatchSupplierInvoiceSchema = z.object({
     debit_amount: nonNegativeAmount.default(0),
     credit_amount: nonNegativeAmount.default(0),
     line_description: z.string().optional(),
+    // User-edited payment lines keep their tags, as on mark-paid.
+    dimensions: DimensionsBagSchema.optional(),
   })).min(2).optional(),
 })
 
@@ -4316,6 +4391,11 @@ export const CreateExpenseClaimSchema = z
     claimant_name: z.string().trim().max(200).optional(),
     document_id: uuid.optional().nullable(),
     inbox_item_id: uuid.optional().nullable(),
+    /** Kostnadsställe/projekt for the claim's cost lines: the generated cost
+     *  line, or each class 3-8 line of `lines` (a line's own bag wins per key). */
+    dimensions: DimensionsBagSchema.optional().describe(
+      'Dimensions bag {sie_dim_no: code}, e.g. {"6":"P001"}, for the cost line(s). With lines, it is the default for every class 3-8 line; per-line dimensions win per key.',
+    ),
     /** Advanced booking: full verifikat lines in claim currency. Deep
      *  validation (balance, liability line) happens in the service. */
     lines: z
@@ -4325,6 +4405,9 @@ export const CreateExpenseClaimSchema = z
           debit_amount: z.number().nonnegative().default(0),
           credit_amount: z.number().nonnegative().default(0),
           line_description: z.string().trim().max(300).optional().nullable(),
+          // Carried onto the posted line (the service always accepted it;
+          // without it here the bag was silently stripped at the door).
+          dimensions: DimensionsBagSchema.optional(),
         }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE),
       )
       .min(2)

@@ -92,9 +92,8 @@ export const GET = withRouteContext<{ params: Promise<{ id: string }> }>(
     // Each entry is null when it has nothing to post: a nollkörning posts
     // nothing (book-run.ts), so the salary and avgifter entries fall away
     // just like vacation/pension do, and the UI simply skips the null ones.
-    // The avgifter builder keeps its zero-shaped legacy lines for a run with
-    // no avgifter; those never post, so previewing them would imply a
-    // verifikat that is never created.
+    // A run with no avgifter builds no avgifter lines at all, and the
+    // booking posts no avgifter voucher for it (createSalaryRunEntries).
     //
     // balanced/difference is the assertion that makes a future preview vs
     // booking divergence visible instead of silent: the DB trigger refuses

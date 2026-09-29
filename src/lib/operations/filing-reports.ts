@@ -666,21 +666,22 @@ export const reportsDimensionPnl = defineOperation({
   docs: {
     summary: 'Resultat per projekt or kostnadsställe: the income statement with one column per dimension value.',
     description:
-      'A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account\'s amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport. Cumulative from the period start to to_date (default the period end). Read-only.',
-    useWhen: 'Following up profitability per project or cost centre.',
-    doNotUseFor: 'One value only (GET /reports/income-statement with a dimension filter) or balance accounts (dimensions are P&L-side).',
+      'A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account\'s amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport for the same window. The window is from_date to to_date (defaults: the period start and end), so one quarter per project is one call. Read-only.',
+    useWhen: 'Following up profitability per project or cost centre, for the year or for one quarter or month.',
+    doNotUseFor: 'One value only (GET /reports/income-statement with dim_no and dim_code) or balance accounts (dimensions are P&L-side).',
     pitfalls: [
-      'No from_date: the matrix uses closing-balance semantics so its Totalt reconciles with the resultatrapport.',
+      'from_date and to_date must lie inside the period. Amounts are the activity inside that window, not balances accumulated from the period start.',
       'Amounts booked without a tag on the dimension land in "(Utan dimension)", not spread over the values.',
+      'What the bokslut run posts (source year_end: tax, bokslut depreciation, dispositions, resultatavslut) is left out, tagged or not, exactly as in the resultatrapport.',
     ],
     example: {
-      request: { period_id: '7c2b…', dim_no: '6' },
+      request: { period_id: '7c2b…', dim_no: '6', from_date: '2026-07-01', to_date: '2026-09-30' },
       response: {
         data: {
           dimension: { sie_dim_no: '6', name: 'Projekt' },
           columns: [{ code: 'P001', name: 'Projekt Alfa' }],
           net_total: 184200,
-          period: { start: '2026-01-01', end: '2026-12-31' },
+          period: { start: '2026-07-01', end: '2026-09-30' },
         },
         meta: META,
       },
@@ -689,7 +690,8 @@ export const reportsDimensionPnl = defineOperation({
   input: z.object({
     period_id: PERIOD_ID,
     dim_no: z.string().regex(/^[1-9]\d{0,3}$/).default('6').describe('SIE dimension number. Default "6" (projekt).'),
-    to_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period. Default: the period end.'),
+    from_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period. Default: the period start.'),
+    to_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period, not before from_date. Default: the period end.'),
   }),
   output: z
     .object({

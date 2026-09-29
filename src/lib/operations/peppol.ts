@@ -212,7 +212,7 @@ export const invoicesSendPeppol = defineOperation({
   docs: {
     summary: 'Send a customer invoice as a Peppol e-invoice (BIS Billing 3) through the access point.',
     description:
-      'Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice\'s fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and, once the network accepted it, issued with the :mark-sent semantics: status sent, verifikat under faktureringsmetoden, PDF archived as underlag. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.',
+      'Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice\'s fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and issued before the network gets it (status sent, verifikat under faktureringsmetoden); once the network accepted it the PDF is archived as underlag, as :mark-sent does. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.',
     useWhen:
       'The buyer receives e-invoices over Peppol (typically public sector, where Lag 2018:1277 requires it, or a company that asks for it) and GET /invoices/{id}/peppol shows no blockers.',
     doNotUseFor:
@@ -222,7 +222,7 @@ export const invoicesSendPeppol = defineOperation({
       'A buyer not registered in Peppol answers 422 PEPPOL_RECIPIENT_NOT_REACHABLE and nothing is transmitted; a failed lookup answers 502 PEPPOL_LOOKUP_FAILED and is safe to retry.',
       '422 PEPPOL_SUBMISSION_REJECTED is the access point\'s verdict on the document: fix the invoice (a correction is a credit note plus a new invoice once issued), do not resend unchanged.',
       '502 PEPPOL_SUBMISSION_FAILED and 409 PEPPOL_SEND_PRECONDITION_FAILED leave the delivery resendable: retry later or fix the Peppol settings.',
-      'If a draft was transmitted but could not be marked as sent, the response carries issuance.ok=false and a PEPPOL_SENT_NOT_ISSUED warning: complete it with POST /invoices/{id}/mark-sent, which reuses the number.',
+      'A draft whose verifikat the engine refuses (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) is not transmitted: the engine\'s error comes back and the invoice stays in draft. If the network then fails to take a draft that was booked on issue, the invoice stays issued (details.invoice_status sent) and the delivery can be resent.',
       'An invoice date outside every fiscal year answers 422 PEPPOL_FISCAL_PERIOD_MISSING (the delivery needs its retention basis).',
       SCOPE_PITFALL,
     ],

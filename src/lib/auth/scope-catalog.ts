@@ -406,6 +406,13 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_create_dimension:                'bookkeeping:write',
   gnubok_update_dimension:                'bookkeeping:write',
   gnubok_delete_dimension:                'bookkeeping:write',
+  // Account dimension rules (operations dimension-rules.*).
+  gnubok_list_dimension_rules:            'reports:read',
+  gnubok_create_dimension_rule:           'bookkeeping:write',
+  gnubok_update_dimension_rule:           'bookkeeping:write',
+  gnubok_delete_dimension_rule:           'bookkeeping:write',
+  // Retag history of posted lines (operation dimensions.retag-log).
+  gnubok_list_dimension_retag_log:        'reports:read',
   gnubok_get_dimension_pnl:               'reports:read',
   // Staged bulk retag of posted-line dimensions (dimensions PR6).
   gnubok_tag_journal_lines:               'bookkeeping:write',

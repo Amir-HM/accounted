@@ -370,12 +370,12 @@ const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
   DIMENSION_VALIDATION_FAILED: {
     httpStatus: 400,
     message_sv:
-      'Ett angivet kostnadsställe/projekt finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.',
+      'Ett angivet dimensionsvärde finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.',
     message_en:
       'One or more dimension codes on the entry lines are missing from the dimension registry or archived. details.issues lists each offending sie_dim_no/code.',
     remediation: {
       description:
-        'Create the missing dimension value in the register (or re-activate the archived value), then retry. Only companies with dimensions enabled are validated; each issue in details.issues carries sie_dim_no, code and reason (unknown_dimension | unknown_value | archived_value).',
+        'Create the missing dimension value in the register (or re-activate the archived value or dimension), then retry. Only companies with dimensions enabled are validated; each issue in details.issues carries sie_dim_no, code, reason (unknown_dimension | unknown_value | archived_value | archived_dimension) and, when the dimension is registered, dimension_name.',
     },
   },
   MANDATORY_DIMENSION_MISSING: {
@@ -629,6 +629,21 @@ const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
       'Transaktionens valuta stämmer inte med kontots valuta. En transaktion kan bara flyttas till ett konto i samma valuta.',
     message_en:
       'The transaction currency does not match the target account currency. A transaction can only be moved to an account in the same currency.',
+  },
+  // resolveSettlementAccount: the transaction's cash account is in another
+  // currency than the transaction. The bank-booking guards look the account up
+  // by the transaction's currency and refuse every booking and link on it, so
+  // this is raised before a preview or a staged operation promises one.
+  BANK_BOOKING_CURRENCY_MISMATCH: {
+    httpStatus: 409,
+    message_sv:
+      'Transaktionens valuta stämmer inte med valutan på bankkontot den hör till, så den kan inte bokföras eller kopplas mot det kontot. Flytta transaktionen till ett bankkonto i samma valuta, eller kontakta supporten om bankkontot har fel valuta.',
+    message_en:
+      "The transaction's currency does not match the currency of its bank account, so it cannot be booked or linked on that account.",
+    remediation: {
+      description:
+        'Retrying does not help: the database refuses every booking and link of this row on that bank account. If the row sits under the wrong bank account, move it to the company account in its currency (transactions.update with account_number); if the bank account itself has the wrong currency, only support can correct it.',
+    },
   },
   TX_CATEGORIZE_INVALID_ACCOUNT: {
     httpStatus: 400,
@@ -1787,6 +1802,19 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'E-postleverantören kunde inte skicka meddelandet.',
     message_en: 'The email provider could not deliver the message.',
   },
+  // POST /api/invoices/[id]/send issues the invoice (status sent + verifikat)
+  // before the email leaves, so a verifikat refusal can stop the send. When
+  // the email itself then fails after a verifikat was posted, the invoice
+  // stays issued (a posted verifikat is never undone) and is delivered by
+  // hand; with nothing booked the draft is put back instead.
+  INVOICE_SEND_ISSUED_NOT_DELIVERED: {
+    httpStatus: 502,
+    message_sv:
+      'Fakturan är utfärdad men e-postmeddelandet kunde inte skickas. Ladda ned fakturan och skicka den till kunden.',
+    message_en:
+      'The invoice is issued (marked sent, and booked where the company books at issue) but the email could not be sent. Download the invoice and deliver it to the customer.',
+    retryable: false,
+  },
   INVOICE_SEND_SNAPSHOT_FAILED: {
     httpStatus: 500,
     message_sv: 'Utskicksinformationen kunde inte sparas. Ingen e-post skickades.',
@@ -2786,6 +2814,23 @@ const REPORT: Record<string, StructuredErrorEntry> = {
     httpStatus: 413,
     message_sv: 'Rapporten är för stor för PDF. Ladda ner den som CSV eller Excel i stället.',
     message_en: 'The report is too large for PDF. Download it as CSV or Excel instead.',
+  },
+  // gnubok_audit_package stores its zip in the documents bucket, whose cap per
+  // file (50 MB) sits below the tool's own 80 MB estimate gate: an archive
+  // between the two is built and then refused by Storage. A size limit, not a
+  // fault, so the identical call can never succeed on a retry.
+  AUDIT_PACKAGE_TOO_LARGE: {
+    httpStatus: 413,
+    message_sv:
+      'Revisionspaketet blev för stort för att sparas som fil. Skapa det utan underlag, eller ladda ner det kompletta arkivet med underlag under Importera/Exportera.',
+    message_en:
+      'The audit package is too large to store as a file. Create it without documents (include_documents=false), or download the complete archive with documents in the web app under Import/Export.',
+    remediation: {
+      description:
+        'If include_documents was true, call gnubok_audit_package again with include_documents=false: receipts and other documents are most of the size. For the archive with documents, the user downloads it in the web app under Importera/Exportera, Komplett arkiv (/import#full-archive), which streams the file instead of storing it.',
+      tool: 'gnubok_audit_package',
+    },
+    retryable: false,
   },
 }
 
@@ -4344,6 +4389,13 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     message_en:
       'The registration verifikat has no line on the old account that matches this invoice line (it was corrected by hand). Correct the verifikat directly.',
   },
+  SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN: {
+    httpStatus: 409,
+    message_sv:
+      'Fakturan är i utländsk valuta och det går inte att avgöra vilken växelkurs registreringsverifikatet bokfördes med, så raden flyttas inte. Rätta verifikatet för hand.',
+    message_en:
+      'The supplier invoice is in a foreign currency and the exchange rate its registration verifikat was booked at cannot be determined, so the line is not moved. Correct the verifikat directly.',
+  },
   SI_ITEM_ACCOUNT_UPDATE_FAILED: {
     httpStatus: 500,
     message_sv: 'Fakturaraden kunde inte flyttas till det nya kontot. Försök igen.',
@@ -4672,6 +4724,24 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     httpStatus: 409,
     message_sv: 'Lönekörningen är redan bokförd.',
     message_en: 'Salary run is already booked.',
+  },
+  // lib/salary/salary-entries.ts: a retried booking resumes by adopting the
+  // run's already-posted vouchers that are exactly what it would post, and
+  // stops here on any other posted voucher of the run (a duplicate, or one
+  // booked from data that has changed since) instead of posting it twice.
+  SALARY_RUN_PARTIALLY_BOOKED: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen har redan bokförda verifikationer från ett tidigare försök som inte stämmer med körningen. Återför dem och bokför sedan lönekörningen igen.',
+    message_en:
+      'The salary run already has posted vouchers from an earlier attempt that do not match the run (details.voucher_numbers). Reverse them, then book the run again.',
+    remediation: {
+      description:
+        'Reverse each voucher in details.entry_ids with storno (gnubok_reverse_journal_entry), then book the run again. Posted vouchers that match the run exactly are reused by the next booking, never posted twice.',
+      tool: 'gnubok_reverse_journal_entry',
+    },
+    retryable: false,
+    thrown_message_sv: true,
   },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,
@@ -5225,9 +5295,12 @@ const MATCH_BATCH: Record<string, StructuredErrorEntry> = {
     message_en:
       'The transaction already looks booked: one or more posted vouchers with no bank link add up exactly to its amount. Link the transaction to them instead, or pass force=true with expected_journal_entry_ids to book anyway.',
     retryable: false,
+    // Names the scope: a key without reconciliation:write was sent to a tool
+    // it cannot call (feedback seqs 817176, 817189). The MCP door replaces
+    // this hint when it knows the key's scopes.
     remediation: {
       description:
-        'Link the bank row to the vouchers the message names instead of booking it again: gnubok_reconcile_match with account_key "bank:<cash_account_id>" and one pair { external_ids: [transaction_id], journal_entry_ids: [...], allocations }. Only if the row is a genuinely separate affärshändelse, call again with force=true and expected_journal_entry_ids set to exactly the ids the refusal listed.',
+        'Link the bank row to the vouchers the message names instead of booking it again: gnubok_reconcile_match (needs the reconciliation:write scope) with account_key "bank:<cash_account_id>" and one pair { external_ids: [transaction_id], journal_entry_ids: [...], allocations }. One voucher also links with gnubok_link_transaction_to_journal_entry. A key without reconciliation:write: the user links the row on the Avstämning page in Accounted, or reconnects the connector so its new key carries that scope. Only if the row is a genuinely separate affärshändelse, call again with force=true and expected_journal_entry_ids set to exactly the ids the refusal listed.',
       tool: 'gnubok_reconcile_match',
     },
   },
@@ -5573,6 +5646,25 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
       description:
         'A person must connect (or reconnect) to Skatteverket with BankID under Inställningar → Skatteverket. Personal Skatteverket sessions expire after about 1 hour by SKV design, so an expired session is normal, not a fault. Do not retry until the user confirms they have reconnected.',
     },
+  },
+  // A live connection whose skattekonto has not been fetched yet, so the
+  // reconciliation account "skattekonto" does not exist. It fills by itself
+  // (right after each BankID consent, and on the scheduled sync), which makes
+  // this the one retryable answer; an expired connection is
+  // SKATTEVERKET_NOT_CONNECTED. Both reached agents as UNKNOWN_ERROR before.
+  SKATTEKONTO_NOT_SYNCED: {
+    httpStatus: 409,
+    message_sv:
+      'Skatteverket är kopplat men inga skattekontohändelser har hämtats ännu. Skattekontot går att stämma av när den första hämtningen är klar.',
+    message_en:
+      'Skatteverket is connected but no skattekonto rows have been fetched yet, so account_key "skattekonto" does not exist yet. It appears once the first fetch completes.',
+    retryable: true,
+    remediation: {
+      description:
+        'Skip the skattekonto for now and continue with the other accounts; ask again later. The skattekonto is fetched right after each BankID consent and by the scheduled sync, and the user can fetch it now on the Skattekonto page in Accounted. If it stays empty, check the connection with gnubok_connect_skatteverket and have the user reconnect.',
+      tool: 'gnubok_connect_skatteverket',
+    },
+    thrown_message_sv: true,
   },
   SKATTEVERKET_ACCESS_DENIED: {
     httpStatus: 403,
@@ -5975,6 +6067,33 @@ const DIMENSION: Record<string, StructuredErrorEntry> = {
     httpStatus: 500,
     message_sv: 'Import av befintliga dimensionskoder misslyckades.',
     message_en: 'Failed to import existing dimension codes from journal lines.',
+  },
+  // Account dimension rules (lib/dimensions/rules-service.ts, operations
+  // dimension-rules.*): one set of codes for the dashboard, v1 and MCP.
+  DIMENSION_RULE_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Regeln finns inte.',
+    message_en: 'Account dimension rule not found in this company.',
+  },
+  DIMENSION_RULE_EXISTS: {
+    httpStatus: 409,
+    message_sv: 'Kontot har redan en regel för den dimensionen.',
+    message_en:
+      'The account already has a rule for that dimension (one rule per account and dimension): update the existing rule instead.',
+  },
+  DIMENSION_VALUE_ARCHIVED: {
+    httpStatus: 400,
+    message_sv: 'Värdet är arkiverat: återaktivera det innan det används i en regel.',
+    message_en: 'The dimension value is archived: reactivate it (PATCH the value with is_active true) before a rule uses it.',
+  },
+  // A retag of posted lines (lib/dimensions/retag-service.ts) where the RPC
+  // refused every line. Partial success is not an error: each line is its
+  // own transaction and the refused ones are listed.
+  DIMENSION_RETAG_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Ingen rad kunde taggas om.',
+    message_en:
+      'No line could be retagged: every line was refused. details.failed names each line and why (locked or closed period, lock date, a draft, a code missing from the registry or archived, a line of another company).',
   },
 }
 
