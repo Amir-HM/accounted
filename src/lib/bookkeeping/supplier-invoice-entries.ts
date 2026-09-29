@@ -96,8 +96,10 @@ export class SupplierInvoiceFxRateMissingError extends Error {
  * above when a foreign invoice reaches a booking path with no rate at all.
  * Every conversion in this file goes through here so no leg (expense, moms,
  * fiktiv moms, basbelopp, 2440) can be posted at a fabricated 1:1 rate.
+ * Exported for the paths that must reproduce a posted registration's SEK
+ * figures exactly (lib/supplier-invoices/item-account.ts).
  */
-function toSekOrThrow(
+export function toSekOrThrow(
   amount: number,
   currency: string,
   exchangeRate: number | null | undefined

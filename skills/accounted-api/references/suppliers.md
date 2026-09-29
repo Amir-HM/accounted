@@ -1158,6 +1158,7 @@ Changes the account of one line on an unsettled supplier invoice (registered, ap
 - A settled invoice answers 409 SI_ITEM_ACCOUNT_SETTLED.
 - A locked or closed period answers 409 JOURNAL_RATTELSE_PERIOD_LOCKED: past a lock, storno is the only lawful correction.
 - When the verifikat was already corrected by hand and holds no matching line on the old account, the answer is 409 SI_ITEM_ACCOUNT_NO_MATCHING_LINE and nothing changes.
+- A foreign-currency line moves the kronor the registration booked (the line at the invoice's stored rate); an invoice without that rate answers 409 SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN and nothing changes.
 - account_number is a STRING ("6550"), never a number.
 
 | Parameter | In | Type | Required | Notes |
