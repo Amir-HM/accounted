@@ -2264,6 +2264,9 @@ export const MatchInvoiceSchema = z
       debit_amount: nonNegativeAmount.default(0),
       credit_amount: nonNegativeAmount.default(0),
       line_description: z.string().optional(),
+      // User-edited payment lines keep their tags, as on mark-paid (without
+      // this key Zod stripped a caller's bag before the route saw it).
+      dimensions: DimensionsBagSchema.optional(),
     }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)).min(2).optional(),
     // Optional caller-supplied SEK-per-invoice-currency rate for cross-currency
     // settlement. Used when the Riksbanken lookup returns nothing (rate not
@@ -2508,6 +2511,8 @@ export const MatchSupplierInvoiceSchema = z.object({
     debit_amount: nonNegativeAmount.default(0),
     credit_amount: nonNegativeAmount.default(0),
     line_description: z.string().optional(),
+    // User-edited payment lines keep their tags, as on mark-paid.
+    dimensions: DimensionsBagSchema.optional(),
   })).min(2).optional(),
 })
 

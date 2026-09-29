@@ -53,6 +53,7 @@ import { listContextKey } from '@/lib/navigation/list-context'
 import { useCompanyOptional } from '@/contexts/CompanyContext'
 import type { SupplierInvoice, SupplierInvoiceItem, SupplierInvoicePayment } from '@/types'
 import { DetailPageSkeleton } from '@/components/common/DetailPageSkeleton'
+import { withLineDimensions, type LineDimensions } from '@/components/bookkeeping/payment-line-dimensions'
 import type { BASAccount, EntityType } from '@/types'
 
 interface EditableLine {
@@ -60,6 +61,8 @@ interface EditableLine {
   side: 'debit' | 'credit'
   amount: string
   description: string
+  /** Kept through every edit of the row and sent with it (payment-line-dimensions). */
+  dimensions?: LineDimensions
 }
 
 function parseAmount(s: string): number {
@@ -76,6 +79,8 @@ interface PreviewLine {
   debit_amount: number
   credit_amount: number
   description: string
+  /** The bag mark-paid books this line with; absent when untagged. */
+  dimensions?: LineDimensions
 }
 
 interface MarkPaidPreview {
@@ -83,6 +88,8 @@ interface MarkPaidPreview {
   lines: PreviewLine[]
   invoice_already_booked: boolean
   accounting_method: 'accrual' | 'cash'
+  /** The invoice's bag, given to a row the user adds. */
+  document_dimensions?: LineDimensions
 }
 
 // A line is periodiserad when both period dates are set: the cost was parked
@@ -321,6 +328,7 @@ export default function SupplierInvoiceDetailPage() {
             side: isDebit ? 'debit' : 'credit',
             amount: String(isDebit ? l.debit_amount : l.credit_amount),
             description: l.description,
+            ...withLineDimensions(l.dimensions),
           }
         }),
       )
@@ -347,8 +355,19 @@ export default function SupplierInvoiceDetailPage() {
     setEditLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)))
   const removeEditLine = (i: number) =>
     setEditLines((prev) => prev.filter((_, idx) => idx !== i))
+  // A row the user adds belongs to the same payment: it starts with the
+  // invoice's bag.
   const addEditLine = () =>
-    setEditLines((prev) => [...prev, { account_number: '', side: 'debit', amount: '', description: '' }])
+    setEditLines((prev) => [
+      ...prev,
+      {
+        account_number: '',
+        side: 'debit',
+        amount: '',
+        description: '',
+        ...withLineDimensions(markPaidPreview?.document_dimensions),
+      },
+    ])
   const resetEditLines = () => {
     if (!markPaidPreview) return
     setEditLines(
@@ -359,6 +378,7 @@ export default function SupplierInvoiceDetailPage() {
           side: isDebit ? 'debit' : 'credit',
           amount: String(isDebit ? l.debit_amount : l.credit_amount),
           description: l.description,
+          ...withLineDimensions(l.dimensions),
         }
       }),
     )
@@ -498,6 +518,8 @@ export default function SupplierInvoiceDetailPage() {
               debit_amount: l.side === 'debit' ? amount : 0,
               credit_amount: l.side === 'credit' ? amount : 0,
               line_description: l.description?.trim() || undefined,
+              // What the grid holds is what gets booked, the row's bag included.
+              ...withLineDimensions(l.dimensions),
             }
           })
         : undefined

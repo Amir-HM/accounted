@@ -35,7 +35,10 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 }))
 
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { createSupplierInvoiceCashEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
+import {
+  createSupplierInvoiceCashEntry,
+  createSupplierInvoicePaymentEntry,
+} from '@/lib/bookkeeping/supplier-invoice-entries'
 import { GET } from '../route'
 
 type PreviewBody = {
@@ -186,5 +189,89 @@ describe('GET /api/supplier-invoices/[id]/mark-paid/preview', () => {
       ['2440', 1234.56, 0],
       ['1930', 0, 1234.56],
     ])
+  })
+})
+
+describe('GET /api/supplier-invoices/[id]/mark-paid/preview: dimensions travel with the lines', () => {
+  const BAG = { '6': 'P1', '1': 'KS1' }
+  type TaggedBody = {
+    lines: Array<{
+      account_number: string
+      debit_amount: number
+      credit_amount: number
+      description: string
+      dimensions?: Record<string, string>
+    }>
+    document_dimensions?: Record<string, string>
+  }
+  const toPreview = (l: CreateJournalEntryInput['lines'][number]) => ({
+    account_number: l.account_number,
+    debit_amount: l.debit_amount,
+    credit_amount: l.credit_amount,
+    description: l.line_description ?? '',
+    ...(l.dimensions ? { dimensions: l.dimensions } : {}),
+  })
+
+  it('faktureringsmetod: the clearing preview is line-for-line what createSupplierInvoicePaymentEntry books, tags included', async () => {
+    const invoice = roundedInvoice({
+      registration_journal_entry_id: 'je-registered',
+      supplier_invoice_number: 'LF-77',
+      arrival_number: 77,
+      default_dimensions: BAG,
+    })
+    enqueue({
+      data: { ...invoice, supplier: { supplier_type: 'swedish_business', name: 'Leverantören AB' }, items },
+      error: null,
+    })
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+
+    const res = await GET(makeReq('amount=1234.56&payment_account=1930'), createMockRouteParams({ id: 'si-1' }))
+    const { body } = await parseJsonResponse<TaggedBody>(res)
+
+    // The call the dashboard mark-paid route makes for this request.
+    await createSupplierInvoicePaymentEntry(
+      null as never, 'company-1', 'user-1', invoice, 1234.56, '2026-09-21',
+      undefined, 'Leverantören AB', '1930',
+    )
+    const booked = vi.mocked(createJournalEntry).mock.calls[0][3].lines
+    expect(body.lines).toEqual(booked.map(toPreview))
+    for (const line of body.lines) expect(line.dimensions).toEqual(BAG)
+    expect(body.document_dimensions).toEqual(BAG)
+  })
+
+  it('kontantmetod: the cash preview carries the invoice bag on every line', async () => {
+    enqueue({
+      data: {
+        ...roundedInvoice({ ore_rounding: null, default_dimensions: BAG }),
+        supplier: { supplier_type: 'swedish_business' },
+        items,
+      },
+      error: null,
+    })
+    enqueue({ data: { accounting_method: 'cash' }, error: null })
+
+    const res = await GET(makeReq(), createMockRouteParams({ id: 'si-1' }))
+    const { body } = await parseJsonResponse<TaggedBody>(res)
+    expect(body.lines.map((l) => l.account_number)).toEqual(['6110', '2641', '1930'])
+    for (const line of body.lines) expect(line.dimensions).toEqual(BAG)
+    expect(body.document_dimensions).toEqual(BAG)
+  })
+
+  it('an untagged invoice previews untagged lines and offers no bag for added rows', async () => {
+    enqueue({
+      data: {
+        ...roundedInvoice({ registration_journal_entry_id: 'je-registered', default_dimensions: {} }),
+        supplier: { supplier_type: 'swedish_business' },
+        items,
+      },
+      error: null,
+    })
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+
+    const res = await GET(makeReq(), createMockRouteParams({ id: 'si-1' }))
+    const { body } = await parseJsonResponse<TaggedBody>(res)
+    expect(body.lines).toHaveLength(2)
+    for (const line of body.lines) expect('dimensions' in line).toBe(false)
+    expect(body.document_dimensions).toBeUndefined()
   })
 })
