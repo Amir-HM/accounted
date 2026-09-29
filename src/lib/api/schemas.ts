@@ -4391,6 +4391,11 @@ export const CreateExpenseClaimSchema = z
     claimant_name: z.string().trim().max(200).optional(),
     document_id: uuid.optional().nullable(),
     inbox_item_id: uuid.optional().nullable(),
+    /** Kostnadsställe/projekt for the claim's cost lines: the generated cost
+     *  line, or each class 3-8 line of `lines` (a line's own bag wins per key). */
+    dimensions: DimensionsBagSchema.optional().describe(
+      'Dimensions bag {sie_dim_no: code}, e.g. {"6":"P001"}, for the cost line(s). With lines, it is the default for every class 3-8 line; per-line dimensions win per key.',
+    ),
     /** Advanced booking: full verifikat lines in claim currency. Deep
      *  validation (balance, liability line) happens in the service. */
     lines: z
@@ -4400,6 +4405,9 @@ export const CreateExpenseClaimSchema = z
           debit_amount: z.number().nonnegative().default(0),
           credit_amount: z.number().nonnegative().default(0),
           line_description: z.string().trim().max(300).optional().nullable(),
+          // Carried onto the posted line (the service always accepted it;
+          // without it here the bag was silently stripped at the door).
+          dimensions: DimensionsBagSchema.optional(),
         }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE),
       )
       .min(2)

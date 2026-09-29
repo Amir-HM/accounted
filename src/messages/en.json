@@ -3915,6 +3915,7 @@
     "health_warning": "{count, plural, one {1 message could not be delivered or processed in the last week.} other {# messages could not be delivered or processed in the last week.}} Check the link or contact support."
   },
   "inbox_bulk_book": {
+    "dimensions_hint": "Cost centre/project is applied to the cost and revenue lines of each voucher.",
     "total_label": "Total for the documents: {amount}",
     "mixed_currency_totals_label": "Total per currency",
     "mixed_currency_note": "Documents in different currencies cannot be summed into a single amount. Each document is still booked separately, against its matched bank transaction and the amount the bank actually settled in SEK."
@@ -9774,6 +9775,9 @@
     "add_row": "Add line",
     "add_text_row": "Add text line",
     "remove_row": "Remove line",
+    "row_dimensions_aria": "Cost centre/project for line {index}",
+    "row_dimensions_title": "Cost centre/project",
+    "row_dimensions_inherit_hint": "Empty fields inherit the order default ({dims}).",
     "subtotal": "Subtotal",
     "vat": "VAT",
     "total": "Total",

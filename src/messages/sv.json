@@ -3915,6 +3915,7 @@
     "health_warning": "{count, plural, one {1 meddelande kunde inte levereras eller behandlas den senaste veckan.} other {# meddelanden kunde inte levereras eller behandlas den senaste veckan.}} Kontrollera kopplingen eller kontakta support."
   },
   "inbox_bulk_book": {
+    "dimensions_hint": "Kostnadsställe/projekt sätts på kostnads- och intäktsraderna i varje verifikat.",
     "total_label": "Underlagens summa: {amount}",
     "mixed_currency_totals_label": "Summa per valuta",
     "mixed_currency_note": "Underlag i olika valutor kan inte summeras till ett belopp. Varje underlag bokförs ändå var för sig, mot sin matchade banktransaktion och det belopp banken faktiskt drog i SEK."
@@ -9774,6 +9775,9 @@
     "add_row": "Lägg till rad",
     "add_text_row": "Lägg till textrad",
     "remove_row": "Ta bort rad",
+    "row_dimensions_aria": "Kostnadsställe/Projekt för rad {index}",
+    "row_dimensions_title": "Kostnadsställe/Projekt",
+    "row_dimensions_inherit_hint": "Tomma fält ärver orderns standard ({dims}).",
     "subtotal": "Netto",
     "vat": "Moms",
     "total": "Totalt",
