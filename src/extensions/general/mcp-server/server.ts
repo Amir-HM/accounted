@@ -8368,7 +8368,7 @@ export const tools: McpTool[] = [
       properties: {
         status: {
           type: 'string',
-          enum: ['draft', 'sent', 'paid', 'overdue', 'cancelled', 'credited'],
+          enum: ['draft', 'sent', 'paid', 'partially_paid', 'overdue', 'cancelled', 'credited'],
           description: 'Filter by invoice status',
         },
         document_type: {
@@ -8395,7 +8395,7 @@ export const tools: McpTool[] = [
 
       let query = supabase
         .from('invoices')
-        .select('id, invoice_number, status, customer_id, total, currency, invoice_date, due_date, document_type, valid_until, quote_status, default_dimensions, customers(name)', { count: 'exact' })
+        .select('id, invoice_number, status, customer_id, total, paid_amount, remaining_amount, currency, invoice_date, due_date, document_type, valid_until, quote_status, default_dimensions, customers(name)', { count: 'exact' })
         .eq('company_id', companyId)
 
       if (status) {
@@ -8434,6 +8434,10 @@ export const tools: McpTool[] = [
         status: inv.status,
         customer_name: (inv.customers as Record<string, unknown>)?.name ?? null,
         total: inv.total,
+        // Same fields and fallbacks as gnubok_get_invoice, so a partially paid
+        // invoice shows its residual without a second call.
+        paid_amount: inv.paid_amount ?? 0,
+        remaining_amount: inv.remaining_amount ?? null,
         currency: inv.currency,
         invoice_date: inv.invoice_date,
         due_date: inv.due_date,
