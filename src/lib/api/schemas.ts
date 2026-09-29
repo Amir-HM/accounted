@@ -1748,9 +1748,21 @@ export const CreateJournalEntryLineSchema = z.object({
   // over the cost_center/project aliases.
   dimensions: DimensionsBagSchema.optional(),
   // Deprecated aliases for dimensions['1'] / dimensions['6'], kept forever
-  // for API/MCP compatibility.
-  cost_center: z.string().optional(),
-  project: z.string().optional(),
+  // for API/MCP compatibility. They land in the same bag, so they carry the
+  // bag's value rule (and the jel_dimensions_well_formed CHECK): a bad alias
+  // is a 400 here, not a database error at insert. Blank still means untagged.
+  cost_center: z
+    .string()
+    .trim()
+    .max(40, 'Kostnadsställe får vara högst 40 tecken')
+    .regex(/^[^"{}]*$/, 'Kostnadsställe får inte innehålla ", { eller }')
+    .optional(),
+  project: z
+    .string()
+    .trim()
+    .max(40, 'Projekt får vara högst 40 tecken')
+    .regex(/^[^"{}]*$/, 'Projekt får inte innehålla ", { eller }')
+    .optional(),
 }).refine(isSingleSidedLine, SINGLE_SIDED_LINE_ISSUE)
 
 export const CreateJournalEntrySchema = z.object({
