@@ -36,7 +36,10 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 }))
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
-import { createSupplierInvoicePaymentEntry as mockedCreatePaymentEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
+import {
+  createSupplierInvoicePaymentEntry as mockedCreatePaymentEntry,
+  createSupplierInvoiceCashEntry as mockedCreateCashEntry,
+} from '@/lib/bookkeeping/supplier-invoice-entries'
 import {
   createJournalEntry as mockedCreateJournalEntry,
   findFiscalPeriod as mockedFindFiscalPeriod,
@@ -48,6 +51,7 @@ import { POST as matchSupplierInvoice } from '../route'
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
 const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
 const mockCreatePaymentEntry = mockedCreatePaymentEntry as ReturnType<typeof vi.fn>
+const mockCreateCashEntry = mockedCreateCashEntry as ReturnType<typeof vi.fn>
 
 type MockResult = { data?: unknown; error?: unknown }
 type RecordedCall = { table: string; method: string; args: unknown[] }
@@ -368,5 +372,126 @@ describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invo
     expect(body.error.details).toMatchObject({ reason: 'no_journal_entry_created' })
     expect(calls.some((c) => c.table === 'supplier_invoices' && c.method === 'update')).toBe(false)
     expect(calls.some((c) => c.table === 'supplier_invoice_payments' && c.method === 'insert')).toBe(false)
+  })
+})
+
+// #3253: this door used to derive its own payment plan. On faktureringsmetoden
+// it cleared the whole bank row off 2440 (no 6570 fee, no 3740 öre) and had no
+// overshoot guard, so paid_amount could pass the invoice total. It now plans
+// through planSupplierBankMatch like the dashboard route (door-parity.test.ts
+// in the dashboard route's tests compares the booked lines of both doors).
+describe('POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invoice: the shared payment plan', () => {
+  const BOOKED_INVOICE = { ...REGISTERED_INVOICE, registration_journal_entry_id: 'je-registration' }
+  const url = `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`
+
+  async function match(opts: {
+    transaction?: Record<string, unknown>
+    invoice?: Record<string, unknown>
+    accountingMethod?: 'accrual' | 'cash'
+  }) {
+    const calls: RecordedCall[] = []
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase(
+        {
+          company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+          transactions: { data: { ...TRANSACTION, ...opts.transaction }, error: null },
+          supplier_invoices: [
+            { data: { ...BOOKED_INVOICE, ...opts.invoice }, error: null },
+            { data: [{ id: SI_ID }], error: null },
+          ],
+          company_settings: { data: { accounting_method: opts.accountingMethod ?? 'accrual' }, error: null },
+        },
+        calls,
+      ),
+    )
+    const response = await matchSupplierInvoice(
+      makeRequest(url, { supplier_invoice_id: SI_ID }),
+      detailParams(COMPANY_ID, TX_ID),
+    )
+    const body = await response.json()
+    const argsOf = (table: string, method: string) =>
+      calls.find((c) => c.table === table && c.method === method)?.args[0] as Record<string, unknown> | undefined
+    const writes = calls.filter(
+      (c) => c.table !== 'idempotency_keys' && (c.method === 'update' || c.method === 'insert'),
+    )
+    return {
+      response,
+      body,
+      invoiceUpdate: argsOf('supplier_invoices', 'update'),
+      paymentInsert: argsOf('supplier_invoice_payments', 'insert'),
+      writes,
+    }
+  }
+
+  it('refuses an overshoot past the fee cap with 400 before the storno, booking and writing nothing', async () => {
+    const { response, body, writes } = await match({
+      transaction: { amount: -50000, journal_entry_id: 'je-categorised' },
+      invoice: { total: 5000, total_sek: 5000, remaining_amount: 5000 },
+    })
+
+    expect(response.status).toBe(400)
+    expect(body.error.code).toBe('MATCH_SI_AMOUNT_EXCEEDS_REMAINING')
+    expect(body.error.details).toMatchObject({ transaction_amount: 50000, remaining_amount: 5000, excess: 45000 })
+    expect(mockedReverseEntry).not.toHaveBeenCalled()
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+    expect(writes).toEqual([])
+  })
+
+  it('books a fee on top on 6570: 2440 cleared by the debt only, paid_amount never past the total', async () => {
+    const { response, body, invoiceUpdate, paymentInsert } = await match({
+      transaction: { amount: -1010 },
+    })
+
+    expect(response.status).toBe(200)
+    const args = mockCreatePaymentEntry.mock.calls[0]
+    expect(args[4]).toBe(1000) // SEK that left the bank for the invoice part
+    expect(args[10]).toBe(10) // bankFeeSek, booked on 6570
+    expect(args[11]).toBe(1000) // sekClearingDebt: 2440 cleared by the debt
+    expect(invoiceUpdate).toMatchObject({ status: 'paid', paid_amount: 1000, remaining_amount: 0 })
+    expect(paymentInsert).toMatchObject({ amount: 1000 })
+    expect(body.data).toMatchObject({ invoice_status: 'paid', paid_amount: 1000, remaining_amount: 0 })
+  })
+
+  it('settles a whole-krona payment of an öre total in full, the residual on 3740', async () => {
+    const { response, invoiceUpdate, paymentInsert } = await match({
+      transaction: { amount: -1234 },
+      invoice: { total: 1234.44, total_sek: 1234.44, remaining_amount: 1234.44 },
+    })
+
+    expect(response.status).toBe(200)
+    const args = mockCreatePaymentEntry.mock.calls[0]
+    expect(args[4]).toBe(1234)
+    expect(args[11]).toBe(1234.44)
+    expect(invoiceUpdate).toMatchObject({ status: 'paid', paid_amount: 1234.44, remaining_amount: 0 })
+    expect(paymentInsert).toMatchObject({ amount: 1234.44 })
+  })
+
+  it('hands a kontantmetoden fee on top to the cash builder', async () => {
+    const { response, invoiceUpdate } = await match({
+      transaction: { amount: -1010 },
+      invoice: { registration_journal_entry_id: null },
+      accountingMethod: 'cash',
+    })
+
+    expect(response.status).toBe(200)
+    expect(mockCreatePaymentEntry).not.toHaveBeenCalled()
+    const args = mockCreateCashEntry.mock.calls[0]
+    expect(args[9]).toBe(1000) // settledBankSek, net of the fee
+    expect(args[11]).toBe(10) // bankFeeSek
+    expect(invoiceUpdate).toMatchObject({ status: 'paid', paid_amount: 1000 })
+  })
+
+  it('refuses a kontantmetoden partial before reversing the prior categorization', async () => {
+    const { response, body, writes } = await match({
+      transaction: { amount: -500, journal_entry_id: 'je-categorised' },
+      invoice: { registration_journal_entry_id: null },
+      accountingMethod: 'cash',
+    })
+
+    expect(response.status).toBe(400)
+    expect(body.error.code).toBe('SI_CASH_PARTIAL_UNSUPPORTED')
+    expect(mockedReverseEntry).not.toHaveBeenCalled()
+    expect(mockCreateCashEntry).not.toHaveBeenCalled()
+    expect(writes).toEqual([])
   })
 })
