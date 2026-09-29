@@ -111,4 +111,19 @@ CREATE TRIGGER webhooks_verification_guard
   BEFORE INSERT OR UPDATE ON public.webhooks
   FOR EACH ROW EXECUTE FUNCTION public.webhooks_verification_guard();
 
+-- The credential-columns change (20260929173432) moves webhooks to
+-- column-level SELECT grants for end users. If that migration is applied
+-- before this one, the verification columns would be invisible to sessions;
+-- granting them here keeps them readable in either order. While the
+-- table-level grant still exists this is a no-op, and a later table-level
+-- REVOKE clears it together with the table grant.
+GRANT SELECT (
+  verified_at,
+  verification_grace_ends_at,
+  verification_attempts,
+  verification_last_attempt_at,
+  verification_last_error,
+  verification_next_attempt_at
+) ON public.webhooks TO authenticated;
+
 NOTIFY pgrst, 'reload schema';
