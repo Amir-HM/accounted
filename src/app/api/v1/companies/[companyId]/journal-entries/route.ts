@@ -32,9 +32,12 @@ import { CreateApiJournalEntrySchema } from '@/lib/api/schemas'
 import { createDraftEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
+import { DIM_COST_CENTER, DIM_PROJECT, normalizeLineDimensions } from '@/lib/bookkeeping/dimension-resolver'
 
+// `dimensions` is the line's whole SIE tag bag; cost_center/project only
+// mirror keys '1'/'6', so a read without the bag hid dims 2, 7-9 and 20+.
 const JE_LINE_COLUMNS =
-  'id, account_number, debit_amount, credit_amount, line_description, currency, amount_in_currency, exchange_rate, tax_code, cost_center, project, sort_order'
+  'id, account_number, debit_amount, credit_amount, line_description, currency, amount_in_currency, exchange_rate, tax_code, dimensions, cost_center, project, sort_order'
 const JE_COLUMNS =
   'id, fiscal_period_id, voucher_series, voucher_number, entry_date, description, status, source_type, source_id, notes, reverses_id, reversed_by_id, correction_of_id, created_at, updated_at'
 
@@ -64,8 +67,11 @@ const JournalEntryLine = z.object({
   amount_in_currency: z.number().nullable(),
   exchange_rate: z.number().nullable(),
   tax_code: z.string().nullable(),
-  cost_center: z.string().nullable(),
-  project: z.string().nullable(),
+  dimensions: z
+    .record(z.string(), z.string())
+    .describe('SIE dimension tags, {"<dim_no>": "<code>"}: "1" kostnadsställe, "6" projekt, 20+ custom. {} when untagged.'),
+  cost_center: z.string().nullable().describe('Mirror of dimensions["1"].'),
+  project: z.string().nullable().describe('Mirror of dimensions["6"].'),
 })
 
 const JournalEntryDetail = JournalEntrySummary.extend({
@@ -352,19 +358,26 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
           source_type: input.source_type ?? 'manual',
           source_id: input.source_id ?? null,
           notes: input.notes ?? null,
-          lines: input.lines.map((l, i) => ({
-            sort_order: i,
-            account_number: l.account_number,
-            debit_amount: l.debit_amount,
-            credit_amount: l.credit_amount,
-            line_description: l.line_description ?? null,
-            currency: l.currency ?? null,
-            amount_in_currency: l.amount_in_currency ?? null,
-            exchange_rate: l.exchange_rate ?? null,
-            tax_code: l.tax_code ?? null,
-            cost_center: l.cost_center ?? null,
-            project: l.project ?? null,
-          })),
+          lines: input.lines.map((l, i) => {
+            // The bag the engine stores (the explicit bag wins over the
+            // cost_center/project aliases), with the mirrors read from it
+            // as the generated columns will be.
+            const dimensions = normalizeLineDimensions(l)
+            return {
+              sort_order: i,
+              account_number: l.account_number,
+              debit_amount: l.debit_amount,
+              credit_amount: l.credit_amount,
+              line_description: l.line_description ?? null,
+              currency: l.currency ?? null,
+              amount_in_currency: l.amount_in_currency ?? null,
+              exchange_rate: l.exchange_rate ?? null,
+              tax_code: l.tax_code ?? null,
+              dimensions,
+              cost_center: dimensions[DIM_COST_CENTER] ?? null,
+              project: dimensions[DIM_PROJECT] ?? null,
+            }
+          }),
           totals: { debit: balance.totalDebit, credit: balance.totalCredit },
         },
         { requestId: ctx.requestId, log: ctx.log },

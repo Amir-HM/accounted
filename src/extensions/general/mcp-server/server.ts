@@ -139,6 +139,7 @@ import {
 } from '@/lib/reports/kpi'
 import { KPI_REPORT_OUTPUT_SCHEMA, parseKpiMetrics, pickKpiMetrics } from './kpi-report'
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
+import { dimensionFilterPartialView } from '@/lib/reports/dimension-filter'
 import {
   detectMomsredovisning,
   rutorFromTotals,
@@ -9638,7 +9639,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_get_trial_balance',
     keywords: ['råbalans', 'saldobalans'],
     title: 'Trial Balance (Råbalans)',
-    description: 'Trial balance (huvudbok) for a fiscal period: all account balances with debit/credit totals. Defaults to most recent period. Optional dimensions filter scopes to tagged lines (kostnadsställe/projekt).',
+    description: 'Saldobalans for a period (default: latest): balances and debit/credit totals. A dimensions filter gives partial_view: tagged lines only, no IB, is_balanced meaningless.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9659,6 +9660,7 @@ export const tools: McpTool[] = [
         period_end: { type: 'string' },
         account_count: { type: 'number' },
         ...DIMENSION_FILTER_OUTPUT_PROPS,
+        partial_view: { type: 'object' },
       },
       required: ['rows', 'total_debit', 'total_credit', 'is_balanced'],
     },
@@ -9712,6 +9714,13 @@ export const tools: McpTool[] = [
         period_start: period.period_start,
         period_end: period.period_end,
         account_count: rows.length,
+        // Saldobalans is not a filterable report on the dashboard. The
+        // filter stays because agents read it as P&L per project, but the
+        // answer must say what it is: tagged lines only, no IB (company-
+        // wide), and a balance check that tagged lines need not pass.
+        ...(dimFilter.filter
+          ? { partial_view: dimensionFilterPartialView(dimFilter.filter, { dropsOpeningBalances: true, balanceCheck: true }) }
+          : {}),
         ...(dimFilter.filter ? { dimension_filter: dimFilter.filter } : {}),
         ...(dimFilter.resolutions.length > 0 ? { dimension_resolutions: dimFilter.resolutions } : {}),
       }
