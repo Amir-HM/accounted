@@ -308,6 +308,7 @@ import { decodeToolArgs } from './unicode-escape-guard'
 import { findSupplierCandidates, type SupplierRow } from './supplier-candidates'
 import { creditNoteHandoff } from './inbox-credit-note'
 import { resolveInboxKind } from '@/lib/documents/inbox-kind'
+import { isPeriodLocked } from '@/lib/documents/underlag-import'
 import { resolveInboxCreditTarget } from '@/lib/supplier-invoices/credit-target'
 import { CreditSupplierInvoiceInputSchema, creditSupplierInvoice } from '@/lib/supplier-invoices/credit'
 import { throwOutcomeFailure } from '@/lib/operations/errors'
@@ -1615,6 +1616,80 @@ async function resolveJournalEntryRef(
   return matches[0].id
 }
 
+// ── Document links into locked periods ───────────────────────
+
+/**
+ * A fiscal period holding rows gnubok_link_documents_to_vouchers leaves
+ * unstaged because enforce_period_lock_documents refuses the link there.
+ * reopen_tool is the way back for that state: unlock a locked year, reopen a
+ * year marked closed in the previous system (klarmarkerat); a year closed by
+ * a year-end run here is never reopened, so it has none.
+ */
+interface LockedLinkPeriod {
+  fiscal_period_id: string
+  fiscal_year: number
+  status: 'locked' | 'closed'
+  row_count: number
+  reopen_tool: 'gnubok_unlock_period' | 'gnubok_reopen_fiscal_period_external' | null
+}
+
+function lockedLinkPeriod(
+  period: { id: string; is_closed: boolean; closed_externally: boolean | null; closing_entry_id: string | null },
+  fiscalYear: number,
+  rowCount: number,
+): LockedLinkPeriod {
+  const reopenTool = !period.is_closed
+    ? 'gnubok_unlock_period'
+    : period.closed_externally && !period.closing_entry_id
+      ? 'gnubok_reopen_fiscal_period_external'
+      : null
+  return {
+    fiscal_period_id: period.id,
+    fiscal_year: fiscalYear,
+    status: period.is_closed ? 'closed' : 'locked',
+    row_count: rowCount,
+    reopen_tool: reopenTool,
+  }
+}
+
+/**
+ * Staging refusal for a batch with nothing left to stage when rows sit in
+ * locked or closed periods. Staging such a batch only moved the refusal to
+ * approval: feedback seq 754875 previewed 142 of 142 as matched, and every row
+ * was refused after approval because the years had been klarmarkerade (closed
+ * and locked) 30 minutes before staging.
+ */
+function lockedPeriodLinkError(total: number, periods: LockedLinkPeriod[], otherMisses: unknown[]): Error {
+  const rows = (n: number) => `${n} ${n === 1 ? 'row' : 'rows'}`
+  const lockedRows = periods.reduce((sum, p) => sum + p.row_count, 0)
+  const perPeriod = periods.map((p) => {
+    const state = p.reopen_tool === 'gnubok_unlock_period'
+      ? 'is locked: unlock it with gnubok_unlock_period'
+      : p.reopen_tool === 'gnubok_reopen_fiscal_period_external'
+        ? 'is marked closed in the previous system: reopen it with gnubok_reopen_fiscal_period_external'
+        : 'was closed by a year-end run here and cannot be reopened'
+    return `fiscal_year ${p.fiscal_year} (fiscal_period_id ${p.fiscal_period_id}, ${rows(p.row_count)}) ${state}.`
+  })
+  const reopenable = periods.filter((p) => p.reopen_tool !== null)
+  const message =
+    `No links staged: ${lockedRows} of ${total} rows target verifikat in a locked or closed fiscal period, ` +
+    `where the database refuses to attach documents. ${perPeriod.join(' ')}` +
+    (reopenable.length > 0 ? ' Then stage those links again, and lock or klarmarkera the year again once they are linked.' : '') +
+    (otherMisses.length > 0 ? ` ${rows(otherMisses.length)} more did not resolve either; first: ${JSON.stringify(otherMisses[0])}` : '')
+  const first = reopenable[0]
+  return Object.assign(new Error(message), {
+    code: 'DOC_UPLOAD_PERIOD_LOCKED',
+    remediation: {
+      description:
+        'Reopen the year, stage the links again, then lock or klarmarkera it again: gnubok_reopen_fiscal_period_external ' +
+        'for a year marked closed in the previous system, gnubok_unlock_period for a locked year that is not closed. ' +
+        'A year closed by a year-end run here cannot be reopened.',
+      ...(first ? { tool: first.reopen_tool } : {}),
+      ...(first && reopenable.length === 1 ? { args: { fiscal_period_id: first.fiscal_period_id } } : {}),
+    },
+  })
+}
+
 // ── Shared categorization logic ──────────────────────────────
 
 // ── Lock-period staging guard ────────────────────────────────────────────────
@@ -2274,12 +2349,17 @@ async function defaultTeamForUser(supabase: SupabaseClient, userId: string): Pro
   return (data?.team_id as string | undefined) ?? null
 }
 
-function paginatedSchema(itemsKey: string, itemSchema: Record<string, unknown> = { type: 'object' }) {
+function paginatedSchema(
+  itemsKey: string,
+  itemSchema: Record<string, unknown> = { type: 'object' },
+  extraProperties: Record<string, unknown> = {},
+) {
   return {
     type: 'object',
     properties: {
       [itemsKey]: { type: 'array', items: itemSchema },
       ...PAGINATION_PROPS,
+      ...extraProperties,
     },
     required: [itemsKey, 'count', 'total_count', 'has_more'],
   } as const
@@ -7291,6 +7371,8 @@ export const tools: McpTool[] = [
         source_type: { type: 'string' },
         gross_amount: { type: 'number' },
       },
+    }, {
+      waiver_tool: { type: 'string', description: 'Stages "Inget underlag krävs" for a verifikat with no external underlag by nature. Never for a missing receipt.' },
     }),
     annotations: ANNOTATIONS_READ_ONLY,
     // Search-only (issue #2748, paying for the draft-invoice writes): the
@@ -7332,7 +7414,12 @@ export const tools: McpTool[] = [
 
       const rows = result.verifikat ?? []
       const total = result.total_count ?? 0
-      return { verifikat: rows, ...pageTail(rows, total, offset) }
+      // Waivers are respected here, so an agent acting on these rows needs the
+      // tool that writes one: without its name one guessed six names in nine
+      // seconds (feedback seq 706722). A response field also reaches callers
+      // sent here by a hint, who need not have read the description, and
+      // costs nothing in tools/list.
+      return { verifikat: rows, ...pageTail(rows, total, offset), waiver_tool: 'gnubok_mark_no_document_required' }
     },
   },
 
@@ -16185,18 +16272,25 @@ export const tools: McpTool[] = [
       // ── Resolve fiscal_year → fiscal_period_id. A "fiscal_year" here means
       //    the calendar year the period STARTS in; broken (non-calendar)
       //    fiscal years or a company with >1 period starting the same year
-      //    are surfaced as a per-row miss rather than guessed at.
+      //    are surfaced as a per-row miss rather than guessed at. The lock
+      //    columns feed the period_locked check below; closed_externally and
+      //    closing_entry_id decide which tool reopens the year.
       const { data: periods, error: periodsError } = await supabase
         .from('fiscal_periods')
-        .select('id, period_start, period_end')
+        .select('id, period_start, period_end, is_closed, locked_at, closed_externally, closing_entry_id')
         .eq('company_id', companyId)
       if (periodsError) throw dbError(periodsError)
 
-      const periodsByYear = new Map<number, Array<{ id: string; period_start: string; period_end: string }>>()
+      type LinkPeriod = {
+        id: string; period_start: string; period_end: string
+        is_closed: boolean; locked_at: string | null
+        closed_externally: boolean | null; closing_entry_id: string | null
+      }
+      const periodsByYear = new Map<number, LinkPeriod[]>()
       for (const p of periods ?? []) {
         const year = new Date(p.period_start as string).getUTCFullYear()
         const bucket = periodsByYear.get(year) ?? []
-        bucket.push(p as { id: string; period_start: string; period_end: string })
+        bucket.push(p as LinkPeriod)
         periodsByYear.set(year, bucket)
       }
 
@@ -16260,7 +16354,7 @@ export const tools: McpTool[] = [
         voucher_number: number
         fiscal_year: number
         status: 'matched' | 'ambiguous_fiscal_year' | 'unknown_fiscal_year' | 'document_not_found'
-          | 'voucher_not_found' | 'already_linked' | 'duplicate_in_batch'
+          | 'voucher_not_found' | 'already_linked' | 'duplicate_in_batch' | 'period_locked'
         document_file_name?: string
         journal_entry_id?: string
         voucher_label?: string
@@ -16308,6 +16402,7 @@ export const tools: McpTool[] = [
       // the first (the WORM guard only blocks posted targets). Reject the
       // repeat here instead of staging a batch whose outcome depends on order.
       const seenDocumentIds = new Set<string>()
+      const lockedByPeriod = new Map<string, { period: LinkPeriod; fiscalYear: number; rows: number }>()
 
       for (const l of rawLinks) {
         if (seenDocumentIds.has(l.document_id)) {
@@ -16341,14 +16436,23 @@ export const tools: McpTool[] = [
           results.push({ ...rowKey(l), status: 'already_linked', document_file_name: doc.file_name })
           continue
         }
-        results.push({
-          ...rowKey(l),
-          status: 'matched',
+        const target = {
           document_file_name: doc.file_name,
           journal_entry_id: je.id,
           voucher_label: `${je.voucher_series ?? l.voucher_series}${je.voucher_number ?? l.voucher_number}`,
           voucher_date: je.entry_date,
-        })
+        }
+        // enforce_period_lock_documents refuses a link into a closed or locked
+        // period, so staging the row only moves its refusal to approval. The
+        // verifikat sits in `period` by construction (jesByKey is keyed on it).
+        if (isPeriodLocked(period)) {
+          results.push({ ...rowKey(l), status: 'period_locked', ...target })
+          const locked = lockedByPeriod.get(period.id) ?? { period, fiscalYear: l.fiscal_year, rows: 0 }
+          locked.rows += 1
+          lockedByPeriod.set(period.id, locked)
+          continue
+        }
+        results.push({ ...rowKey(l), status: 'matched', ...target })
         matchedLinks.push({
           document_id: l.document_id,
           journal_entry_id: je.id,
@@ -16358,22 +16462,33 @@ export const tools: McpTool[] = [
 
       const matchedCount = matchedLinks.length
       const missedCount = results.length - matchedCount
+      const lockedPeriods = [...lockedByPeriod.values()].map((p) => lockedLinkPeriod(p.period, p.fiscalYear, p.rows))
+      const lockedCount = lockedPeriods.reduce((sum, p) => sum + p.row_count, 0)
 
       if (matchedCount === 0) {
+        if (lockedCount > 0) {
+          throw lockedPeriodLinkError(rawLinks.length, lockedPeriods, results.filter((r) => r.status !== 'period_locked'))
+        }
         throw new Error(
           `No links resolved: 0/${rawLinks.length} matched a real document + voucher. ` +
           `First miss: ${JSON.stringify(results[0])}`
         )
       }
 
+      const titleNotes = [
+        ...(lockedCount > 0 ? [`${lockedCount} i låst period`] : []),
+        ...(missedCount - lockedCount > 0 ? [`${missedCount - lockedCount} utan träff`] : []),
+      ]
       return stagePendingOperation(
         supabase, companyId, userId, 'link_documents_to_vouchers',
-        `Koppla ${matchedCount} bilagor till verifikat${missedCount > 0 ? ` (${missedCount} utan träff)` : ''}`,
+        `Koppla ${matchedCount} bilagor till verifikat${titleNotes.length > 0 ? ` (${titleNotes.join(', ')})` : ''}`,
         { links: matchedLinks },
         {
           total: rawLinks.length,
           matched_count: matchedCount,
           missed_count: missedCount,
+          period_locked_count: lockedCount,
+          ...(lockedPeriods.length > 0 ? { locked_periods: lockedPeriods } : {}),
           results,
         },
         actor,
