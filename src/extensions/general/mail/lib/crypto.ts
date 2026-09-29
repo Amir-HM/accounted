@@ -143,8 +143,18 @@ export function createOAuthFlow(userId: string, companyId: string): { state: str
   const codeVerifier = crypto.randomBytes(32).toString('base64url')
   return {
     state: createOAuthState(userId, companyId, codeVerifier),
-    codeChallenge: crypto.createHash('sha256').update(codeVerifier).digest('base64url'),
+    codeChallenge: pkceS256Challenge(codeVerifier),
   }
+}
+
+/**
+ * The S256 transform of RFC 7636 section 4.2:
+ * BASE64URL-ENCODE(SHA256(ASCII(code_verifier))). A single SHA-256 is what
+ * the standard prescribes: the verifier is 32 random bytes, not a password,
+ * so a slow password hash would buy nothing and break the protocol.
+ */
+export function pkceS256Challenge(codeVerifier: string): string {
+  return crypto.createHash('sha256').update(codeVerifier, 'ascii').digest('base64url')
 }
 
 export function verifyOAuthState(

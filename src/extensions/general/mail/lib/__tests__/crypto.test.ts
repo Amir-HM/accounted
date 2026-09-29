@@ -8,9 +8,11 @@ import crypto from 'crypto'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   MailTokenKeyError,
+  createOAuthFlow,
   createOAuthState,
   decryptToken,
   encryptToken,
+  pkceS256Challenge,
   shouldReseal,
   verifyOAuthState,
 } from '../crypto'
@@ -114,5 +116,24 @@ describe('fail closed', () => {
     const state = createOAuthState('user-1', 'company-1')
     vi.stubEnv('MAIL_TOKEN_ENCRYPTION_KEY', KEY_B)
     expect(verifyOAuthState(state)).toBeNull()
+  })
+})
+
+describe('PKCE (RFC 7636)', () => {
+  it('matches the S256 example of RFC 7636 appendix B', () => {
+    expect(pkceS256Challenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk')).toBe(
+      'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    )
+  })
+
+  it('seals a fresh 43-character verifier in the state and sends only its challenge', () => {
+    const first = createOAuthFlow('user-1', 'company-1')
+    const second = createOAuthFlow('user-1', 'company-1')
+
+    const verified = verifyOAuthState(first.state)
+    expect(verified).toMatchObject({ userId: 'user-1', companyId: 'company-1' })
+    expect(verified?.codeVerifier).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(first.codeChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(first.codeChallenge).not.toBe(second.codeChallenge)
   })
 })
