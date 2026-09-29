@@ -255,7 +255,7 @@ registerEndpoint({
     'Every account_number must resolve in the company\'s chart of accounts: a standard BAS 2026 account that is not in the chart yet is added automatically, but a deactivated account, or a non-BAS number the chart does not contain, fails with ACCOUNTS_NOT_IN_CHART.',
     'voucher_series defaults to "A" if omitted. Must be a single uppercase letter.',
     'This creates a DRAFT only: call POST /{id}/commit to assign the voucher_number and post atomically, or DELETE /{id} to discard it. A draft left uncommitted blocks the year-end close (DRAFT_ENTRIES).',
-    'source_type is "manual" (the default) or "import" (history replayed from another system). Every other source type belongs to its own endpoint (invoices, supplier invoices, transactions, opening balances, VAT settlement, year-end) and is refused with 400 VALIDATION_ERROR.',
+    'source_type defaults to "manual". A business source type may label your own vouchers (e.g. "webshop_order", "bank_transaction", "invoice_created"), and "import" marks history replayed from another system. Engine-owned types exempt from the dimension rules (opening_balance, year_end, result_appropriation, currency_revaluation, storno, correction, credit_note, supplier_credit_note, system, accrual, vat_settlement, rot_rut_payout, rot_rut_reclaim, expense_payout, stripe_payout) are refused with 400 VALIDATION_ERROR: they belong to their own endpoints.',
   ],
   example: {
     request: {

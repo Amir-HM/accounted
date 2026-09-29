@@ -65,7 +65,7 @@ registerEndpoint({
     'Idempotency-Key is mandatory and covers the WHOLE batch.',
     'all_or_nothing: true returns 501 NOT_IMPLEMENTED. Today only partial-success batches exist.',
     'Each entry must balance independently. Per-item JOURNAL_ENTRY_NOT_BALANCED appears in the results array.',
-    'source_type is "manual" (the default) or "import" (history replayed from another system). Any other value fails the whole batch with 400 VALIDATION_ERROR: those source types belong to their own endpoints.',
+    'source_type follows the single POST: "manual" by default, a business source type or "import" (history replayed from another system). An engine-owned, rule-exempt type (e.g. opening_balance, storno, accrual, system) fails the whole batch with 400 VALIDATION_ERROR.',
   ],
   example: {
     request: {

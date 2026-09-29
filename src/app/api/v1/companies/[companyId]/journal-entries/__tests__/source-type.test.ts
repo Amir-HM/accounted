@@ -1,10 +1,12 @@
 /**
  * The v1 voucher doors (POST /journal-entries and /journal-entries/batch-create)
- * accept only the source types a caller may author: 'manual' (the default)
- * and 'import' for history replayed from another system. Every other label
- * belongs to a dedicated producer; accepting it let a business voucher claim
- * that type's dimension-policy exemption ('system' skips every rule, 'accrual'
- * skips registry validation) and show a false source in the ledger.
+ * accept every source type the dimension-rule policy enforces (integrations
+ * label their own business vouchers, e.g. a webshop integration posts
+ * 'webshop_order'), plus 'import' for history replayed from another system.
+ * The rule-exempt, engine-owned types are refused: accepting them let a
+ * business voucher claim that type's dimension-policy exemption ('system'
+ * skips every rule, 'accrual' skips registry validation) and show a false
+ * source in the ledger.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -87,13 +89,16 @@ const ENGINE_OWNED = [
   'storno',
   'correction',
   'year_end',
+  'result_appropriation',
   'currency_revaluation',
   'credit_note',
   'supplier_credit_note',
   'opening_balance',
   'vat_settlement',
-  'invoice_paid',
-  'salary_payment',
+  'rot_rut_payout',
+  'rot_rut_reclaim',
+  'expense_payout',
+  'stripe_payout',
 ]
 
 function makeRequest(path: string, body: unknown, { auth = true } = {}): Request {
@@ -141,9 +146,26 @@ describe('POST /api/v1/companies/:companyId/journal-entries: source_type', () =>
     expect(res.status).toBe(400)
     expect(body.error.code).toBe('VALIDATION_ERROR')
     const issue = body.error.details?.issues?.find((i) => i.field === 'source_type')
-    expect(issue?.message).toContain('"manual" eller "import"')
+    expect(issue?.message).toContain('motorägd källtyp')
+    expect(issue?.message).toContain('Tillåtna värden: manual,')
+    expect(issue?.message).toContain('webshop_order')
     expect(mockCreateDraft).not.toHaveBeenCalled()
   })
+
+  it.each(['webshop_order', 'bank_transaction', 'invoice_created', 'salary_payment'])(
+    'keeps accepting the business label %s an integration puts on its own voucher',
+    async (sourceType) => {
+      const res = await createDraft(makeRequest('', { ...ENTRY, source_type: sourceType }), routeParams)
+
+      expect(res.status).toBe(201)
+      expect(mockCreateDraft).toHaveBeenCalledWith(
+        expect.anything(),
+        COMPANY_ID,
+        'user-1',
+        expect.objectContaining({ source_type: sourceType })
+      )
+    }
+  )
 
   it('returns 404 when the fiscal period is not the company\'s', async () => {
     mockOwnsPeriod.mockResolvedValue(false)
@@ -199,7 +221,7 @@ describe('POST /api/v1/companies/:companyId/journal-entries/batch-create: source
     expect(res.status).toBe(400)
     expect(body.error.code).toBe('VALIDATION_ERROR')
     const issue = body.error.details?.issues?.find((i) => i.field === 'journal_entries.1.source_type')
-    expect(issue?.message).toContain('"manual" eller "import"')
+    expect(issue?.message).toContain('motorägd källtyp')
     expect(mockCreateDraft).not.toHaveBeenCalled()
   })
 
@@ -211,20 +233,21 @@ describe('POST /api/v1/companies/:companyId/journal-entries/batch-create: source
     expect(mockCreateDraft).not.toHaveBeenCalled()
   })
 
-  it('creates manual and import drafts', async () => {
+  it('creates manual, import and business-labelled drafts', async () => {
     const res = await batchCreate(
       makeRequest('/batch-create', {
-        journal_entries: [ENTRY, { ...ENTRY, source_type: 'import' }],
+        journal_entries: [ENTRY, { ...ENTRY, source_type: 'import' }, { ...ENTRY, source_type: 'webshop_order' }],
       }),
       routeParams,
     )
     const body = (await res.json()) as { data: { summary: { succeeded: number } } }
 
     expect(res.status).toBe(200)
-    expect(body.data.summary.succeeded).toBe(2)
+    expect(body.data.summary.succeeded).toBe(3)
     expect(mockCreateDraft.mock.calls.map((call) => (call[3] as { source_type: string }).source_type)).toEqual([
       'manual',
       'import',
+      'webshop_order',
     ])
   })
 })

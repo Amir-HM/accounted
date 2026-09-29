@@ -24,6 +24,7 @@ import {
 } from '../dimension-rules'
 import {
   API_VOUCHER_SOURCE_TYPES,
+  CreateApiJournalEntrySchema,
   DASHBOARD_VOUCHER_SOURCE_TYPES,
   JournalEntrySourceTypeSchema,
 } from '@/lib/api/schemas'
@@ -349,6 +350,26 @@ describe('dimension rule policy per source type', () => {
     expect(DASHBOARD_VOUCHER_SOURCE_TYPES.filter((t) => isDimensionRuleExemptSource(t))).toEqual([
       'vat_settlement',
     ])
+  })
+
+  it('opens the v1 voucher doors to exactly the enforced source types plus import', () => {
+    // Classified once in DIMENSION_RULE_POLICY, followed by the API: a new
+    // enforced type becomes postable, a new exempt type is refused.
+    const body = (sourceType: string) => ({
+      fiscal_period_id: '550e8400-e29b-41d4-a716-446655440000',
+      entry_date: '2026-05-12',
+      description: 'Verifikat',
+      source_type: sourceType,
+      lines: [
+        { account_number: '6570', debit_amount: 50, credit_amount: 0 },
+        { account_number: '1930', debit_amount: 0, credit_amount: 50 },
+      ],
+    })
+    const accepted = JournalEntrySourceTypeSchema.options.filter(
+      (sourceType) => CreateApiJournalEntrySchema.safeParse(body(sourceType)).success
+    )
+    expect([...accepted].sort()).toEqual([...ENFORCED, 'import'].sort())
+    expect([...API_VOUCHER_SOURCE_TYPES].sort()).toEqual([...ENFORCED, 'import'].sort())
   })
 
   it('keeps the registry-validation exemption a narrow subset of the rule exemption', () => {
