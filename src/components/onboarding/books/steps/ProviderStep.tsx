@@ -117,13 +117,27 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     (reason) => { setError(getErrorMessage(reason, { locale })); setPhase('connect') },
   )
 
+  // The login popup belongs to this step. Leaving it (SIE instead, Tillbaka)
+  // closes the popup and drops a connect still in flight: a login finished
+  // there would otherwise post its success to the next step's own listener
+  // (SieStep runs the registers on it), and pointWindow with a closed popup
+  // sends the main window to the provider.
+  const login = useRef<{ popup: Window | null; left: boolean }>({ popup: null, left: false })
+  useEffect(() => {
+    const l = login.current
+    l.left = false
+    return () => { l.left = true; l.popup?.close() }
+  }, [])
+
   async function connect() {
     if (!providerId) return
     setError(null)
     setPhase('connecting')
     const popup = openProviderWindow()
+    login.current.popup = popup
     try {
       const r = await providerConnect(providerId)
+      if (login.current.left) return
       setConsentId(r.consentId)
       if (r.alreadyConnected) { popup?.close(); void loadPreview(r.consentId); return }
       if (r.authType === 'oauth' && r.authUrl) { pointWindow(popup, r.authUrl); return }
@@ -331,7 +345,11 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
           <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => dispatch({ type: 'PICK_SIE' })}>
             {t('provider_sie_instead')}
           </Button>
-          <p className="brandhint">{t('provider_sie_instead_note', { provider: provName })}</p>
+          <p className="brandhint">
+            {BRANCH_PROVIDERS.some((p) => p.id === providerId)
+              ? t('provider_sie_instead_note', { provider: provName })
+              : t('provider_sie_instead_note_generic')}
+          </p>
         </div>
       ) : null}
       {phase === 'loading' ? <Wait text={t('provider_reading', { provider: provName })} /> : null}

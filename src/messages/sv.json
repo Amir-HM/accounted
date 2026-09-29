@@ -10393,6 +10393,7 @@
     "provider_login": "Logga in hos {provider}",
     "provider_sie_instead": "Ladda upp SIE-fil i stället",
     "provider_sie_instead_note": "Med en SIE-fil kommer verifikaten med, underlagen laddar du upp efteråt och fakturorna stannar i {provider}.",
+    "provider_sie_instead_note_generic": "Med en SIE-fil kommer verifikaten med, underlagen laddar du upp efteråt och fakturorna stannar i det gamla systemet.",
     "provider_connecting": "Ansluter till {provider} …",
     "provider_reading": "Läser av {provider} …",
     "provider_connected": "{provider} är ansluten.",
