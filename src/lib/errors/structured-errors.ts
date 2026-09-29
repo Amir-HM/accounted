@@ -5998,6 +5998,33 @@ const DIMENSION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Import av befintliga dimensionskoder misslyckades.',
     message_en: 'Failed to import existing dimension codes from journal lines.',
   },
+  // Account dimension rules (lib/dimensions/rules-service.ts, operations
+  // dimension-rules.*): one set of codes for the dashboard, v1 and MCP.
+  DIMENSION_RULE_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Regeln finns inte.',
+    message_en: 'Account dimension rule not found in this company.',
+  },
+  DIMENSION_RULE_EXISTS: {
+    httpStatus: 409,
+    message_sv: 'Kontot har redan en regel för den dimensionen.',
+    message_en:
+      'The account already has a rule for that dimension (one rule per account and dimension): update the existing rule instead.',
+  },
+  DIMENSION_VALUE_ARCHIVED: {
+    httpStatus: 400,
+    message_sv: 'Värdet är arkiverat: återaktivera det innan det används i en regel.',
+    message_en: 'The dimension value is archived: reactivate it (PATCH the value with is_active true) before a rule uses it.',
+  },
+  // A retag of posted lines (lib/dimensions/retag-service.ts) where the RPC
+  // refused every line. Partial success is not an error: each line is its
+  // own transaction and the refused ones are listed.
+  DIMENSION_RETAG_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Ingen rad kunde taggas om.',
+    message_en:
+      'No line could be retagged: every line was refused. details.failed names each line and why (locked or closed period, lock date, a draft, a code missing from the registry or archived, a line of another company).',
+  },
 }
 
 // ─────────────────────────────────────────────────────────────────

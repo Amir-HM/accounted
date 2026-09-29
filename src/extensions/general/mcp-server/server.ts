@@ -242,6 +242,12 @@ import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/cre
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import { CreateDimensionValueParamsSchema } from '@/lib/pending-operations/schemas/dimension-value'
 import { RetagLineDimensionsParamsSchema, RETAG_MAX_LINES } from '@/lib/pending-operations/schemas/retag-line-dimensions'
+import {
+  dimensionsLabel,
+  resultingDimensions,
+  sameDimensions,
+  storedDimensions,
+} from '@/lib/dimensions/retag-service'
 import { UpdateCustomerParamsSchema } from '@/lib/pending-operations/schemas/customer'
 import {
   CreateRecurringScheduleParamsSchema,
@@ -10970,12 +10976,16 @@ export const tools: McpTool[] = [
     name: 'gnubok_list_dimensions',
     keywords: ['dimensioner', 'kostnadsställe', 'projekt', 'resultatenhet'],
     title: 'List Dimensions (Kostnadsställe/Projekt)',
-    description: 'List the dimension registry with values: 1 = kostnadsställe, 6 = projekt, plus custom dims. Call before tagging voucher lines via the dimensions bag on gnubok_create_voucher. System dims are seeded on first call.',
+    description: 'List the dimension registry with values: 1 = kostnadsställe, 6 = projekt, plus custom dims. Call before tagging voucher lines via the dimensions bag on gnubok_create_voucher.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {},
     },
+    // The item schemas are open (no additionalProperties: false): a client
+    // validates against the tools/list it cached, and a closed item would
+    // make every session connected before a new field shipped refuse the
+    // response (output-schema.test.ts has the incident).
     outputSchema: {
       type: 'object',
       properties: {
@@ -10984,12 +10994,12 @@ export const tools: McpTool[] = [
           description: 'Registry entries keyed by sie_dim_no (the dims-bag key), each with its values. code = what goes in the bag; is_active false = archived (unusable on new lines).',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'Deprecated: read dimension_id instead' },
               dimension_id: { type: 'string' },
               sie_dim_no: { type: 'number' },
               name: { type: 'string' },
+              parent_sie_dim_no: { type: 'number', description: 'Sub-dimensions (#UNDERDIM) only.' },
               resets_annually: { type: 'boolean' },
               is_system: { type: 'boolean' },
               is_active: { type: 'boolean' },
@@ -10998,7 +11008,6 @@ export const tools: McpTool[] = [
                 type: 'array',
                 items: {
                   type: 'object',
-                  additionalProperties: false,
                   properties: {
                     id: { type: 'string', description: 'Deprecated: read dimension_value_id instead' },
                     dimension_value_id: { type: 'string' },
@@ -11028,12 +11037,16 @@ export const tools: McpTool[] = [
       openWorldHint: false,
     },
     async execute(_args, companyId, _userId, supabase) {
-      await ensureCompanyDimensions(supabase, companyId)
+      // The dashboard's and v1's registry read: seeds the system dims and
+      // pages the values past PostgREST's 1000-row cap.
       const dimensions = await fetchDimensionRegistry(supabase, companyId)
       return {
-        dimensions: dimensions.map((d) => ({
+        dimensions: dimensions.map(({ parent_sie_dim_no, ...d }) => ({
           ...d,
           dimension_id: d.id,
+          // Only on a sub-dimension: a session that cached the old, closed
+          // item schema keeps accepting every top-level dimension.
+          ...(parent_sie_dim_no != null ? { parent_sie_dim_no } : {}),
           values: d.values.map((v) => ({ ...v, dimension_value_id: v.id })),
         })),
       }
@@ -11053,7 +11066,8 @@ export const tools: McpTool[] = [
         sie_dim_no: { type: 'number', description: '1 = kostnadsställe, 6 = projekt, or a custom dim from gnubok_list_dimensions.' },
         query: { type: 'string', description: 'Optional fuzzy search over code + name, ranked by confidence.' },
         include_inactive: { type: 'boolean', description: 'Include archived values (default false).' },
-        limit: { type: 'number', description: 'Max results, 1-200 (default 50).' },
+        limit: { type: 'number', description: 'Page size, 1-200 (default 50).' },
+        offset: { type: 'integer', minimum: 0, description: 'Values to skip (next_offset of the previous page).' },
       },
       required: ['sie_dim_no'],
     },
@@ -11091,9 +11105,9 @@ export const tools: McpTool[] = [
             required: ['id', 'dimension_value_id', 'code', 'name', 'is_active', 'start_date', 'end_date'],
           },
         },
-        count: { type: 'number' },
+        ...PAGINATION_PROPS,
       },
-      required: ['dimension', 'values', 'count'],
+      required: ['dimension', 'values', 'count', 'total_count', 'has_more'],
     },
     annotations: ANNOTATIONS_READ_ONLY,
     async execute(args, companyId, _userId, supabase) {
@@ -11103,6 +11117,7 @@ export const tools: McpTool[] = [
       }
       const includeInactive = args.include_inactive === true
       const limit = Math.min(Math.max(1, Number(args.limit) || 50), 200)
+      const offset = Math.max(0, Math.floor(Number(args.offset) || 0))
       const query = typeof args.query === 'string' ? args.query.trim() : ''
 
       await ensureCompanyDimensions(supabase, companyId)
@@ -11120,44 +11135,44 @@ export const tools: McpTool[] = [
         )
       }
 
-      let valuesQuery = supabase
-        .from('dimension_values')
-        .select('id, code, name, is_active, start_date, end_date')
-        .eq('company_id', companyId)
-        .eq('dimension_id', dimension.id)
-        .order('code', { ascending: true })
-      if (!includeInactive) valuesQuery = valuesQuery.eq('is_active', true)
-
-      const { data: rows, error: valuesError } = await valuesQuery
-      if (valuesError) throw dbError(valuesError)
-      const all = (rows ?? []) as Array<{
+      // Every value of the dimension, paged past PostgREST's 1000-row cap: the
+      // fuzzy ranking needs the whole set, and a plain listing must not stop
+      // silently at row 1000. The page is cut from the ordered or ranked set.
+      type ValueRow = {
         id: string
         code: string
         name: string
         is_active: boolean
         start_date: string | null
         end_date: string | null
-      }>
-
-      const qualifiedDimension = { ...dimension, dimension_id: dimension.id }
-
-      if (!query) {
-        const values = all.slice(0, limit).map((v) => ({ ...v, dimension_value_id: v.id }))
-        return { dimension: qualifiedDimension, values, count: values.length }
       }
+      const all = await fetchAllRows<ValueRow>(({ from, to }) => {
+        let valuesQuery = supabase
+          .from('dimension_values')
+          .select('id, code, name, is_active, start_date, end_date')
+          .eq('company_id', companyId)
+          .eq('dimension_id', dimension.id)
+        if (!includeInactive) valuesQuery = valuesQuery.eq('is_active', true)
+        return valuesQuery.order('code', { ascending: true }).order('id', { ascending: true }).range(from, to)
+      })
 
       // Fuzzy ranking: same fuse.js setup as the resolve step so what this
       // tool shows matches what a dims bag would resolve to.
-      const fuse = new Fuse(all, { keys: ['code', 'name'], includeScore: true, threshold: 0.4 })
-      const values = fuse
-        .search(query)
-        .slice(0, limit)
-        .map((hit) => ({
-          ...hit.item,
-          dimension_value_id: hit.item.id,
-          confidence: roundOre(1 - (hit.score ?? 1)),
-        }))
-      return { dimension: qualifiedDimension, values, count: values.length }
+      const matches: Array<ValueRow & { confidence?: number }> = query
+        ? new Fuse(all, { keys: ['code', 'name'], includeScore: true, threshold: 0.4 })
+            .search(query)
+            .map((hit) => ({ ...hit.item, confidence: roundOre(1 - (hit.score ?? 1)) }))
+        : all
+      const values = matches.slice(offset, offset + limit).map((v) => ({ ...v, dimension_value_id: v.id }))
+      const hasMore = offset + values.length < matches.length
+      return {
+        dimension: { ...dimension, dimension_id: dimension.id },
+        values,
+        count: values.length,
+        total_count: matches.length,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: offset + values.length } : {}),
+      }
     },
   },
 
@@ -11290,13 +11305,18 @@ export const tools: McpTool[] = [
         dimensions: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Dimensions bag applied to every matched line, REPLACING its current bag: {"<sie_dim_no>":"<kod eller namn>"}, e.g. {"6":"P01"}. Values may be registry codes or names: resolved server-side (resolve-don\'t-select).',
+          description: 'Pairs set on every matched line: {"<sie_dim_no>":"<kod eller namn>"}, e.g. {"6":"P01"}. Codes or names, resolved server-side.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['merge', 'replace'],
+          description: "merge (default) keeps each line's other dimensions; replace makes its bag exactly `dimensions`.",
         },
         reason: {
           type: 'string',
           minLength: 3,
           maxLength: 500,
-          description: 'Why the lines are retagged: stored per line in the immutable dimension_retag_log.',
+          description: 'Why: stored per line in the immutable dimension_retag_log.',
         },
         filters: {
           type: 'object',
@@ -11309,7 +11329,7 @@ export const tools: McpTool[] = [
             date_from: { type: 'string', description: 'Earliest entry date (YYYY-MM-DD, inclusive).' },
             date_to: { type: 'string', description: 'Latest entry date (YYYY-MM-DD, inclusive).' },
             text: { type: 'string', maxLength: 200, description: 'Case-insensitive substring match on the ENTRY description (verifikattext): line descriptions are not searched.' },
-            only_untagged: { type: 'boolean', description: 'Only lines whose dimensions bag is exactly empty ({}). Lines already carrying ANY dimension are excluded: partially tagged lines do not match.' },
+            only_untagged: { type: 'boolean', description: 'Only lines with no dimension at all ({}); partially tagged lines do not match.' },
           },
         },
         dry_run: {
@@ -11335,6 +11355,14 @@ export const tools: McpTool[] = [
       const inputBag = parseDimensionsArg(args.dimensions, 'dimensions')
       if (!inputBag) {
         throw new Error('dimensions must contain at least one {"<sie_dim_no>":"<kod eller namn>"} pair, e.g. {"6":"P01"}.')
+      }
+
+      // merge by default: tagging projekt on a line that carries a
+      // kostnadsställe keeps the kostnadsställe, as in the dashboard
+      // workbench. Hosts do not always enforce the enum, so check it here.
+      const mode = args.mode ?? 'merge'
+      if (mode !== 'merge' && mode !== 'replace') {
+        throw new Error("mode must be 'merge' (keep each line's other dimensions) or 'replace'.")
       }
 
       // ── Filters: validated before any DB work so bad input fails fast.
@@ -11381,6 +11409,7 @@ export const tools: McpTool[] = [
         debit_amount: number
         credit_amount: number
         sort_order: number
+        dimensions: unknown
         journal_entries: { id: string; entry_date: string; voucher_number: number; voucher_series: string }
       }
 
@@ -11459,6 +11488,7 @@ export const tools: McpTool[] = [
         debit_amount: number
         credit_amount: number
         sort_order: number
+        dimensions: unknown
       }
 
       const rows: MatchedRow[] = []
@@ -11488,7 +11518,7 @@ export const tools: McpTool[] = [
             const chunkLines = await fetchLinesByEntryIds<BareLineRow>(
               supabase,
               chunkIds,
-              'id, account_number, debit_amount, credit_amount, sort_order',
+              'id, account_number, debit_amount, credit_amount, sort_order, dimensions',
               filterLines,
             )
             for (const line of chunkLines) {
@@ -11550,15 +11580,32 @@ export const tools: McpTool[] = [
       if (onlyUntagged) summaryParts.push('endast otaggade rader')
       const filterSummary = summaryParts.join(', ').slice(0, 500)
 
-      const bagLabel = Object.entries(resolvedBag)
-        .map(([dim, code]) => `${dim}=${code}`)
-        .join(', ')
+      const bagLabel = dimensionsLabel(resolvedBag)
+
+      // The bag each line ends up with (lib/dimensions/retag-service.ts, the
+      // same computation the approval runs): grouped for the whole match, and
+      // before/after on the sample lines. A merge is applied to the bags as
+      // they are at approval, so a tag set in between is kept.
+      const outcomes = rows.map((r) => {
+        const before = storedDimensions(r.dimensions)
+        const after = resultingDimensions(before, resolvedBag, mode)
+        return { before, after }
+      })
+      const resultingBags: Record<string, number> = {}
+      for (const { after } of outcomes) {
+        const label = dimensionsLabel(after)
+        resultingBags[label] = (resultingBags[label] ?? 0) + 1
+      }
+      const unchangedLines = outcomes.filter(({ before, after }) => sameDimensions(before, after)).length
 
       // Same Zod schema the commit executor re-validates with: the staged
       // params can never drift from what commitRetagLineDimensions accepts.
+      // The mode is always staged explicitly: a row without one reads as a
+      // replace at commit (what rows staged before merge existed meant).
       const params = RetagLineDimensionsParamsSchema.parse({
         line_ids: rows.map((r) => r.id),
         dimensions: resolvedBag,
+        mode,
         reason,
         filter_summary: filterSummary,
       })
@@ -11566,20 +11613,29 @@ export const tools: McpTool[] = [
       // No dateForPeriodCheck: the matched lines span dates; the retag RPC
       // enforces open-period + lock-date per line at commit time.
       return stagePendingOperation(supabase, companyId, userId, 'retag_line_dimensions',
-        `Tagga om ${rows.length} verifikationsrader: ${bagLabel}`,
+        mode === 'merge'
+          ? `Tagga om ${rows.length} verifikationsrader: ${bagLabel}`
+          : `Ersätt dimensionerna på ${rows.length} verifikationsrader: ${bagLabel}`,
         params as unknown as Record<string, unknown>,
         {
           matched_lines: rows.length,
+          mode,
           dimensions: resolvedBag,
+          resulting_dimensions: resultingBags,
+          unchanged_lines: unchangedLines,
           filter_summary: filterSummary,
-          sample: rows.slice(0, 10).map((r) => ({
+          sample: rows.slice(0, 10).map((r, i) => ({
             account: r.account_number,
             date: r.journal_entries.entry_date,
             debit: r.debit_amount,
             credit: r.credit_amount,
+            dimensions_before: outcomes[i].before,
+            dimensions_after: outcomes[i].after,
           })),
           ...(resolutions.length > 0 ? { dimension_resolutions: resolutions } : {}),
-          will: 'replace the dimensions bag on every matched POSTED line via the audited retag RPC: internal reporting only, the verifikat itself is untouched',
+          will: mode === 'merge'
+            ? 'set these dimensions on every matched POSTED line and keep its other dimensions, via the audited retag RPC: internal reporting only, the verifikat itself is untouched'
+            : 'replace the dimensions bag on every matched POSTED line via the audited retag RPC: internal reporting only, the verifikat itself is untouched',
         },
         actor,
         {

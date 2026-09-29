@@ -195,6 +195,7 @@ import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/cre
 import { CreateArticleParamsSchema, UpdateArticleParamsSchema } from '@/lib/pending-operations/schemas/article'
 import { CreateDimensionValueParamsSchema } from '@/lib/pending-operations/schemas/dimension-value'
 import { RetagLineDimensionsParamsSchema } from '@/lib/pending-operations/schemas/retag-line-dimensions'
+import { everyRetagRefused, retagLines } from '@/lib/dimensions/retag-service'
 import { SetVoucherNoteParamsSchema } from '@/lib/pending-operations/schemas/voucher-note'
 import { IgnoreTransactionParamsSchema } from '@/lib/pending-operations/schemas/ignore-transaction'
 import { setTransactionIgnored } from '@/lib/transactions/ignore'
@@ -1819,6 +1820,11 @@ async function commitCreateDimensionValue(
  * retagged: each RPC call is its own transaction. Failures are collected
  * and echoed (capped at 20) so the caller can re-stage just the failed set.
  * Only when EVERY line fails does the operation as a whole fail.
+ *
+ * The loop, the merge of the staged pairs into each line's current bag, and
+ * the all-refused rule live in lib/dimensions/retag-service.ts. A merge
+ * reads the bags at approval, not at staging, so a tag set in between is
+ * kept.
  */
 async function commitRetagLineDimensions(
   supabase: SupabaseClient,
@@ -1841,30 +1847,32 @@ async function commitRetagLineDimensions(
     throw err
   }
 
-  let retagged = 0
-  let unchanged = 0
-  const failed: Array<{ line_id: string; error: string }> = []
+  const outcome = await retagLines(
+    { supabase, companyId, userId, log: log.child({ operation: 'retag_line_dimensions' }) },
+    {
+      line_ids: validated.line_ids,
+      dimensions: validated.dimensions,
+      // A row staged before the mode existed parses as 'replace' (the schema
+      // default): what its approver was shown.
+      mode: validated.mode,
+      reason: validated.reason,
+    },
+  )
+  // Reading the lines for a merge failed: nothing was written.
+  if (!outcome.ok) throw outcome.error ?? new Error(outcome.code)
+  if (outcome.dryRun) return { data: outcome.preview }
 
-  for (const lineId of validated.line_ids) {
-    const { data, error } = await supabase.rpc('retag_line_dimensions', {
-      p_company_id: companyId,
-      p_line_id: lineId,
-      p_dimensions: validated.dimensions,
-      p_reason: validated.reason,
-      p_user_id: userId,
-    })
-    if (error) {
-      failed.push({ line_id: lineId, error: error.message })
-      continue
-    }
-    if ((data as { changed?: boolean } | null)?.changed) retagged++
-    else unchanged++
-  }
-
-  if (failed.length > 0 && retagged === 0 && unchanged === 0) {
+  const { retagged, unchanged, failed } = outcome.data
+  // Echo at most 20 failures: enough to act on without bloating result_data
+  // on a pathological 500-line all-but-one failure.
+  const echoedFailures = failed.slice(0, 20)
+  const refused = everyRetagRefused(outcome.data)
+  if (refused) {
     return {
-      error: `Ingen rad kunde taggas om (${failed.length} rader misslyckades). Första felet: ${failed[0].error}`,
+      error: refused.messageSv,
+      errorCode: 'DIMENSION_RETAG_FAILED',
       status: 400,
+      data: { failed_count: failed.length, failed: echoedFailures },
     }
   }
 
@@ -1873,9 +1881,8 @@ async function commitRetagLineDimensions(
       retagged,
       unchanged,
       failed_count: failed.length,
-      // Echo at most 20 failures: enough to act on without bloating
-      // result_data on a pathological 500-line all-but-one failure.
-      failed: failed.slice(0, 20),
+      failed: echoedFailures,
+      mode: validated.mode,
       dimensions: validated.dimensions,
       ...(validated.filter_summary ? { filter_summary: validated.filter_summary } : {}),
     },

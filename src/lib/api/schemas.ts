@@ -19,6 +19,7 @@ import { ISO_DATE_RE, ISO_DATE_MESSAGE_SV } from '@/lib/invariants/iso-date'
 import { orgNumberKey } from '@/lib/invariants/org-number'
 import { countCalendarMonths } from '@/lib/bookkeeping/accruals/compute'
 import { DimensionsBagSchema } from '@/lib/bookkeeping/dimension-resolver'
+import { DIMENSION_RULE_TYPES, ruleValueProblem } from '@/lib/dimensions/rule-value'
 import { validateEmployeeBankAccount } from '@/lib/salary/payment/bank-account'
 import { validateJamkning } from '@/lib/salary/jamkning-rules'
 import { SalaryCalculationPolicySchema } from '@/lib/salary/calculation-policy'
@@ -1905,48 +1906,44 @@ export const CreateDimensionSchema = z.object({
   parent_sie_dim_no: z.coerce.number().int().min(1).max(9999).nullable().optional(),
 })
 
-const AccountDimensionRuleTypeSchema = z.enum(['required', 'default', 'fixed'])
+const AccountDimensionRuleTypeSchema = z
+  .enum(DIMENSION_RULE_TYPES)
+  .describe('required: no posting on the account without a value; default: pre-filled when a line has none; fixed: always applied.')
 
 /** GET /api/dimensions/rules query — optional exact-account filter. */
 export const ListDimensionRulesQuerySchema = z.object({
-  account_number: accountNumber.optional(),
+  account_number: accountNumber.optional().describe('Only the rules of this account.'),
 })
 
 /**
  * POST /api/dimensions/rules — per-account dimension policy (dimensions
  * PR10). 'required' carries no value; 'default'/'fixed' must carry the value
- * to apply. One rule per (account, dimension) — enforced by the DB UNIQUE.
+ * to apply (ruleValueProblem, lib/dimensions/rule-value.ts). One rule per
+ * (account, dimension): enforced by the DB UNIQUE. Also the input of the
+ * v1 and MCP doors (operation dimension-rules.create).
  */
 export const CreateAccountDimensionRuleSchema = z
   .object({
     account_number: accountNumber,
-    dimension_id: uuid,
+    dimension_id: uuid.describe('The dimension row id (dimension_id from the dimension list), not its sie_dim_no.'),
     rule_type: AccountDimensionRuleTypeSchema,
-    value_id: uuid.optional(),
-    is_active: z.boolean().optional(),
+    value_id: uuid.optional().describe('default/fixed: the dimension value to apply (dimension_value_id). Omit for required.'),
+    is_active: z.boolean().optional().describe('false saves the rule paused. Default true.'),
   })
   .superRefine((rule, ctx) => {
-    if (rule.rule_type === 'required' && rule.value_id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['value_id'],
-        message: 'En obligatorisk regel har inget värde — värden hör till Förval/Låst.',
-      })
-    }
-    if (rule.rule_type !== 'required' && !rule.value_id) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['value_id'],
-        message: 'Välj vilket värde regeln ska använda.',
-      })
-    }
+    const problem = ruleValueProblem(rule.rule_type, Boolean(rule.value_id))
+    if (problem) ctx.addIssue({ code: 'custom', path: ['value_id'], message: problem })
   })
 
-/** PATCH /api/dimensions/rules/[id] — the value-presence rule re-checks in the route (partial update). */
+/**
+ * PATCH /api/dimensions/rules/[id]: a partial update, so the value rule is
+ * checked in lib/dimensions/rules-service.ts against the rule's effective
+ * type (the stored one when rule_type is not sent).
+ */
 export const UpdateAccountDimensionRuleSchema = z.object({
   rule_type: AccountDimensionRuleTypeSchema.optional(),
-  value_id: uuid.nullable().optional(),
-  is_active: z.boolean().optional(),
+  value_id: uuid.nullable().optional().describe('The value to apply; null clears it (required rules carry none).'),
+  is_active: z.boolean().optional().describe('false pauses the rule without losing it.'),
 })
 
 export const RetagLineDimensionsSchema = z.object({

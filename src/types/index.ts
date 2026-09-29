@@ -2635,6 +2635,10 @@ export type PendingOperationType =
   | 'create_dimension'
   | 'update_dimension'
   | 'delete_dimension'
+  // Account dimension rules (src/lib/operations/dimension-rules.ts).
+  | 'create_dimension_rule'
+  | 'update_dimension_rule'
+  | 'delete_dimension_rule'
   // Operation registry, wave 4: Peppol, årsredovisning, IB, AP actions.
   | 'send_invoice_peppol'
   | 'register_peppol_participant'
