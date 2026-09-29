@@ -5,7 +5,7 @@ import { supplierInvoiceRoundingItem } from '../rounding-item'
 // tool stages (crm#110, feedback seq 753539).
 describe('supplierInvoiceRoundingItem', () => {
   it('carries a positive gap as a debit on 3740 with no VAT', () => {
-    // Themax 2026006: billed 444 192.00, lines incl. VAT 444 191.91.
+    // The invoice from feedback seq 753539: billed 444 192.00, lines incl. VAT 444 191.91.
     expect(supplierInvoiceRoundingItem(444192 - 444191.91, 'SEK')).toEqual({
       description: 'Öresavrundning',
       account_number: '3740',

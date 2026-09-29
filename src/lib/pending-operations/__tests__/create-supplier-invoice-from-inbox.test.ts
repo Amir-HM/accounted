@@ -1283,7 +1283,7 @@ describe('commitPendingOperation: create_supplier_invoice_from_inbox for a non-V
   function enqueueCommit(enqueue: ReturnType<typeof createQueuedMockSupabase>['enqueue'], vatRegistered: boolean) {
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
     enqueue({ data: { id: 'inbox-1', created_supplier_invoice_id: null, status: 'ready' }, error: null })
-    enqueue({ data: { id: 'supplier-1', name: 'Ringö Brygga AB', supplier_type: 'swedish_business' }, error: null })
+    enqueue({ data: { id: 'supplier-1', name: 'Bryggleverantören AB', supplier_type: 'swedish_business' }, error: null })
     enqueue({ data: { accounting_method: 'accrual', vat_registered: vatRegistered }, error: null }) // company_settings
     enqueue({ data: 60, error: null }) // arrival number
     enqueue({ data: makeSupplierInvoice({ id: 'inv-nr', supplier_invoice_number: '5571' }), error: null })
@@ -1347,7 +1347,7 @@ describe('commitPendingOperation: create_supplier_invoice_from_inbox carries a s
     const { supabase, enqueue, findCall } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
     enqueue({ data: { id: 'inbox-1', created_supplier_invoice_id: null, status: 'ready' }, error: null })
-    enqueue({ data: { id: 'supplier-1', name: 'Themax AB', supplier_type: 'swedish_business' }, error: null })
+    enqueue({ data: { id: 'supplier-1', name: 'Grossisten AB', supplier_type: 'swedish_business' }, error: null })
     enqueue({ data: { accounting_method: 'accrual', vat_registered: true }, error: null }) // company_settings
     enqueue({ data: 61, error: null }) // arrival number
     enqueue({ data: makeSupplierInvoice({ id: 'inv-ore', supplier_invoice_number: '2026006' }), error: null })

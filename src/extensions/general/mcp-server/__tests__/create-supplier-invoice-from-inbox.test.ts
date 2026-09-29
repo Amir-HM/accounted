@@ -1347,11 +1347,11 @@ describe('gnubok_create_supplier_invoice_from_inbox: a non-VAT-registered compan
     vi.clearAllMocks()
   })
 
-  // Ringö Brygga for FLAMPUNKT (ideell förening, vat_registered false) as
+  // A supplier invoice for an ideell förening (vat_registered false) as
   // extracted: 2000 + 25 % = 2500. The tool staged 500 on 2641, which the
   // förening can never reclaim.
   const ringo = {
-    supplier: { name: 'Ringö Brygga AB' },
+    supplier: { name: 'Bryggleverantören AB' },
     invoice: { invoiceNumber: '5571', invoiceDate: '2026-01-16', dueDate: '2026-02-15', currency: 'SEK' },
     totals: { subtotal: 2000, vat: 500, total: 2500 },
     lineItems: [
@@ -1464,7 +1464,7 @@ describe('gnubok_create_supplier_invoice_from_inbox: öresavrundning (feedback 7
     mockResolveRate.mockReset()
   })
 
-  // Themax 2026006 (company 5d72569a) as registered on 2026-09-26: the lines
+  // The invoice from feedback seq 753539 as registered on 2026-09-26: the lines
   // come to 355 894.12 + 88 297.79 = 444 191.91 against a billed 444 192.00,
   // and 2440 was credited with 444 191.91.
   const themaxLines = [
@@ -1480,7 +1480,7 @@ describe('gnubok_create_supplier_invoice_from_inbox: öresavrundning (feedback 7
     { account: '5710', net: 343, rate: 0 },
   ]
   const themax = {
-    supplier: { name: 'Themax AB' },
+    supplier: { name: 'Grossisten AB' },
     invoice: { invoiceNumber: '2026006', invoiceDate: '2026-09-25', dueDate: '2026-10-25', currency: 'SEK' },
     totals: { subtotal: 355894.12, vat: 88297.79, total: 444192, roundingAmount: 0.09 },
     lineItems: themaxLines.map((l, i) => ({

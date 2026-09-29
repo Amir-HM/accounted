@@ -768,7 +768,7 @@ describe('GET /items/:id/credit-target', () => {
 describe('POST /items/:id/convert for a non-VAT-registered company (feedback 708521)', () => {
   const route = findRoute('POST', '/items/:id/convert')
 
-  // A Ringö Brygga invoice as a caller that does not fold it sends it: 2000
+  // A supplier invoice as a caller that does not fold it sends it: 2000
   // excluding VAT at 25 %.
   const netAt25 = {
     ...VALID_CONVERT_BODY,
