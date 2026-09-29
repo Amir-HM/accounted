@@ -18,6 +18,7 @@ import { NextResponse } from 'next/server'
 import { ZodError } from 'zod'
 import { getErrorMessage } from './get-error-message'
 import { foreignKeyRefusal } from './foreign-key-refusal'
+import { fieldValidationError, zodErrorFieldIssues } from './refusal'
 import {
   conflictCode,
   getErrorEntry,
@@ -268,6 +269,15 @@ export function getStructuredError(
       remediation: refusal.remediation,
       retryable: false,
     }
+  }
+
+  // A Zod `.parse()` that threw past its call site. errorResponse below has
+  // always answered VALIDATION_ERROR for it; this door answered UNKNOWN_ERROR
+  // with the issue list as raw JSON (create_skill, set_inbox_extracted_data).
+  // A parse of data the server built itself is a server bug, not a caller
+  // mistake: such a site must catch its own failure and throw INTERNAL_ERROR.
+  if (isZodError(error) && Array.isArray(error.issues) && error.issues.length > 0) {
+    return getStructuredError(fieldValidationError('Invalid arguments', zodErrorFieldIssues(error)), options)
   }
 
   const message_en = extractEnglishMessage(error)

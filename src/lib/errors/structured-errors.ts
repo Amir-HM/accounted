@@ -2815,6 +2815,23 @@ const REPORT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Rapporten är för stor för PDF. Ladda ner den som CSV eller Excel i stället.',
     message_en: 'The report is too large for PDF. Download it as CSV or Excel instead.',
   },
+  // gnubok_audit_package stores its zip in the documents bucket, whose cap per
+  // file (50 MB) sits below the tool's own 80 MB estimate gate: an archive
+  // between the two is built and then refused by Storage. A size limit, not a
+  // fault, so the identical call can never succeed on a retry.
+  AUDIT_PACKAGE_TOO_LARGE: {
+    httpStatus: 413,
+    message_sv:
+      'Revisionspaketet blev för stort för att sparas som fil. Skapa det utan underlag, eller ladda ner det kompletta arkivet med underlag under Importera/Exportera.',
+    message_en:
+      'The audit package is too large to store as a file. Create it without documents (include_documents=false), or download the complete archive with documents in the web app under Import/Export.',
+    remediation: {
+      description:
+        'If include_documents was true, call gnubok_audit_package again with include_documents=false: receipts and other documents are most of the size. For the archive with documents, the user downloads it in the web app under Importera/Exportera, Komplett arkiv (/import#full-archive), which streams the file instead of storing it.',
+      tool: 'gnubok_audit_package',
+    },
+    retryable: false,
+  },
 }
 
 const VAT_REPORT: Record<string, StructuredErrorEntry> = {
