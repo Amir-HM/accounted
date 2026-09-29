@@ -2333,7 +2333,6 @@ const VAT_REPORT_OUTPUT_SCHEMA = {
   properties: {
     period: {
       type: 'object',
-      additionalProperties: false,
       properties: {
         type: { type: 'string', enum: ['monthly', 'quarterly', 'yearly'] },
         year: { type: 'number' },
@@ -4020,7 +4019,6 @@ const SALES_ORDER_SUMMARY_REQUIRED = [
 
 const SALES_ORDER_LINE_OUTPUT_SCHEMA = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     sales_order_item_id: { type: 'string' },
     line_type: { type: 'string', description: 'product or text' },
@@ -4065,9 +4063,10 @@ const SALES_ORDER_LINE_INPUT_SCHEMA = {
 
 // Wire shape of one anläggningsregister row on the MCP door (qualified
 // asset_id; the field set is lib/bokslut/assets/asset-api.ts assetView()).
+// Open like every output object: assetView() grows with the v1 contract, and
+// a closed item made strict clients refuse every call (feedback seq 788784).
 const ASSET_TOOL_ITEM_SCHEMA = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     asset_id: { type: 'string' },
     name: { type: 'string' },
@@ -4081,20 +4080,24 @@ const ASSET_TOOL_ITEM_SCHEMA = {
     bas_accumulated_account: { type: 'string' },
     bas_expense_account: { type: 'string' },
     k3_components: { type: ['array', 'null'], items: { type: 'object' } },
+    opening_accumulated_depreciation: { type: 'number', description: 'From the previous register, SEK; 0 when none. Never posted here' },
+    opening_depreciation_date: { type: ['string', 'null'] },
     notes: { type: ['string', 'null'] },
     disposed_at: { type: ['string', 'null'] },
     disposal_type: { type: ['string', 'null'] },
     disposed_proceeds: { type: ['number', 'null'] },
     disposal_journal_entry_id: { type: ['string', 'null'] },
     has_posted_depreciation: { type: 'boolean', description: 'True once an avskrivning is posted: basis locked' },
+    deletable: { type: 'boolean', description: 'False once it reached the books: depreciation posted or disposed' },
     created_at: { type: 'string' },
     updated_at: { type: 'string' },
   },
   required: [
     'asset_id', 'name', 'category', 'acquisition_date', 'acquisition_cost', 'salvage_value',
     'useful_life_months', 'depreciation_method', 'bas_asset_account', 'bas_accumulated_account',
-    'bas_expense_account', 'k3_components', 'notes', 'disposed_at', 'disposal_type',
-    'disposed_proceeds', 'disposal_journal_entry_id', 'has_posted_depreciation', 'created_at', 'updated_at',
+    'bas_expense_account', 'k3_components', 'opening_accumulated_depreciation', 'opening_depreciation_date',
+    'notes', 'disposed_at', 'disposal_type', 'disposed_proceeds', 'disposal_journal_entry_id',
+    'has_posted_depreciation', 'deletable', 'created_at', 'updated_at',
   ],
 } as const
 
@@ -4705,7 +4708,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               company_id: { type: 'string' },
               name: { type: 'string' },
@@ -6043,7 +6045,6 @@ export const tools: McpTool[] = [
         hidden_count: { type: 'number' },
         company_context: {
           type: 'object',
-          additionalProperties: false,
           properties: {
             entity_type: { type: ['string', 'null'] },
             has_employees: { type: 'boolean' },
@@ -6512,7 +6513,6 @@ export const tools: McpTool[] = [
       properties: {
         company: {
           type: 'object',
-          additionalProperties: false,
           description:
             'The company selected for this call. Confirm it is the entity the user means before staging a write. Pass company_id on later calls to keep working in a non-default company.',
           properties: {
@@ -6543,7 +6543,6 @@ export const tools: McpTool[] = [
           description: 'Active company skills. Fetch bodies with gnubok_load_skill(atom_id).',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'Deprecated: read atom_id instead.' },
               atom_id: { type: 'string', description: 'Loadable skill slug.' },
@@ -6559,7 +6558,6 @@ export const tools: McpTool[] = [
           description: 'Top-30 active memories (facts, preferences, patterns, corrections) ranked by relevance and recency.',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'Deprecated: read fact_id instead.' },
               fact_id: { type: 'string', description: 'Pass to gnubok_forget_fact to deactivate.' },
@@ -6588,7 +6586,6 @@ export const tools: McpTool[] = [
         },
         feedback_channel: {
           type: 'object',
-          additionalProperties: false,
           description: 'How to report a missing tool, misleading description or wrong result.',
           properties: {
             tool: { type: 'string' },
@@ -6599,14 +6596,13 @@ export const tools: McpTool[] = [
         },
         arkiv: {
           type: 'object',
-          additionalProperties: false,
           description: 'Present when the company is in the Arkiv rollout: how much of the archive is structured, how to read it, and stable refs to start from.',
           properties: {
             documents: { type: 'integer' },
             agreements: { type: 'integer' },
             facts: { type: 'integer' },
             instructions: { type: 'string' },
-            anchors: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { record_ref: { type: 'string' }, title: { type: 'string' } }, required: ['record_ref', 'title'] } },
+            anchors: { type: 'array', items: { type: 'object', properties: { record_ref: { type: 'string' }, title: { type: 'string' } }, required: ['record_ref', 'title'] } },
           },
           required: ['documents', 'agreements', 'facts', 'instructions', 'anchors'],
         },
@@ -7108,7 +7104,6 @@ export const tools: McpTool[] = [
     },
     outputSchema: paginatedSchema('transactions', {
       type: 'object',
-      additionalProperties: false,
       properties: {
         id: { type: 'string', description: 'Deprecated: read transaction_id instead' },
         transaction_id: { type: 'string' },
@@ -7237,7 +7232,6 @@ export const tools: McpTool[] = [
     },
     outputSchema: paginatedSchema('transactions', {
       type: 'object',
-      additionalProperties: false,
       properties: {
         id: { type: 'string', description: 'Deprecated: read transaction_id instead' },
         transaction_id: { type: 'string' },
@@ -7321,7 +7315,6 @@ export const tools: McpTool[] = [
     },
     outputSchema: paginatedSchema('verifikat', {
       type: 'object',
-      additionalProperties: false,
       properties: {
         journal_entry_id: { type: 'string' },
         voucher_series: { type: ['string', 'null'] },
@@ -7399,7 +7392,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               kind: { type: 'string', enum: ['verifikat', 'transaction'] },
               journal_entry_id: { type: ['string', 'null'] },
@@ -7416,7 +7408,6 @@ export const tools: McpTool[] = [
               mail_searchable: { type: 'boolean' },
               portal: {
                 type: ['object', 'null'],
-                additionalProperties: false,
                 properties: {
                   vendor: { type: 'string' },
                   url: { type: 'string' },
@@ -8530,7 +8521,6 @@ export const tools: McpTool[] = [
           description: 'Lines in display order; pass them back to gnubok_update_invoice verbatim: article, ROT/RUT, accrual and account fields survive only if passed back.',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               invoice_item_id: { type: 'string' },
               line_type: { type: 'string', description: 'product or text' },
@@ -9079,7 +9069,6 @@ export const tools: McpTool[] = [
           description: 'Invoices created from this order (all statuses)',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               invoice_id: { type: 'string' },
               invoice_number: { type: ['string', 'null'], description: 'null until sent' },
@@ -10146,7 +10135,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               invoice_delivery_id: { type: 'string' },
               channel: { type: 'string', description: 'email or manual' },
@@ -10166,7 +10154,6 @@ export const tools: McpTool[] = [
                 description: 'PII-free outcomes keyed by stable To/CC positions such as to:1 and cc:1. BCC is never included.',
                 additionalProperties: {
                   type: 'object',
-                  additionalProperties: false,
                   properties: {
                     status: { type: 'string' },
                     status_at: { type: 'string' },
@@ -11090,7 +11077,6 @@ export const tools: McpTool[] = [
       properties: {
         dimension: {
           type: 'object',
-          additionalProperties: false,
           properties: {
             id: { type: 'string', description: 'Deprecated: read dimension_id instead' },
             dimension_id: { type: 'string' },
@@ -11105,7 +11091,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'Deprecated: read dimension_value_id instead' },
               dimension_value_id: { type: 'string' },
@@ -14773,7 +14758,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               cash_account_id: { type: 'string' },
               ledger_account: { type: 'string', description: 'BAS account, e.g. "1930"' },
@@ -23067,7 +23051,6 @@ export const tools: McpTool[] = [
           type: 'array',
           items: {
             type: 'object',
-            additionalProperties: false,
             properties: {
               fiscal_period_id: { type: 'string' },
               planned_depreciation: { type: 'number' },
