@@ -164,13 +164,13 @@ export const documentsDelete = defineOperation({
     pitfalls: [
       'A linked document returns 409 DOC_DELETE_LINKED, whatever the verifikat\'s status.',
       'The file is removed from storage too: this cannot be undone.',
-      'A document pinned to an unbooked bank transaction is not protected by this rule: detach it first if the transaction still needs it.',
+      'A document still pinned to a bank transaction returns 409 DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: detach it from the transaction first.',
     ],
     example: { response: { data: { document_id: '4f1c…', deleted: true }, meta: META } },
   },
   input: z.object({ document_id: DOCUMENT_ID }),
   output: z.object({ document_id: z.string().uuid(), deleted: z.literal(true) }),
-  errorCodes: ['DOC_NOT_FOUND', 'DOC_DELETE_LINKED'],
+  errorCodes: ['DOC_NOT_FOUND', 'DOC_DELETE_LINKED', 'DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION'],
   http: {
     method: 'DELETE',
     path: '/api/v1/companies/:companyId/documents/:id',

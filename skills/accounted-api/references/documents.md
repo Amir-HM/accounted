@@ -261,7 +261,7 @@ Removes the document row and its stored file. Refused once the document is linke
 **Pitfalls:**
 - A linked document returns 409 DOC_DELETE_LINKED, whatever the verifikat's status.
 - The file is removed from storage too: this cannot be undone.
-- A document pinned to an unbooked bank transaction is not protected by this rule: detach it first if the transaction still needs it.
+- A document still pinned to a bank transaction returns 409 DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: detach it from the transaction first.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|

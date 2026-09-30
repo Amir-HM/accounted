@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { previewPath } from '@/lib/documents/preview'
+import { canDeleteDocument } from '@/lib/documents/deletion'
 import { after } from 'next/server'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { dbError } from '@/lib/errors/db-error'
@@ -1318,12 +1319,17 @@ export type DeleteDocumentResult =
   | { ok: false; reason: 'not_found' | 'linked_to_entry'; status: number; message: string }
 
 /**
- * Delete a document if and only if it is not yet linked to a journal entry.
+ * Delete a document if and only if it is not yet linked to a journal entry
+ * (canDeleteDocument, lib/documents/deletion.ts).
  *
  * BFL 7 kap 2§: once a document is attached to a verifikation it becomes
  * räkenskapsinformation and may not be deleted within the 7-year retention
  * window. Linked docs must be superseded via createNewVersion() instead.
  * The block_document_deletion() trigger is the DB-level backstop.
+ *
+ * A document another record still pins through a RESTRICT foreign key (a bank
+ * transaction's underlag) is refused by the database; the error is thrown
+ * with its SQLSTATE intact so lib/errors/foreign-key-refusal.ts answers it.
  */
 export async function deleteDocument(
   supabase: SupabaseClient,
@@ -1332,7 +1338,7 @@ export async function deleteDocument(
 ): Promise<DeleteDocumentResult> {
   const { data: doc, error: fetchError } = await supabase
     .from('document_attachments')
-    .select('id, file_name, storage_path, journal_entry_id, user_id')
+    .select('id, file_name, storage_path, journal_entry_id, journal_entry_line_id, user_id')
     .eq('id', documentId)
     .eq('company_id', companyId)
     .maybeSingle()
@@ -1346,7 +1352,7 @@ export async function deleteDocument(
     }
   }
 
-  if (doc.journal_entry_id) {
+  if (!canDeleteDocument(doc)) {
     return {
       ok: false,
       reason: 'linked_to_entry',
@@ -1373,7 +1379,11 @@ export async function deleteDocument(
           'Underlaget kan inte tas bort på grund av Bokföringslagens bevarandekrav (7 kap 2§).',
       }
     }
-    throw new Error(`Failed to delete document: ${msg}`)
+    // Keep the driver's code and text: a record that still pins the document
+    // (a bank transaction's underlag, ON DELETE RESTRICT) is a 23503 the
+    // shared foreign-key refusal mapping answers with a 409 and a sentence
+    // that says what to do, instead of a 500.
+    throw dbError(deleteError, null)
   }
 
   if (doc.storage_path) {

@@ -5,8 +5,9 @@
  * (DELETE /api/documents/[id]), the v1 operations and any MCP tool
  * (lib/operations/documents.ts), so every door applies the same rule:
  *
- *   - a document linked to a verifikat (journal_entry_id set, whatever the
- *     entry's status) is räkenskapsinformation under BFL 7 kap 2 § and is
+ *   - a document linked to a verifikat (journal_entry_id or
+ *     journal_entry_line_id set, whatever the entry's status;
+ *     canDeleteDocument) is räkenskapsinformation under BFL 7 kap 2 § and is
  *     never deleted; the DB trigger block_document_deletion() is the
  *     backstop, deleteDocument() the application check. Correcting one means
  *     a new version, never a delete.
@@ -19,6 +20,7 @@
 import type { OperationContext, OperationOutcome } from '@/lib/operations/types'
 import { decodeDefaultCursor, encodeDefaultCursor } from '@/lib/api/v1/pagination'
 import { deleteDocument } from '@/lib/core/documents/document-service'
+import { canDeleteDocument } from '@/lib/documents/deletion'
 import { UUID_RE } from '@/lib/invariants/uuid'
 
 type Failure = Extract<OperationOutcome<never>, { ok: false }>
@@ -198,9 +200,11 @@ export async function getDocumentMetadata(
 
 /**
  * Delete a document that is not linked to a verifikat. The rule is
- * deleteDocument()'s (the dashboard's): any journal_entry_id refuses, with the
- * BFL 7 kap 2 § explanation. The dry run reads the same row and applies the
- * same rule.
+ * deleteDocument()'s (the dashboard's), canDeleteDocument(): a link to a
+ * verifikat or one of its lines refuses, with the BFL 7 kap 2 § explanation.
+ * A document a bank transaction still pins answers
+ * DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION (lib/errors/foreign-key-refusal.ts).
+ * The dry run reads the same row and applies the same rule.
  */
 export async function removeDocument(
   ctx: OperationContext,
@@ -211,13 +215,13 @@ export async function removeDocument(
     // A failed read answers 404, as deleteDocument() does on the commit path.
     const { data, error } = await ctx.supabase
       .from('document_attachments')
-      .select('id, file_name, journal_entry_id')
+      .select('id, file_name, journal_entry_id, journal_entry_line_id')
       .eq('id', documentId)
       .eq('company_id', ctx.companyId)
       .maybeSingle()
     if (error || !data) return NOT_FOUND
-    const row = data as { id: string; file_name: string; journal_entry_id: string | null }
-    if (row.journal_entry_id) {
+    const row = data as { id: string; file_name: string; journal_entry_id: string | null; journal_entry_line_id: string | null }
+    if (!canDeleteDocument(row)) {
       return { ok: false, code: 'DOC_DELETE_LINKED', details: { journal_entry_id: row.journal_entry_id } }
     }
     return {

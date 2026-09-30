@@ -9,6 +9,7 @@ import { schemaForType } from '@/lib/documents/extract/schemas'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { needsReadOnDemand, readLaneFor, type ReadLane } from '@/lib/documents/read/lanes'
 import { hasStoredPages, isBookedRow } from '@/lib/documents/locked-period'
+import { canDeleteDocument } from '@/lib/documents/deletion'
 
 /**
  * GET /api/arkiv/documents/[id]
@@ -29,6 +30,8 @@ export interface DocumentRecordView {
   /** How far the reading got (phase 9f): history the lanes left for a question says so. */
   read: { state: 'read' | 'partial' | 'unread' | 'skipped'; lane: ReadLane }
   journal_entry: { id: string; voucher: string } | null
+  /** Whether DELETE /api/documents/[id] would take it (canDeleteDocument): the record offers the delete only then. */
+  deletable: boolean
   classification: { summary: string | null; confidence: number | null; decided_by: string; signals: string[]; suggested_type?: string | null } | null
   /** The rows of a receipt or invoice as the Underlag reader saw them; empty for anything else. */
   line_items: Array<{ description: string; quantity: number | null; unit_price: number | null; line_total: number | null; vat_rate: number | null }>
@@ -137,6 +140,7 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
       lane: readLaneFor(d),
     },
     journal_entry: e ? { id: e.id, voucher: `${e.voucher_series ?? ''}${e.voucher_number ?? ''}` } : null,
+    deletable: canDeleteDocument(d),
     classification: classification.data ? (classification.data as DocumentRecordView['classification']) : null,
     line_items: (d.extracted_data?.lineItems ?? [])
       .filter((li) => li && typeof li === 'object')

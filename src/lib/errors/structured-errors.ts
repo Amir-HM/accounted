@@ -4983,6 +4983,17 @@ const SALARY: Record<string, StructuredErrorEntry> = {
       tool: 'gnubok_update_salary_run',
     },
   },
+  DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget är kopplat till en banktransaktion och kan inte tas bort. Koppla bort det från transaktionen först.',
+    message_en:
+      'The document is attached to a bank transaction and cannot be deleted. Detach it from the transaction first.',
+    remediation: {
+      description:
+        'The document is the underlag of a bank transaction (transactions.document_id). Detach it from the transaction first (POST /api/v1/companies/{companyId}/transactions/{id}/detach-document), then delete it. A document linked to a verifikat is never deleted.',
+    },
+  },
   RECORD_STILL_REFERENCED: {
     httpStatus: 409,
     message_sv: 'Posten kan inte tas bort eftersom annan data fortfarande hänvisar till den.',

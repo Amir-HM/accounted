@@ -288,4 +288,57 @@ describe('DELETE /api/documents/[id]', () => {
     expect(status).toBe(409)
     expect(body.error.message).toContain('Bokföringslagen')
   })
+
+  it('returns 409 DOC_DELETE_LINKED for a document linked only at a verifikat line, without deleting', async () => {
+    enqueue({
+      data: {
+        id: 'doc-1',
+        file_name: 'kvitto.pdf',
+        storage_path: 'documents/user-1/kvitto.pdf',
+        journal_entry_id: null,
+        journal_entry_line_id: 'line-1',
+        user_id: 'user-1',
+      },
+      error: null,
+    })
+    const res = await DELETE(makeReq(), createMockRouteParams({ id: 'doc-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string; message: string } }>(res)
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('DOC_DELETE_LINKED')
+    expect(body.error.message).toContain('7 kap')
+    expect(serviceRemoveMock).not.toHaveBeenCalled()
+  })
+
+  it('returns 409 DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION when a bank transaction still pins the document (FK RESTRICT), not a 500', async () => {
+    // A receipt attached to a bank transaction: transactions.document_id is
+    // ON DELETE RESTRICT, so the database refuses the delete with 23503.
+    enqueue({
+      data: {
+        id: 'doc-1',
+        file_name: 'kvitto.pdf',
+        storage_path: 'documents/user-1/kvitto.pdf',
+        journal_entry_id: null,
+        journal_entry_line_id: null,
+        user_id: 'user-1',
+      },
+      error: null,
+    })
+    enqueue({
+      data: null,
+      error: {
+        code: '23503',
+        message: 'update or delete on table "document_attachments" violates foreign key constraint "transactions_document_id_fkey" on table "transactions"',
+      },
+    })
+    const res = await DELETE(makeReq(), createMockRouteParams({ id: 'doc-1' }))
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; message: string; message_en: string; details: { referenced_by: string } }
+    }>(res)
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION')
+    expect(body.error.message).toContain('banktransaktion')
+    expect(body.error.message_en).toContain('bank transaction')
+    expect(body.error.details.referenced_by).toBe('transactions')
+    expect(serviceRemoveMock).not.toHaveBeenCalled()
+  })
 })
