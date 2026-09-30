@@ -22,9 +22,18 @@ beforeEach(() => {
 })
 
 describe('GET /api/arkiv/documents/[id]', () => {
-  it('is 404 for another company\'s document', async () => {
+  it('is 404 for another company\'s document, in the canonical envelope', async () => {
     enqueue({ data: null })
-    expect((await parseJsonResponse(await call())).status).toBe(404)
+    const { status, body } = await parseJsonResponse(await call())
+    expect(status).toBe(404)
+    expect((body as { error: Record<string, unknown> }).error).toMatchObject({ code: 'NOT_FOUND', requestId: expect.stringMatching(/^req_/) })
+  })
+
+  it('answers a failed document read in the canonical envelope', async () => {
+    enqueue({ error: { message: 'boom', code: 'XX000' } })
+    const { status, body } = await parseJsonResponse(await call())
+    expect(status).toBe(500)
+    expect((body as { error: Record<string, unknown> }).error).toMatchObject({ code: expect.any(String), message: expect.any(String), requestId: expect.stringMatching(/^req_/) })
   })
 
   it('returns the record with fields, facts, links and the verifikat', async () => {
@@ -154,12 +163,18 @@ describe('GET /api/arkiv/documents/[id]', () => {
     expect(findCalls('transactions', 'eq')).toEqual([['company_id', 'company-1'], ['document_id', DOC]])
   })
 
-  it('is 500 when a pin lookup fails', async () => {
+  // CodeRabbit on #3332: the pin read's failure is the canonical envelope withRouteContext builds, not a hand-built { error: string }.
+  it('is 500 in the canonical envelope when a pin lookup fails', async () => {
     delete process.env.ARKIV_BRAIN_COMPANY_IDS
     enqueue({ data: unlinkedReceipt })
     enqueue({ data: null })
     enqueue({ error: { message: 'boom' } })
-    expect((await parseJsonResponse(await call())).status).toBe(500)
+    const res = await call()
+    const { status, body } = await parseJsonResponse(res)
+    expect(status).toBe(500)
+    const envelope = (body as { error: Record<string, unknown> }).error
+    expect(envelope).toMatchObject({ code: 'INTERNAL_ERROR', message: expect.any(String), message_en: expect.any(String), requestId: expect.stringMatching(/^req_/) })
+    expect(res.headers.get('X-Request-Id')).toBe(envelope.requestId)
   })
 
   it('reads no pins for a document linked to a verifikat', async () => {
