@@ -6515,6 +6515,9 @@ async function commitBookSalaryRun(
         error: [entry?.message_sv ?? `Kunde inte bokföra lönekörningen: ${result.code}`, detail]
           .filter(Boolean)
           .join(' '),
+        // The agent branches on the code: SALARY_RUN_BOOKING_IN_PROGRESS
+        // means wait and re-read the run, not approve again at once.
+        errorCode: result.code,
         status: entry?.httpStatus ?? 500,
       }
     }

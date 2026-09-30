@@ -615,6 +615,26 @@ describe('commitPendingOperation: book_salary_run', () => {
     expect(result.error).toMatch(/redan bokförd/)
   })
 
+  it('answers 409 SALARY_RUN_BOOKING_IN_PROGRESS with its code while another booking holds the run (#3251)', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // finalize (failed)
+
+    mockAdvanceAndBook.mockResolvedValue({ ok: false, code: 'SALARY_RUN_BOOKING_IN_PROGRESS' })
+
+    const op = makePendingOp({
+      operation_type: 'book_salary_run',
+      risk_level: 'high',
+      params: { salary_run_id: 'run-1' },
+    })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('rejected')
+    expect(result.http_status).toBe(409)
+    expect(result.code).toBe('SALARY_RUN_BOOKING_IN_PROGRESS')
+    expect(result.error).toMatch(/håller redan på att bokföras/)
+  })
+
   it('answers 409 with the vouchers to reverse when the run has posted vouchers that do not match', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
