@@ -173,4 +173,18 @@ describe('capabilities resource: payroll:write', () => {
     const on = await readPayroll({ bookkeeping_locked_through: null, vat_registered: true, pays_salaries: true, entity_type: null }, null)
     expect(on.payroll.state_blocked).toBe(false)
   })
+
+  it('propagates a failed companies read instead of reporting payroll as blocked', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'period-1', is_closed: false, locked_at: null, opening_balances_set: true, period_end: '2099-12-31' } })
+    enqueue({ data: { bookkeeping_locked_through: null, vat_registered: true, pays_salaries: false, entity_type: null } })
+    enqueue({ data: null, error: { message: 'connection reset' } })
+    const r = findResource('Accounted://capabilities')!
+    await expect(r.read({
+      supabase: supabase as never,
+      companyId: 'company-1',
+      userId: 'user-1',
+      scopes: ['payroll:write'],
+    })).rejects.toThrow('Failed to load company entity type')
+  })
 })

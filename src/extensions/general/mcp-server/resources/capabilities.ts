@@ -1,6 +1,6 @@
 import type { McpResource } from './types'
 import { TOOL_SCOPE_MAP, hasScope } from '@/lib/auth/api-keys'
-import { resolveCompanyEntityType } from '@/lib/company/entity-type'
+import { resolveCompanyEntityType, UnknownEntityTypeError } from '@/lib/company/entity-type'
 import { offersPayroll } from '@/lib/company/offers-payroll'
 
 interface Capability {
@@ -34,10 +34,14 @@ export const capabilitiesResource: McpResource = {
       .maybeSingle()
 
     // Same resolution as the dashboard layout: company_settings first, the
-    // canonical companies row when it is missing. An unresolvable form leaves
-    // payroll to the pays_salaries flag alone instead of failing the resource.
+    // canonical companies row when it is missing. A missing or unknown form
+    // leaves payroll to the pays_salaries flag alone; a failed companies read
+    // propagates so the caller retries instead of seeing a wrong blocker.
     const entityType = await resolveCompanyEntityType(supabase, companyId, settings?.entity_type)
-      .catch(() => null)
+      .catch((err: unknown) => {
+        if (err instanceof UnknownEntityTypeError) return null
+        throw err
+      })
 
     const periodIsLocked = !!activePeriod?.locked_at || !!activePeriod?.is_closed
     const periodMissing = !activePeriod
