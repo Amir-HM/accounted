@@ -20,6 +20,10 @@
  *   * service_role and authenticated each get a GRANT on it in the same file,
  *     or an explicit, reasoned waiver in a comment:
  *       -- no-grant: authenticated on public.my_table (service-role only: cron writes it)
+ *     or a `REVOKE ALL ... ON public.my_table FROM authenticated` in the same
+ *     file, which states the role's access as plainly as a waiver and, unlike a
+ *     comment, takes effect. A partial REVOKE (SELECT, DELETE, ...) does not
+ *     count: it assumes the rest of the old default grant is still there.
  *     anon is never required; grant it only to a table that is meant to be
  *     public.
  *   * a serial column (serial, smallserial, bigserial, serial2/4/8), in a
@@ -225,6 +229,8 @@ const ADD_SERIAL_RE = new RegExp(
 )
 const SECURITY_INVOKER_RE = /\bsecurity_invoker\s*(?:=\s*(?:true|on|yes|1)\b|(?=[,)]))/i
 const GRANT_RE = /^grant\s+([\s\S]+?)\s+on\s+([\s\S]+?)\s+to\s+([\s\S]+?)(?:\s+with\s+grant\s+option)?\s*$/i
+const REVOKE_RE =
+  /^revoke\s+(grant\s+option\s+for\s+)?([\s\S]+?)\s+on\s+([\s\S]+?)\s+from\s+([\s\S]+?)(?:\s+(?:cascade|restrict))?\s*$/i
 const WAIVER_RE = new RegExp(
   String.raw`no-grant:\s*((?:anon|authenticated|service_role)(?:\s*,\s*(?:anon|authenticated|service_role))*)\s+on\s+(${QUALIFIED})\s*\(([^)]*)\)`,
   'gi',
@@ -286,7 +292,10 @@ function handleStatement(stmt, line, ctx) {
       existing.delete(name)
       ctx.created = ctx.created.filter((r) => r.name !== name)
       ctx.serials = ctx.serials.filter((s) => s.table !== name && s.sequence !== name)
-      for (const role of API_ROLES) ctx.grants.delete(`${name}|${role}`)
+      for (const role of API_ROLES) {
+        ctx.grants.delete(`${name}|${role}`)
+        ctx.revoked.delete(`${name}|${role}`)
+      }
       ctx.rowSecurity.delete(name)
     }
     return
@@ -314,6 +323,25 @@ function handleStatement(stmt, line, ctx) {
     const roles = /\bto\s+(.+)$/i.exec(stmt)
     if (roles && splitList(roles[1].toLowerCase()).some((r) => API_ROLES.has(r))) {
       ctx.findings.push({ file: ctx.file, line, kind: 'bulk-grant', detail: 'ALTER DEFAULT PRIVILEGES ... GRANT' })
+    }
+    return
+  }
+
+  m = REVOKE_RE.exec(stmt)
+  if (m) {
+    // Only REVOKE ALL [PRIVILEGES] is a decision about the role; a partial or
+    // GRANT OPTION FOR revoke leaves it expecting the grant it no longer gets.
+    if (m[1] || !/^all(?:\s+privileges)?$/i.test(m[2].trim())) return
+    const revokedFrom = m[3].trim()
+    if (NON_RELATION_GRANT_RE.test(revokedFrom) || /^all\s/i.test(revokedFrom)) return
+    const revokedRoles = splitList(m[4].toLowerCase())
+      .map((r) => r.replace(/^group\s+/, ''))
+      .filter((r) => API_ROLES.has(r))
+    const revokedSequence = /^sequence\s+(.+)$/i.exec(revokedFrom)
+    for (const target of splitList(revokedSequence ? revokedSequence[1] : revokedFrom.replace(/^table\s+/i, ''))) {
+      const name = publicName(target)
+      if (!name) continue
+      for (const role of revokedRoles) ctx.revoked.add(`${name}|${role}`)
     }
     return
   }
@@ -392,12 +420,14 @@ export function analyzeMigration(sql, file, existing = new Set()) {
     serials: [], // { table, sequence, line }
     grants: new Set(), // `${name}|${role}`
     waivers: new Set(), // `${name}|${role}`
+    revoked: new Set(), // `${name}|${role}`: REVOKE ALL on it from the role, after its last DROP
     rowSecurity: new Set(), // tables with RLS enabled, views with security_invoker, in this file
     findings: [],
   }
   walk(sql, 1, false, ctx)
 
-  const reaches = (name, role) => ctx.grants.has(`${name}|${role}`) || ctx.waivers.has(`${name}|${role}`)
+  const reaches = (name, role) =>
+    ctx.grants.has(`${name}|${role}`) || ctx.waivers.has(`${name}|${role}`) || ctx.revoked.has(`${name}|${role}`)
   const findings = [...ctx.findings]
   for (const rel of ctx.created) {
     const missing = REQUIRED_ROLES.filter((role) => !reaches(rel.name, role))
@@ -408,7 +438,8 @@ export function analyzeMigration(sql, file, existing = new Set()) {
   }
   for (const s of ctx.serials) {
     const missing = REQUIRED_ROLES.filter(
-      (role) => !reaches(s.sequence, role) && !ctx.waivers.has(`${s.table}|${role}`),
+      (role) =>
+        !reaches(s.sequence, role) && !ctx.waivers.has(`${s.table}|${role}`) && !ctx.revoked.has(`${s.table}|${role}`),
     )
     if (missing.length) {
       findings.push({ file, line: s.line, kind: 'serial-without-grant', relation: s.table, sequence: s.sequence, roles: missing })

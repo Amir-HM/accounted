@@ -225,6 +225,42 @@ describe('table-without-grant: the grant shapes this repo writes', () => {
     ).toEqual([])
   })
 
+  it('accepts REVOKE ALL from a role as that role\'s explicit decision (a service-role-only table)', () => {
+    // The shape of 20260929200000_peppol_alerts: closed to the session roles by
+    // an executed statement rather than a comment.
+    expect(
+      analyze(`
+        CREATE TABLE public.t (id uuid PRIMARY KEY);
+        ALTER TABLE public.t ENABLE ROW LEVEL SECURITY;
+        REVOKE ALL ON TABLE public.t FROM PUBLIC, anon, authenticated;
+        GRANT ALL ON TABLE public.t TO service_role;
+      `),
+    ).toEqual([])
+    expect(analyze('CREATE TABLE public.t (id bigserial PRIMARY KEY); REVOKE ALL PRIVILEGES ON public.t FROM authenticated, service_role;')).toEqual([])
+  })
+
+  it.each([
+    ['a partial revoke, which assumes the rest of the old default grant', 'REVOKE DELETE, TRUNCATE ON public.t FROM authenticated;'],
+    ['a GRANT OPTION FOR revoke', 'REVOKE GRANT OPTION FOR ALL ON public.t FROM authenticated;'],
+    ['a bulk revoke that names no table', 'REVOKE ALL ON ALL TABLES IN SCHEMA public FROM authenticated;'],
+    ['a revoke on another table', 'REVOKE ALL ON public.other FROM authenticated;'],
+  ])('still flags the role after %s', (_label, revoke) => {
+    const findings = analyze(`CREATE TABLE public.t (id uuid PRIMARY KEY); GRANT ALL ON public.t TO service_role; ${revoke}`)
+    expect(findings.map((f) => f.roles)).toEqual([['authenticated']])
+  })
+
+  it('forgets a REVOKE ALL made before a DROP in the same file', () => {
+    const findings = analyze(`
+      CREATE TABLE public.t (id uuid PRIMARY KEY);
+      REVOKE ALL ON public.t FROM authenticated;
+      GRANT ALL ON public.t TO service_role;
+      DROP TABLE public.t;
+      CREATE TABLE public.t (id uuid PRIMARY KEY);
+      GRANT ALL ON public.t TO service_role;
+    `)
+    expect(findings.map((f) => f.roles)).toEqual([['authenticated']])
+  })
+
   it('refuses a waiver without a reason', () => {
     const findings = analyze(`
       -- no-grant: authenticated, service_role on public.t ()
