@@ -4026,7 +4026,7 @@ async function resolveReportDimensionFilter(
 const REPORT_DIMENSIONS_FILTER_SCHEMA = {
   type: 'object',
   additionalProperties: { type: 'string' },
-  description: 'Filter: SIE dim no → value (code OR name, resolved server-side), e.g. {"6":"P001"}. P&L view only: opening balances are excluded when set.',
+  description: 'Filter: SIE dim no → value (code OR name, resolved server-side), e.g. {"6":"P001"}. Opening balances are scoped to it too: the IB lines tagged with that value (a project carries its balance; dimensions that reset annually open at 0).',
 } as const
 
 // Optional custom date range on the report tools. Historically from_date /
@@ -9850,7 +9850,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_get_trial_balance',
     keywords: ['råbalans', 'saldobalans'],
     title: 'Trial Balance (Råbalans)',
-    description: 'Saldobalans for a period (default: latest): balances and debit/credit totals. A dimensions filter gives partial_view: tagged lines only, no IB, is_balanced meaningless.',
+    description: 'Saldobalans for a period (default: latest): balances and debit/credit totals. A dimensions filter gives partial_view: tagged lines only, IB scoped to the value\'s tagged IB lines, is_balanced meaningless.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9926,11 +9926,11 @@ export const tools: McpTool[] = [
         period_end: period.period_end,
         account_count: rows.length,
         // Saldobalans is not a filterable report on the dashboard. The
-        // filter stays because agents read it as P&L per project, but the
-        // answer must say what it is: tagged lines only, no IB (company-
-        // wide), and a balance check that tagged lines need not pass.
+        // filter stays because agents read it per project, but the answer
+        // must say what it is: tagged lines only, IB scoped to the object's
+        // tagged IB lines, and a balance check tagged lines need not pass.
         ...(dimFilter.filter
-          ? { partial_view: dimensionFilterPartialView(dimFilter.filter, { dropsOpeningBalances: true, balanceCheck: true }) }
+          ? { partial_view: dimensionFilterPartialView(dimFilter.filter, { scopedOpeningBalances: true, balanceCheck: true }) }
           : {}),
         ...(dimFilter.filter ? { dimension_filter: dimFilter.filter } : {}),
         ...(dimFilter.resolutions.length > 0 ? { dimension_resolutions: dimFilter.resolutions } : {}),

@@ -31,6 +31,8 @@ import { ENTITY_TYPES, resolveCompanyEntityType, resultClosingAccounts } from '@
 import { formatCurrency } from '@/lib/utils'
 import { overDisposedAmount, resultAccountLeftover, resultAccountResidual } from './prior-result-guard'
 import { priorResultCarry } from './prior-result-carry'
+import { buildOpeningBalanceLines, fetchObjectClosingBalances } from './opening-balance-split'
+import type { ObjectBalanceSplit } from '@/lib/bookkeeping/dimension-carry'
 import type {
   YearEndValidation,
   YearEndBlocker,
@@ -999,7 +1001,11 @@ export async function executeYearEndClosing(
  * Generate opening balance entries in the next period from the closed period's
  * balance sheet accounts (class 1-2).
  *
- * Each account's closing balance becomes its opening balance.
+ * Each account's closing balance becomes its opening balance, split per
+ * project (issue #3313, lib/core/bookkeeping/opening-balance-split.ts): one
+ * line per object of an accumulating dimension carrying that object's
+ * closing balance, plus an untagged remainder. Per-account totals are the
+ * trial balance's, exactly as before the split.
  * The entry must be balanced (total debit openings = total credit openings).
  */
 export async function generateOpeningBalances(
@@ -1030,31 +1036,31 @@ export async function generateOpeningBalances(
     (r) => r.account_class >= 1 && r.account_class <= 2
   )
 
-  const openingLines: CreateJournalEntryLineInput[] = []
-
-  for (const account of balanceSheetAccounts) {
-    const netBalance = account.closing_debit - account.closing_credit
-
-    if (Math.abs(netBalance) < ORE_TOLERANCE) continue
-
-    if (netBalance > 0) {
-      // Debit balance → opening debit
-      openingLines.push({
-        account_number: account.account_number,
-        debit_amount: roundOre(netBalance),
-        credit_amount: 0,
-        line_description: `Ingående balans: ${account.account_name}`,
-      })
-    } else {
-      // Credit balance → opening credit
-      openingLines.push({
-        account_number: account.account_number,
-        debit_amount: 0,
-        credit_amount: roundOre(Math.abs(netBalance)),
-        line_description: `Ingående balans: ${account.account_name}`,
-      })
-    }
+  // Project split. This runs after the period was closed (irreversible), so
+  // a failure must not leave the year without an IB: fall back to one line
+  // per account, alert, and leave the split to be redone later. Totals are
+  // identical either way.
+  let objectBalances = new Map<string, ObjectBalanceSplit[]>()
+  try {
+    objectBalances = await fetchObjectClosingBalances(supabase, companyId, closedPeriodId)
+  } catch (err) {
+    log.error('year-end: opening balance project split failed, IB booked per account (non-fatal)', err as Error, {
+      operation: 'year_end.opening_balance_split',
+      alert: true,
+      companyId,
+      entityType: 'fiscal_period',
+      entityId: nextPeriodId,
+    })
   }
+
+  const openingLines: CreateJournalEntryLineInput[] = buildOpeningBalanceLines(
+    balanceSheetAccounts.map((account) => ({
+      account_number: account.account_number,
+      account_name: account.account_name,
+      net: account.closing_debit - account.closing_credit,
+    })),
+    objectBalances
+  )
 
   if (openingLines.length === 0) {
     throw new Error('No balance sheet accounts with non-zero closing balance')
@@ -1070,15 +1076,26 @@ export async function generateOpeningBalances(
     )
   }
 
-  // Create opening balance entry in next period
-  const openingEntry = await createJournalEntry(supabase, companyId, userId, {
-    fiscal_period_id: nextPeriodId,
-    entry_date: nextPeriod.period_start,
-    description: `Ingående balans ${nextPeriod.name}`,
-    source_type: 'opening_balance',
-    voucher_series: 'A',
-    lines: openingLines,
-  })
+  // Create opening balance entry in next period. The project bags are copied
+  // from posted history, so the registry must not refuse them: a project
+  // archived during the year can still hold a 1470 balance (replayDimensions,
+  // scoped to this generator; see CreateEntryOptions).
+  const openingEntry = await createJournalEntry(
+    supabase,
+    companyId,
+    userId,
+    {
+      fiscal_period_id: nextPeriodId,
+      entry_date: nextPeriod.period_start,
+      description: `Ingående balans ${nextPeriod.name}`,
+      source_type: 'opening_balance',
+      voucher_series: 'A',
+      lines: openingLines,
+    },
+    undefined,
+    undefined,
+    { replayDimensions: true }
+  )
 
   // Mark next period with opening balance entry
   const { error: updateError } = await supabase

@@ -178,4 +178,92 @@ describe('getOpeningBalances', () => {
 
     expect(balances.get('1930')).toEqual({ debit: 0, credit: 0 })
   })
+
+  describe('dimension-scoped IB (issue #3313)', () => {
+    /** Chainable query recorder: every builder call lands in `calls`. */
+    function recordingSupabase(calls: Array<[string, unknown[]]>) {
+      const chain: Record<string, unknown> = new Proxy(
+        {},
+        {
+          get: (_t, prop) => (...args: unknown[]) => {
+            calls.push([String(prop), args])
+            return chain
+          },
+        }
+      )
+      return { from: (table: string) => { calls.push(['from', [table]]); return chain } }
+    }
+
+    it('filters the IB entry\'s lines by jsonb containment', async () => {
+      const calls: Array<[string, unknown[]]> = []
+      const supabase = recordingSupabase(calls)
+      // First fetchAllRows: the IB entry; second: its lines. Run each query
+      // builder so the filters it applies are recorded.
+      mockFetchAllRows
+        .mockImplementationOnce(async (build) => {
+          build({ from: 0, to: 999 })
+          return [{ id: 'ob-entry-123' }]
+        })
+        .mockImplementationOnce(async (build) => {
+          build({ from: 0, to: 999 })
+          return [{ id: 'l1', account_number: '1470', debit_amount: 1200, credit_amount: 0 }]
+        })
+
+      const { balances, obEntryId } = await getOpeningBalances(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        supabase as any,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: 'ob-entry-123' },
+        { dimensions: { '6': 'P1' } }
+      )
+
+      expect(calls).toContainEqual(['contains', ['dimensions', { '6': 'P1' }]])
+      expect(balances.get('1470')).toEqual({ debit: 1200, credit: 0 })
+      expect(obEntryId).toBe('ob-entry-123')
+    })
+
+    it('does not filter the IB entry\'s lines without a filter', async () => {
+      const calls: Array<[string, unknown[]]> = []
+      const supabase = recordingSupabase(calls)
+      mockFetchAllRows
+        .mockImplementationOnce(async (build) => {
+          build({ from: 0, to: 999 })
+          return [{ id: 'ob-entry-123' }]
+        })
+        .mockImplementationOnce(async (build) => {
+          build({ from: 0, to: 999 })
+          return []
+        })
+      await getOpeningBalances(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        supabase as any,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: 'ob-entry-123' },
+        { dimensions: {} }
+      )
+      expect(calls.some(([method]) => method === 'contains')).toBe(false)
+    })
+
+    it('passes p_dimensions to the fallback RPC only under a filter', async () => {
+      const supabase = createSupabaseWithRpc(async () => ({
+        data: [{ account_number: '1470', debit: 1300, credit: 0 }],
+        error: null,
+      }))
+      const period = { period_start: '2026-01-01', opening_balance_entry_id: null }
+
+      const { balances } = await getOpeningBalances(supabase, 'company-1', period, { dimensions: { '6': 'P1' } })
+      expect(supabase.rpc).toHaveBeenLastCalledWith('compute_prior_opening_balances', {
+        p_company_id: 'company-1',
+        p_period_start: '2026-01-01',
+        p_dimensions: { '6': 'P1' },
+      })
+      expect(balances.get('1470')).toEqual({ debit: 1300, credit: 0 })
+
+      await getOpeningBalances(supabase, 'company-1', period)
+      expect(supabase.rpc).toHaveBeenLastCalledWith('compute_prior_opening_balances', {
+        p_company_id: 'company-1',
+        p_period_start: '2026-01-01',
+      })
+    })
+  })
 })
