@@ -16,8 +16,11 @@
 -- could never take 1930 from an unchecked sibling that the connect had
 -- mirrored there: every such save failed, whatever the user picked.
 --
--- A yielding row that the checked account cannot adopt is now settled first,
--- before moves are derived:
+-- A yielding row is the row of an unchecked account of this connection whose
+-- selection carries no ledger (the route dropped it), or a disabled row of
+-- another live connection, when a checked account asks for its ledger. One
+-- that the checked account cannot adopt is now settled first, before moves
+-- are derived:
 --   nothing on it: no transactions and cash_account_retirement_dependencies()
 --     empty, the same test promotion applies before it deletes a retired
 --     row. The row is deleted: it only placed a ledger for an account nobody
@@ -25,7 +28,8 @@
 --     ledger stay where they are; none came from this row, and the account
 --     the user picked continues the ledger. A primary flag on the row follows
 --     the ledger to the row that holds it after the save, as
---     promote_psd2_cash_account carries a retired primary.
+--     promote_psd2_cash_account carries a retired primary. The receipt lists
+--     each deleted row under 'yielded', as promotion lists its retired rows.
 --   anything on it: BANK_SELECTION_YIELD_HAS_HISTORY and nothing is saved.
 --     Two physical accounts on one BAS account over time is an accounting
 --     decision, not a side effect of a picker save.
@@ -33,12 +37,14 @@
 -- ledger with its transactions and primary flag. Every save this changes
 -- failed before, with CASH_ACCOUNT_KEEPER_IDENTITY_CONFLICT.
 --
--- Unchanged: a yielding row promotion can adopt (same currency, and the same
--- IBAN or none on the row) is still detached and adopted, keeping its id and
+-- Unchanged: an unchecked account whose own selection gives it another ledger
+-- does not yield; the move step relocates its row in place, id and history
+-- kept. A yielding row promotion can adopt (same currency, and the same IBAN
+-- or none on the row) is still detached and adopted, keeping its id and
 -- history. Manual rows and rows of revoked connections do not yield here;
 -- the promotion rules, including the identity refusal, still apply to them.
 -- Everything else is identical to 20260925155946, apart from one comment on
--- the move step.
+-- the move step and the new 'yielded' key in the receipt.
 --
 -- pg-test: covered-by tests/pg/bank-account-selection.pg.test.ts
 
@@ -55,7 +61,7 @@ DECLARE
   v_enabled integer;
   v_move_ids uuid[]; v_move_ledgers text[]; v_keep_ids uuid[]; v_keep_ledgers text[];
   v_done uuid[]; v_park text;
-  v_yield public.cash_accounts; v_carry_primary text;
+  v_yield public.cash_accounts; v_carry_primary text; v_yielded jsonb := '[]';
 BEGIN
   IF jsonb_typeof(p_selections) IS DISTINCT FROM 'array'
     OR jsonb_typeof(p_chart_accounts) IS DISTINCT FROM 'array' THEN
@@ -130,12 +136,15 @@ BEGIN
   -- in another live connection) to a checked account of another physical
   -- account gives up its row. Promotion cannot adopt that row, and detaching
   -- it would leave the other account's IBAN on the ledger. See the header.
+  -- An unchecked account that asks for a ledger of its own is not yielding:
+  -- the move step below relocates its row in place.
   FOR v_yield IN
     SELECT c.* FROM public.cash_accounts c
     WHERE c.company_id = p_company_id AND c.bank_connection_id IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM public.bank_connections b WHERE b.id = c.bank_connection_id AND b.status = 'revoked')
       AND ((c.bank_connection_id = p_connection_id AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_selections) u
-            WHERE u->>'uid' = c.external_uid AND NOT (u->>'enabled')::boolean))
+            WHERE u->>'uid' = c.external_uid AND NOT (u->>'enabled')::boolean
+              AND nullif(u->>'ledger_account','') IS NULL))
         OR (c.bank_connection_id <> p_connection_id AND c.enabled = false))
       AND EXISTS (SELECT 1 FROM jsonb_array_elements(p_selections) s
         JOIN jsonb_array_elements(v_connection.accounts_data) a ON a->>'uid' = s->>'uid'
@@ -154,6 +163,9 @@ BEGIN
     END IF;
     IF v_yield.is_primary THEN v_carry_primary := v_yield.ledger_account; END IF;
     DELETE FROM public.cash_accounts WHERE company_id = p_company_id AND id = v_yield.id;
+    v_yielded := v_yielded || jsonb_build_array(jsonb_build_object('id', v_yield.id,
+      'ledger_account', v_yield.ledger_account, 'bank_connection_id', v_yield.bank_connection_id,
+      'is_primary', v_yield.is_primary));
   END LOOP;
 
   -- A cash account row is the bank account (connection + uid), not its BAS
@@ -232,7 +244,8 @@ BEGIN
       WHERE c.company_id = p_company_id AND c.ledger_account = v_carry_primary));
   END IF;
   SELECT * INTO v_connection FROM public.bank_connections WHERE company_id = p_company_id AND id = p_connection_id;
-  RETURN jsonb_build_object('status', v_connection.status, 'accounts', v_connection.accounts_data, 'mirrors', v_mirrors);
+  RETURN jsonb_build_object('status', v_connection.status, 'accounts', v_connection.accounts_data, 'mirrors', v_mirrors,
+    'yielded', v_yielded);
 END;
 $function$;
 

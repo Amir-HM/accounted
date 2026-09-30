@@ -1600,6 +1600,8 @@ export const enableBankingExtension: Extension = {
           totalCount: existing.length,
           previousStatus: connection.status,
           newStatus,
+          // Unused rows of unchecked accounts deleted when they gave their ledger up.
+          yieldedCashAccounts: saved.yielded ?? [],
           userId: user.id,
           companyId,
         })

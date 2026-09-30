@@ -368,7 +368,7 @@ describe('ledger changes keep the bank account row', () => {
     const takeOver = (ledger: string) => [{ uid: 'selection-a', currency: 'SEK', enabled: false }, { ...b, enabled: true, ledger_account: ledger }]
 
     it('moves the synced account onto the ledger with its history and primary flag, and deletes the unused row', async () => {
-      const { rb } = await mirrorUncheckedOn('1930', '1940')
+      const { ra, rb } = await mirrorUncheckedOn('1930', '1940')
       await client.query('UPDATE cash_accounts SET is_primary=true WHERE id=$1', [rb.id])
       const history = [await transactionOn(rb.id), await transactionOn(rb.id)].sort()
 
@@ -378,10 +378,30 @@ describe('ledger changes keep the bank account row', () => {
       expect(result.accounts[0]).not.toHaveProperty('ledger_account')
       expect(result.accounts[1]).toMatchObject({ uid: 'selection-b', enabled: true, ledger_account: '1930' })
       expect(result.mirrors).toEqual([{ cashAccountId: rb.id, moved: 0, retired: [] }])
+      expect(result.yielded).toEqual([{ id: ra.id, ledger_account: '1930', bank_connection_id: connectionId, is_primary: false }])
       expect(await rows()).toEqual([
         { id: rb.id, ledger_account: '1930', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: true },
       ])
       expect(await transactionsOf(rb.id)).toEqual(history)
+    })
+
+    // Not a yield: the unchecked account asks for a ledger of its own in the
+    // same save (PATCH /accounts passes an uncontested mapping through), so
+    // the move step relocates its row, as before this change.
+    it.each([true, false])('moves an unchecked account that asks for its own ledger in place (history: %s)', async withHistory => {
+      const { ra, rb } = await mirrorUncheckedOn('1930', '1940')
+      const history = withHistory ? [await transactionOn(ra.id)] : []
+
+      const result = await save((await snapshot()).token,
+        [{ ...selection[0], ledger_account: '1937', enabled: false }, { ...b, enabled: true, ledger_account: '1930' }],
+        chartsFor('1937', '1930'))
+
+      expect(result.yielded).toEqual([])
+      expect(await rows()).toEqual([
+        { id: ra.id, ledger_account: '1937', external_uid: 'selection-a', bank_connection_id: connectionId, is_primary: false },
+        { id: rb.id, ledger_account: '1930', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: false },
+      ])
+      expect(await transactionsOf(ra.id)).toEqual(history)
     })
 
     it('hands the primary flag of the deleted row to the account that takes its ledger, posted lines on it or not', async () => {
@@ -433,8 +453,9 @@ describe('ledger changes keep the bank account row', () => {
       const otherRow = (await client.query(`INSERT INTO cash_accounts(company_id,bank_connection_id,external_uid,ledger_account,currency,iban,enabled)
         VALUES($1,$2,'other-a','1930','SEK',$3,false) RETURNING id`, [owner.companyId, otherId, iban])).rows[0].id
 
-      await save((await snapshot()).token)
+      const result = await save((await snapshot()).token)
 
+      expect(result.yielded).toEqual([{ id: otherRow, ledger_account: '1930', bank_connection_id: otherId, is_primary: false }])
       expect((await client.query('SELECT id FROM cash_accounts WHERE id=$1', [otherRow])).rows).toEqual([])
       expect((await client.query('SELECT bank_connection_id, external_uid, iban FROM cash_accounts WHERE company_id=$1 AND ledger_account=$2',
         [owner.companyId, '1930'])).rows).toEqual([{ bank_connection_id: connectionId, external_uid: 'selection-a', iban: accounts[0].iban }])
