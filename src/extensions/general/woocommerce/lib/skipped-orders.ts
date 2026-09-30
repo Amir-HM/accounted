@@ -118,60 +118,112 @@ export function skippedOrdersStatus(orders: readonly SkippedCurrencyOrder[]): Sk
   return { count: orders.length, orders: orders.slice(0, SKIPPED_ORDERS_STATUS_LIMIT) }
 }
 
-/**
- * Load the stored list. A read error is an error, never an empty list:
- * treating it as empty would let the next write erase every recorded order.
- */
-export async function readSkippedOrders(
-  supabase: SupabaseClient,
-  companyId: string,
-  storeScope: string,
-): Promise<SkippedCurrencyOrder[]> {
-  const { data, error } = await supabase
-    .from('extension_data')
-    .select('value')
-    .eq('company_id', companyId)
-    .eq('extension_id', WOO_EXTENSION_ID)
-    .eq('key', skippedOrdersKey(storeScope))
-    .maybeSingle()
-  if (error) {
-    throw new Error(`skipped-orders read failed for ${storeScope}: ${error.message}`)
-  }
-  return parseSkippedOrders(data?.value)
+/** One page's delta to the list: never a whole list, so two runs merge. */
+export interface SkippedOrdersChange {
+  sighted: readonly SkippedSighting[]
+  resolvedOrderIds: readonly number[]
 }
 
 /**
- * Persist the list; an empty list removes the row (value is NOT NULL and an
- * empty row would only be noise). Returns false on a failed write so the
- * caller can hold its cursor.
+ * Outcome of applying a delta. 'failed' and 'contended' both mean the delta
+ * is NOT stored; the caller holds its cursor exactly as for a failed write.
  */
-export async function writeSkippedOrders(
+export type SkippedOrdersWriteResult = 'written' | 'unchanged' | 'failed' | 'contended'
+
+/** Read-merge-write rounds before giving up on a contended row. */
+export const SKIPPED_ORDERS_WRITE_ATTEMPTS = 5
+
+/** Postgres unique_violation: another run inserted the row first. */
+const UNIQUE_VIOLATION = '23505'
+
+/**
+ * Apply one page's delta to the stored list with compare-and-swap.
+ *
+ * Why CAS: the manual /sync, /backfill and the nightly cron can run for one
+ * store at the same time. A run that merged into a copy read earlier and
+ * then replaced the whole value would drop entries another run added in
+ * between, and its cursor would then move past that page: the lost order is
+ * never listed again. So every round re-reads the row, merges THIS page's
+ * delta into what is stored now, and writes on the condition that the row
+ * still carries the updated_at it read (set_updated_at_extension_data bumps
+ * it on every update). Zero rows matched means another run wrote first: read
+ * again and merge again. An absent row is created with a plain insert, so
+ * two runs racing to create it collide on the unique key instead of one
+ * silently replacing the other.
+ *
+ * A read error is an error, never an empty list: merging into an empty list
+ * would erase every recorded order. An empty result removes the row (value
+ * is NOT NULL and an empty row would only be noise), under the same
+ * condition.
+ */
+export async function applySkippedOrdersChange(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
   storeScope: string,
-  orders: readonly SkippedCurrencyOrder[],
-): Promise<boolean> {
+  change: SkippedOrdersChange,
+  nowIso: string,
+  maxAttempts: number = SKIPPED_ORDERS_WRITE_ATTEMPTS,
+): Promise<SkippedOrdersWriteResult> {
+  if (change.sighted.length === 0 && change.resolvedOrderIds.length === 0) return 'unchanged'
   const key = skippedOrdersKey(storeScope)
-  if (orders.length === 0) {
-    const { error } = await supabase
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const { data: row, error: readError } = await supabase
       .from('extension_data')
-      .delete()
+      .select('value, updated_at')
       .eq('company_id', companyId)
       .eq('extension_id', WOO_EXTENSION_ID)
       .eq('key', key)
-    return !error
+      .maybeSingle()
+    if (readError) return 'failed'
+
+    const current = parseSkippedOrders(row?.value)
+    const next = mergeSkippedOrders(current, change, nowIso)
+    if (!skippedOrdersChanged(current, next)) return 'unchanged'
+    const value: SkippedOrdersValue = { orders: next }
+
+    if (!row) {
+      // next is non-empty here: it differs from the empty current list.
+      const { error: insertError } = await supabase.from('extension_data').insert({
+        user_id: userId,
+        company_id: companyId,
+        extension_id: WOO_EXTENSION_ID,
+        key,
+        value,
+      })
+      if (!insertError) return 'written'
+      if (insertError.code === UNIQUE_VIOLATION) continue
+      return 'failed'
+    }
+
+    // The version this round read. The column defaults to now() and the
+    // trigger sets it on every update, so a stored row always carries one;
+    // without it there is nothing to compare against, so do not write blind.
+    const readVersion: unknown = row.updated_at
+    if (typeof readVersion !== 'string') return 'failed'
+
+    const { data: matched, error: writeError } =
+      next.length === 0
+        ? await supabase
+            .from('extension_data')
+            .delete()
+            .eq('company_id', companyId)
+            .eq('extension_id', WOO_EXTENSION_ID)
+            .eq('key', key)
+            .eq('updated_at', readVersion)
+            .select('id')
+        : await supabase
+            .from('extension_data')
+            .update({ value })
+            .eq('company_id', companyId)
+            .eq('extension_id', WOO_EXTENSION_ID)
+            .eq('key', key)
+            .eq('updated_at', readVersion)
+            .select('id')
+    if (writeError) return 'failed'
+    if (Array.isArray(matched) && matched.length > 0) return 'written'
+    // Zero rows: another run changed the row since this round read it.
   }
-  const value: SkippedOrdersValue = { orders: [...orders] }
-  const { error } = await supabase.from('extension_data').upsert(
-    {
-      user_id: userId,
-      company_id: companyId,
-      extension_id: WOO_EXTENSION_ID,
-      key,
-      value,
-    },
-    { onConflict: 'company_id,extension_id,key' },
-  )
-  return !error
+  return 'contended'
 }

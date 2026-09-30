@@ -14,14 +14,7 @@ import {
 } from './api-client'
 import { credentialsOf } from './connect'
 import { resolveOrderCurrency } from './order-currency'
-import {
-  mergeSkippedOrders,
-  readSkippedOrders,
-  skippedOrdersChanged,
-  writeSkippedOrders,
-  type SkippedCurrencyOrder,
-  type SkippedSighting,
-} from './skipped-orders'
+import { applySkippedOrdersChange, type SkippedSighting } from './skipped-orders'
 import type { WooCommerceConnection, WooOrder, WooRefund } from '../types'
 
 const defaultLog = createLogger('woocommerce/order-sync')
@@ -707,13 +700,6 @@ export async function syncWooCommerceOrders(
 
   const creds = credentialsOf(connection)
   const storeScope = wooStoreScope(connection.store_url)
-  // Loaded before any work: a read failure aborts the run rather than letting
-  // a later write replace the stored list with only this run's sightings.
-  let skippedOrders: SkippedCurrencyOrder[] = await readSkippedOrders(
-    supabase,
-    connection.company_id,
-    storeScope,
-  )
 
   let modifiedAfter = resolveWindowStartIso(connection)
   // Offset page within a same-timestamp tie only; 1 whenever the cursor moves.
@@ -800,36 +786,32 @@ export async function syncWooCommerceOrders(
       }
 
       // Durable skipped list, written before the cursor can pass this page.
-      // A failed write holds the cursor below the page's skipped orders so
-      // the next run sees them again and retries the write.
-      const nextSkipped = mergeSkippedOrders(
-        skippedOrders,
+      // Only this page's delta is applied, merged into the freshly read row
+      // under compare-and-swap, so a concurrent run of the same store (manual
+      // sync, backfill, cron) cannot drop entries the other added. A failed
+      // or still-contended write holds the cursor below the page's skipped
+      // orders so the next run sees them again and retries the write.
+      const listWrite = await applySkippedOrdersChange(
+        supabase,
+        connection.company_id,
+        connection.user_id,
+        storeScope,
         {
           sighted: page.skippedSightings,
           resolvedOrderIds: [...importedOrderIds, ...page.goneOrderIds],
         },
         new Date().toISOString(),
       )
-      if (skippedOrdersChanged(skippedOrders, nextSkipped)) {
-        const written = await writeSkippedOrders(
-          supabase,
-          connection.company_id,
-          connection.user_id,
-          storeScope,
-          nextSkipped,
-        )
-        if (written) {
-          skippedOrders = nextSkipped
-        } else {
-          summary.errors += 1
-          for (const sighting of page.skippedSightings) {
-            failureFloorMs = Math.min(failureFloorMs, sighting.modifiedMs - 1000)
-          }
-          log.warn('skipped-orders list write failed; cursor held for retry', {
-            connectionId: connection.id,
-            skipped: page.skippedSightings.length,
-          })
+      if (listWrite === 'failed' || listWrite === 'contended') {
+        summary.errors += 1
+        for (const sighting of page.skippedSightings) {
+          failureFloorMs = Math.min(failureFloorMs, sighting.modifiedMs - 1000)
         }
+        log.warn('skipped-orders list write failed; cursor held for retry', {
+          connectionId: connection.id,
+          skipped: page.skippedSightings.length,
+          outcome: listWrite,
+        })
       }
 
       // Persist the cursor after each page: monotonic (never regresses below
