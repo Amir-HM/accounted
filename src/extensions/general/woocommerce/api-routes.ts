@@ -405,13 +405,17 @@ export const woocommerceApiRoutes: ApiRouteDefinition[] = [
       })
       if (!rl.ok) return rl.response!
 
-      // Membership-scoped lookup via the user client; the sync itself runs on
-      // the service client (cursor updates and upserts are service paths).
-      // The manual button ignores transaction_sync_enabled (that flag gates
-      // the nightly cron): pressing it IS the opt-in. connection_id targets
-      // one store; omitted, every active store syncs within one time budget.
+      // The sync decrypts the stored API keys, which end-user roles cannot
+      // read, so the lookup runs on the service role, scoped to the caller's
+      // active company (the dispatcher resolved it from their membership).
+      // The sync itself runs there too (cursor updates and upserts are
+      // service paths). The manual button ignores transaction_sync_enabled
+      // (that flag gates the nightly cron): pressing it IS the opt-in.
+      // connection_id targets one store; omitted, every active store syncs
+      // within one time budget.
       const body = (await request.json().catch(() => ({}))) as { connection_id?: string }
-      let query = auth.supabase
+      const serviceClient = createServiceClientNoCookies()
+      let query = serviceClient
         .from('woocommerce_connections')
         .select('*')
         .eq('company_id', auth.companyId)
@@ -430,7 +434,6 @@ export const woocommerceApiRoutes: ApiRouteDefinition[] = [
       }
 
       try {
-        const serviceClient = createServiceClientNoCookies()
         // Bounded like the cron (see MANUAL_SYNC_BUDGET_MS).
         const deadlineMs = Date.now() + MANUAL_SYNC_BUDGET_MS
         // One entry per processed store, plus an explicit skipped count:
@@ -514,8 +517,10 @@ export const woocommerceApiRoutes: ApiRouteDefinition[] = [
 
       // A start date belongs to one store. connection_id may be omitted only
       // when the company has a single active store (multi-store, migration
-      // 20260811073422).
-      let query = auth.supabase
+      // 20260811073422). Service role for the same reason as /sync: the run
+      // needs the encrypted API keys, which end-user roles cannot read.
+      const serviceClient = createServiceClientNoCookies()
+      let query = serviceClient
         .from('woocommerce_connections')
         .select('*')
         .eq('company_id', auth.companyId)
@@ -559,7 +564,6 @@ export const woocommerceApiRoutes: ApiRouteDefinition[] = [
       }
 
       try {
-        const serviceClient = createServiceClientNoCookies()
         const summary = await syncWooCommerceOrders(
           serviceClient,
           { ...connection, last_order_synced_at: parsed.iso },

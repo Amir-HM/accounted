@@ -103,7 +103,8 @@ export default async function DashboardPage() {
       getResolvedDashboardAgentProfile(),
       // The Skatteverket promo below the panes needs this flag in the shell;
       // the checklist section reads it again for its own step (cheap head count).
-      supabase.from('skatteverket_tokens').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('company_id', companyId).eq('status', 'active'),
+      // 'id', never '*': the token columns are withheld from end-user roles.
+      supabase.from('skatteverket_tokens').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('company_id', companyId).eq('status', 'active'),
       // The checklist's "Anslut till Claude" step is done when the MCP OAuth
       // token route has minted a key for this user (claudeStepDone). Keyed on
       // the user, not the company: the Claude connection follows the person,
