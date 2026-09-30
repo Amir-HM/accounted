@@ -490,6 +490,55 @@ describe('GET /api/transactions/[id]/match-supplier-invoice/preview: refuses wha
     expect(body.error.code).toBe('MATCH_SI_AMOUNT_EXCEEDS_REMAINING')
   })
 
+  it('previews an excess of exactly one krona as a 6570 fee, 1930 equal to the bank row', async () => {
+    enqueue({
+      data: { id: TX_UUID, date: '2026-05-12', amount: -1001, currency: 'SEK', amount_sek: null, cash_account_id: null },
+      error: null,
+    })
+    enqueue({
+      data: {
+        id: SI_UUID, currency: 'SEK', exchange_rate: null, total: 1000, remaining_amount: 1000,
+        paid_amount: 0, registration_journal_entry_id: 'je-registered', items: [],
+      },
+      error: null,
+    })
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+
+    const res = await GET(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+      is_fully_paid: boolean
+      ore_rounding: boolean
+      bank_fee_sek: number
+    }>(res)
+    expect(status).toBe(200)
+    expect(body.lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+      ['2440', 1000, 0], ['1930', 0, 1001], ['6570', 1, 0],
+    ])
+    expect(body).toMatchObject({ is_fully_paid: true, ore_rounding: false, bank_fee_sek: 1 })
+  })
+
+  it('refuses a rate-less foreign kontantmetoden invoice with the POST code', async () => {
+    enqueue({
+      data: { id: TX_UUID, date: '2026-05-12', amount: -1100, currency: 'SEK', amount_sek: null, cash_account_id: null },
+      error: null,
+    })
+    enqueue({
+      data: {
+        id: SI_UUID, currency: 'EUR', exchange_rate: null, total: 100, remaining_amount: 100,
+        paid_amount: 0, registration_journal_entry_id: null, supplier: { supplier_type: 'swedish_business' },
+        items: [],
+      },
+      error: null,
+    })
+    enqueue({ data: { accounting_method: 'cash' }, error: null })
+
+    const res = await GET(makeReq(), createMockRouteParams({ id: TX_UUID }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(res)
+    expect(status).toBe(400)
+    expect(body.error.code).toBe('SI_FX_RATE_MISSING')
+  })
+
   it('refuses a partial kontantmetoden payment across rates with the POST code', async () => {
     enqueue({
       data: { id: TX_UUID, date: '2026-05-12', amount: -50, currency: 'EUR', amount_sek: -560, cash_account_id: null },

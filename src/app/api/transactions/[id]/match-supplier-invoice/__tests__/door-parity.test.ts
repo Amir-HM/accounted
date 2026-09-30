@@ -11,6 +11,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTableMockSupabase } from '@/tests/helpers'
+import { roundOre } from '@/lib/money'
 import type { CreateJournalEntryInput } from '@/types'
 
 beforeAll(() => {
@@ -223,6 +224,23 @@ const CASES: Array<{
     ledger: { status: 'paid', paid_amount: 1000, remaining_amount: 0 },
     paymentAmount: 1000,
   },
+  // The öre band is open at one krona, so exactly 1.00 over is a fee. A gap
+  // there used to book no fee, no 3740 and no refusal: 1930 credited a krona
+  // less than the bank row and paid_amount past the invoice total.
+  {
+    name: 'a SEK payment exactly one krona over (6570, not a gap)',
+    fixture: { transaction: { amount: -1001 }, invoice: {} },
+    lines: [['2440', 1000, 0], ['1930', 0, 1001], ['6570', 1, 0]],
+    ledger: { status: 'paid', paid_amount: 1000, remaining_amount: 0 },
+    paymentAmount: 1000,
+  },
+  {
+    name: 'completing a part-paid invoice exactly one krona over',
+    fixture: { transaction: { amount: -501 }, invoice: { paid_amount: 500, remaining_amount: 500 } },
+    lines: [['2440', 500, 0], ['1930', 0, 501], ['6570', 1, 0]],
+    ledger: { status: 'paid', paid_amount: 1000, remaining_amount: 0 },
+    paymentAmount: 500,
+  },
   {
     name: 'a whole-krona payment of an öre total (3740 vinst)',
     fixture: { transaction: { amount: -1234 }, invoice: { total: 1234.44, remaining_amount: 1234.44 } },
@@ -265,6 +283,17 @@ const CASES: Array<{
     ledger: { status: 'paid', paid_amount: 1000, remaining_amount: 0 },
     paymentAmount: 1000,
   },
+  {
+    name: 'a kontantmetoden payment exactly one krona over',
+    fixture: {
+      transaction: { amount: -1001 },
+      invoice: { registration_journal_entry_id: null },
+      accountingMethod: 'cash',
+    },
+    lines: [['6110', 800, 0], ['2641', 200, 0], ['1930', 0, 1001], ['6570', 1, 0]],
+    ledger: { status: 'paid', paid_amount: 1000, remaining_amount: 0 },
+    paymentAmount: 1000,
+  },
 ]
 
 describe('supplier bank match: the dashboard and v1 doors book the same payment the same way', () => {
@@ -276,6 +305,11 @@ describe('supplier bank match: the dashboard and v1 doors book the same payment 
     expect(v1.status).toBe(200)
     // The expected books, so the two doors cannot agree on a wrong answer.
     expect(shape(dashboard.entry?.lines)).toEqual(lines)
+    // The payment account moves exactly what the bank row moved.
+    const bankCredit = (dashboard.entry?.lines ?? [])
+      .filter((l) => l.account_number === '1930')
+      .reduce((sum, l) => sum + l.credit_amount - l.debit_amount, 0)
+    expect(roundOre(bankCredit)).toBe(Math.abs(fixture.transaction.amount))
     expect(dashboard.invoiceUpdate).toMatchObject(ledger)
     expect(dashboard.paymentAmount).toBe(paymentAmount)
     expect(dashboard.result).toEqual({

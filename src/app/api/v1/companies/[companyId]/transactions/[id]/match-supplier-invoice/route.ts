@@ -36,6 +36,7 @@ const MatchSIResponse = z.object({
   paid_amount: z.number(),
   remaining_amount: z.number(),
   journal_entry_id: z.string().uuid().nullable(),
+  bank_fee_sek: z.number(),
 })
 
 registerEndpoint({
@@ -52,8 +53,8 @@ registerEndpoint({
   pitfalls: [
     'Cash-method companies can settle a foreign invoice in full (booked at the payment-date rate); only a PARTIAL cash-method payment across currencies is rejected (MATCH_SI_CASH_FX_UNSUPPORTED): pay in full, switch to accrual, or book manually.',
     'Öresavrundning (both accounting methods): a SEK bank row less than 1 kr off the remaining balance of a SEK invoice (a whole-krona payment of an öre total) settles it in full. The payment account is credited with the bank amount and the residual is booked on 3740 (no VAT); paid_amount records the debt settled, not the cash moved. A shortfall of 1 kr or more is a partial payment (on a never-booked cash-method invoice it returns SI_CASH_PARTIAL_UNSUPPORTED).',
-    'Bank fee on top: a same-currency row that pays more than the remaining balance settles the invoice in full; 2440 is cleared by the remaining balance only and the excess (up to 5 000 kr) is booked on 6570. paid_amount never exceeds the invoice total.',
-    'An excess above the fee cap returns 400 MATCH_SI_AMOUNT_EXCEEDS_REMAINING and books nothing: allocate the payment across several invoices with POST /transactions/{id}/match-batch. The check runs before any conflicting categorization is reversed.',
+    'Bank fee on top: a same-currency row that pays more than the remaining balance settles the invoice in full; 2440 is cleared by the remaining balance only and the excess (up to 5 000 kr) is booked on 6570 and returned as bank_fee_sek (0 when there is none, and always 0 with custom lines, which book what they say). paid_amount never exceeds the invoice total. Check bank_fee_sek: a large one usually means the row pays another invoice too.',
+    'A same-currency excess above the fee cap returns 400 MATCH_SI_AMOUNT_EXCEEDS_REMAINING and books nothing: allocate the payment across several invoices with POST /transactions/{id}/match-batch. The check runs before any conflicting categorization is reversed. A cross-currency match is not capped: it settles the remaining balance and books the whole SEK difference as kursdifferens (7960/3960).',
     'Transaction must be negative (amount < 0). Positive returns MATCH_SI_NOT_EXPENSE.',
     'Supplier invoice must NOT be paid/credited already. paid/credited returns MATCH_SI_ALREADY_PAID; registered/approved/partially_paid/overdue are matchable.',
     'Idempotency-Key is mandatory.',
@@ -67,6 +68,7 @@ registerEndpoint({
         paid_amount: 5000,
         remaining_amount: 0,
         journal_entry_id: 'je_…',
+        bank_fee_sek: 0,
       },
       meta: { request_id: 'req_…', api_version: '2026-05-12' },
     },
@@ -218,6 +220,19 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
       })
     }
 
+    // Custom lines must balance, checked before the storno below for the same
+    // reason as the plan: a refused request must not leave a reversal posted.
+    if (customLines) {
+      const totalDebit = customLines.reduce((s, l) => s + l.debit_amount, 0)
+      const totalCredit = customLines.reduce((s, l) => s + l.credit_amount, 0)
+      if (Math.round((totalDebit - totalCredit) * 100) !== 0 || totalDebit <= 0) {
+        return v1ErrorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
+          requestId: ctx.requestId,
+          details: { totalDebit, totalCredit },
+        })
+      }
+    }
+
     // Storno any conflicting auto-categorization JE before booking the
     // payment. Mirrors the match-invoice path. Without this, an earlier
     // :categorize of the same transaction (e.g. as expense_office with a
@@ -268,14 +283,6 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     let journalEntryId: string | null = null
     try {
       if (customLines) {
-        const totalDebit = customLines.reduce((s, l) => s + l.debit_amount, 0)
-        const totalCredit = customLines.reduce((s, l) => s + l.credit_amount, 0)
-        if (Math.round((totalDebit - totalCredit) * 100) !== 0 || totalDebit <= 0) {
-          return v1ErrorResponseFromCode('INVOICE_PAID_LINES_UNBALANCED', txLog, {
-            requestId: ctx.requestId,
-            details: { totalDebit, totalCredit },
-          })
-        }
         const sourceType = plan.booking.kind === 'cash' ? 'supplier_invoice_cash_payment' : 'supplier_invoice_paid'
         const desc = invoice.supplier?.name
           ? `Utbetalning leverantörsfaktura ${invoice.supplier_invoice_number}, ${invoice.supplier.name}`
@@ -525,6 +532,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
         paid_amount: newPaidAmount,
         remaining_amount: newRemaining,
         journal_entry_id: journalEntryId,
+        // No preview on this door: the caller learns here what went to 6570.
+        // Custom lines book what they say, so the plan's fee is not theirs.
+        bank_fee_sek: customLines ? 0 : plan.bankFeeSek,
       },
       { requestId: ctx.requestId },
     )

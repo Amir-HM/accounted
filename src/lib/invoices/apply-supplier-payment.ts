@@ -59,9 +59,15 @@ export function planSupplierPayment(
 
   // Overpayment past the tolerated band is a real overshoot → reject. With öre
   // absorption the band is one krona (a rounded-up whole-krona payment is not an
-  // overpayment); otherwise it's the strict half-öre float tolerance.
-  const overshootTolerance = absorbOre ? ORE_ROUNDING_SETTLEMENT_MAX : ORE_TOLERANCE
-  if (paymentAmountInInvoiceCurrency > currentRemaining + overshootTolerance) {
+  // overpayment); otherwise it's the strict half-öre float tolerance. The öre
+  // band is open at one krona (the settlement below and supplierOreResidual
+  // absorb only a residual strictly under it), so an excess of exactly one
+  // krona is refused too: accepting it as a partial would push paid_amount
+  // past the total with no 3740 line to carry the krona.
+  const overshoots = absorbOre
+    ? roundOre(paymentAmountInInvoiceCurrency - currentRemaining) >= ORE_ROUNDING_SETTLEMENT_MAX
+    : paymentAmountInInvoiceCurrency > currentRemaining + ORE_TOLERANCE
+  if (overshoots) {
     return {
       ok: false,
       code: 'MATCH_SI_AMOUNT_EXCEEDS_REMAINING',
@@ -144,10 +150,17 @@ export function splitSupplierBankFee(args: {
   absorbOreRounding?: boolean
 }): SupplierBankFeeSplit {
   const unchanged = { paymentAmount: args.paymentAmount, bankSek: args.bankSek, feeSek: 0 }
-  const tolerance = args.absorbOreRounding ? ORE_ROUNDING_SETTLEMENT_MAX : ORE_TOLERANCE
-  if (args.paymentAmount <= args.remaining + tolerance) return unchanged
-
   const excess = roundOre(args.paymentAmount - args.remaining)
+  // With öre absorption the band is open at one krona, exactly where
+  // planSupplierPayment and supplierOreResidual draw it: an excess strictly
+  // under a krona is öresavrundning (3740), one of a krona or more is a fee.
+  // A closed band here would leave an excess of exactly one krona booked as
+  // neither, with 1930 a krona short of the bank row.
+  const withinTolerance = args.absorbOreRounding
+    ? excess < ORE_ROUNDING_SETTLEMENT_MAX
+    : args.paymentAmount <= args.remaining + ORE_TOLERANCE
+  if (withinTolerance) return unchanged
+
   const feeSek =
     args.bankSek != null
       ? roundOre((args.bankSek * excess) / args.paymentAmount)
@@ -231,8 +244,10 @@ export type PlanSupplierBankMatchResult =
  * The whole payment plan of matching one bank row to one supplier invoice:
  * the bank fee split, the overshoot guard, öresavrundning, the SEK and
  * kursdifferens resolution, the kontantmetoden refusals, the ledger update and
- * the generator inputs. Pure, so a refusal happens before any write: no
- * voucher number is burnt and no prior categorisation is reversed.
+ * the generator inputs. Pure, and it refuses up front what the generator would
+ * otherwise refuse mid-booking (a missing rate included), so the plan's
+ * refusals happen before any write: no voucher number is burnt and no prior
+ * categorisation is reversed.
  *
  * Every door that matches a bank row to a supplier invoice (the dashboard
  * POST, its preview and the v1 POST) plans through this function. Each used
@@ -372,11 +387,19 @@ export function planSupplierBankMatch(args: {
     // (no kursdifferens under kontantmetoden); on pure SEK a sub-krona
     // difference to the invoice total goes to 3740. A same-rate foreign
     // settlement keeps the invoice's own rate.
-    booking = {
-      kind: 'cash',
-      settledBankSek: isPureSek || exchangeRateDifference !== 0 ? actualBankSek : undefined,
-      bankFeeSek,
+    const settledBankSek = isPureSek || exchangeRateDifference !== 0 ? actualBankSek : undefined
+    // Without a settlement SEK the cash builder translates at the invoice's
+    // own rate, and a foreign invoice with none makes it throw
+    // SI_FX_RATE_MISSING mid-booking, after a door has already reversed a
+    // prior categorisation. Refuse here with the same code instead.
+    if (settledBankSek === undefined && invoice.currency !== 'SEK' && bookedSek == null) {
+      return {
+        ok: false,
+        code: 'SI_FX_RATE_MISSING',
+        details: { transaction_currency: transaction.currency, invoice_currency: invoice.currency },
+      }
     }
+    booking = { kind: 'cash', settledBankSek, bankFeeSek }
   } else if (isPureSek) {
     // SEK clearing: the bank amount net of the fee against the SEK debt, so a
     // sub-krona difference goes to 3740 and 2440 clears in full; an exact or

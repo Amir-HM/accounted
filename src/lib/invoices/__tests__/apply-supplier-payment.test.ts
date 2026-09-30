@@ -48,6 +48,16 @@ describe('planSupplierPayment', () => {
     }
   })
 
+  // The öre band is open at one krona (supplierOreResidual absorbs only a
+  // residual strictly under it): an excess of exactly 1.00 is not öre, and
+  // accepting it as a partial would push paid_amount past the total.
+  it('rejects an overpayment of exactly one krona (the band is open at 1.00)', () => {
+    const inv = { total: 1000, paid_amount: 0, remaining_amount: 1000 }
+    const r = planSupplierPayment(inv, 1001, { absorbOreRounding: true })
+    expect(r).toMatchObject({ ok: false, code: 'MATCH_SI_AMOUNT_EXCEEDS_REMAINING', details: { excess: 1 } })
+    expect(planSupplierPayment(inv, 1000.99, { absorbOreRounding: true }).ok).toBe(true)
+  })
+
   it('exact payment settles fully without flagging öre', () => {
     const inv = { total: 1000, paid_amount: 0, remaining_amount: 1000 }
     const r = planSupplierPayment(inv, 1000, { absorbOreRounding: true })
@@ -119,6 +129,17 @@ describe('splitSupplierBankFee', () => {
     })
     expect(r.feeSek).toBe(0)
     expect(r.paymentAmount).toBe(11232)
+  })
+
+  it('books an excess of exactly one krona as a fee, not as öre', () => {
+    const r = splitSupplierBankFee({
+      paymentAmount: 1001,
+      remaining: 1000,
+      bankSek: 1001,
+      invoiceRate: 1,
+      absorbOreRounding: true,
+    })
+    expect(r).toEqual({ paymentAmount: 1000, bankSek: 1000, feeSek: 1 })
   })
 
   it('leaves an excess above the residual cap for planSupplierPayment to reject', () => {
@@ -224,6 +245,35 @@ describe('planSupplierBankMatch', () => {
       if (r.ok) expect(r.plan.booking).toMatchObject({ paymentAmount: 1235, sekClearingDebt: 1234.44 })
     })
 
+    // #3253 review: the fee split, the overshoot guard and the öre residual
+    // used to leave a gap at exactly 1.00 over: no fee, no 3740, no refusal,
+    // 1930 credited a krona less than the bank row and paid_amount past the
+    // total. An excess of exactly one krona is a fee.
+    it('an excess of exactly one krona is a fee on 6570, not a gap', () => {
+      const r = plan(booked(), tx(-1001))
+      expect(r).toMatchObject({
+        ok: true,
+        plan: { newStatus: 'paid', newPaidAmount: 1000, newRemaining: 0, settledAmount: 1000, bankFeeSek: 1 },
+      })
+      if (r.ok) {
+        expect(r.plan.booking).toEqual({
+          kind: 'clearing',
+          paymentAmount: 1000,
+          sekClearingDebt: 1000,
+          bankFeeSek: 1,
+        })
+      }
+    })
+
+    it('an excess of exactly one krona on a part-paid invoice is a fee, paid_amount stays at the total', () => {
+      const r = plan(booked({ paid_amount: 500, remaining_amount: 500 }), tx(-501))
+      expect(r).toMatchObject({
+        ok: true,
+        plan: { newStatus: 'paid', newPaidAmount: 1000, newRemaining: 0, settledAmount: 500, bankFeeSek: 1 },
+      })
+      if (r.ok) expect(r.plan.booking).toMatchObject({ paymentAmount: 500, sekClearingDebt: 500, bankFeeSek: 1 })
+    })
+
     it('a payment a krona or more short is a partial', () => {
       const r = plan(booked(), tx(-500))
       expect(r).toMatchObject({
@@ -318,6 +368,12 @@ describe('planSupplierBankMatch', () => {
       if (r.ok) expect(r.plan.booking).toEqual({ kind: 'cash', settledBankSek: 1000, bankFeeSek: 10 })
     })
 
+    it('books an excess of exactly one krona as a fee', () => {
+      const r = plan(unbooked(), tx(-1001), 'cash')
+      expect(r).toMatchObject({ ok: true, plan: { newStatus: 'paid', newPaidAmount: 1000, bankFeeSek: 1 } })
+      if (r.ok) expect(r.plan.booking).toEqual({ kind: 'cash', settledBankSek: 1000, bankFeeSek: 1 })
+    })
+
     it('absorbs öre: a whole-krona row a sub-krona short settles in full', () => {
       const r = plan(unbooked({ total: 1234.44, remaining_amount: 1234.44 }), tx(-1234), 'cash')
       expect(r).toMatchObject({ ok: true, plan: { newStatus: 'paid', oreSettled: true } })
@@ -368,6 +424,23 @@ describe('planSupplierBankMatch', () => {
       )
       expect(r.ok).toBe(true)
       if (r.ok) expect(r.plan.booking).toEqual({ kind: 'cash', settledBankSek: undefined, bankFeeSek: 0 })
+    })
+
+    // The cash builder would throw SI_FX_RATE_MISSING mid-booking for this
+    // row, after the v1 door had already reversed a prior categorisation: the
+    // plan refuses it first, with the same code.
+    it('refuses a foreign invoice with no rate before anything is booked', () => {
+      const rateless = unbooked({ total: 100, remaining_amount: 100, currency: 'EUR', exchange_rate: null })
+      expect(plan(rateless, tx(-1100), 'cash')).toEqual({
+        ok: false,
+        code: 'SI_FX_RATE_MISSING',
+        details: { transaction_currency: 'SEK', invoice_currency: 'EUR' },
+      })
+      expect(plan(rateless, tx(-100, 'EUR', -1100), 'cash')).toEqual({
+        ok: false,
+        code: 'SI_FX_RATE_MISSING',
+        details: { transaction_currency: 'EUR', invoice_currency: 'EUR' },
+      })
     })
 
     it('clears 2440 for an invoice booked at receipt, whatever the company setting', () => {
