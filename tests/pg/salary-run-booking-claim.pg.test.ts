@@ -1,5 +1,6 @@
 /**
- * pg-real tests for 20260929220200_salary_run_booking_claim.sql (accounted#3251).
+ * pg-real tests for 20260929220200_salary_run_booking_claim.sql and
+ * 20260929220201_salary_run_booking_claim_forged_stale.sql (accounted#3251).
  *
  * Booking a salary run reads it as 'paid', posts its vouchers and flips it to
  * 'booked' in separate round trips, so two concurrent book calls both passed
@@ -164,6 +165,38 @@ describe('claim_salary_run_booking', () => {
 
     expect(await claimCommitted(userId, companyId, runId)).toBeNull()
     expect((await readClaim(runId)).booking_claim_id).toBe(live)
+  })
+
+  it('takes over a forged claim a writer set directly: no timestamp, or stamped in the future', async () => {
+    const { userId, companyId } = await seedCompany()
+    const forgedShapes = ['NULL', "clock_timestamp() + interval '100 years'"]
+    for (const [index, claimedAt] of forgedShapes.entries()) {
+      const runId = await insertRun(companyId, userId, 'paid', index + 1)
+      const forged = randomUUID()
+      // The salary_runs UPDATE policy lets a company writer PATCH these columns.
+      // withUserContext rolls back, so this proves the write is allowed and the
+      // pool write below commits the same forged state.
+      const allowed = await withUserContext(userId, async (client) => {
+        const { rowCount } = await client.query(
+          `UPDATE public.salary_runs SET booking_claim_id = $2, booking_claimed_at = ${claimedAt} WHERE id = $1`,
+          [runId, forged],
+        )
+        return rowCount
+      })
+      expect(allowed).toBe(1)
+      await getPool().query(
+        `UPDATE public.salary_runs SET booking_claim_id = $2, booking_claimed_at = ${claimedAt} WHERE id = $1`,
+        [runId, forged],
+      )
+
+      const token = await claimCommitted(userId, companyId, runId)
+
+      expect(token).not.toBeNull()
+      expect(token).not.toBe(forged)
+      const row = await readClaim(runId)
+      expect(row.booking_claim_id).toBe(token)
+      expect(Math.abs(Date.now() - row.booking_claimed_at!.getTime())).toBeLessThan(60_000)
+    }
   })
 
   it('never claims across companies: wrong company id, non-member, viewer', async () => {
