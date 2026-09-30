@@ -97,7 +97,13 @@ describe('GET /api/payslip/[token]/pdf', () => {
       { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
       { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
       { data: { name: 'Bolaget AB', org_number: null } },
-      { data: { company_name: 'Ny Firma AB' } },
+      {
+        data: {
+          company_name: 'Ny Firma AB',
+          salary_payslip_show_employer_cost: false,
+          salary_payslip_show_breakdown: true,
+        },
+      },
     ])
 
     const response = await GET(
@@ -113,6 +119,19 @@ describe('GET /api/payslip/[token]/pdf', () => {
     // frozen onboarding companies.name.
     expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
       expect.objectContaining({ company: { name: 'Ny Firma AB', org_number: null } }),
+    )
+    // The link is the employee's copy: the company's section switches travel
+    // with it (crm#202).
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audience: {
+          kind: 'employee',
+          settings: expect.objectContaining({
+            salary_payslip_show_employer_cost: false,
+            salary_payslip_show_breakdown: true,
+          }),
+        },
+      }),
     )
   })
 

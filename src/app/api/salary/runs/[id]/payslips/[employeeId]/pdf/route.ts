@@ -4,7 +4,12 @@ import { withRouteContext } from '@/lib/api/with-route-context'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { PayslipPDF } from '@/lib/salary/pdf/payslip-template'
-import { buildPayslipData, payslipFileName } from '@/lib/salary/payslips/build-payslip-data'
+import {
+  buildPayslipData,
+  parsePayslipAudienceParam,
+  payslipFileName,
+  type PayslipAudience,
+} from '@/lib/salary/payslips/build-payslip-data'
 import { contentDisposition } from '@/lib/api/content-disposition'
 
 ensureInitialized()
@@ -17,12 +22,22 @@ ensureInitialized()
  *
  * Data assembly is shared with the public token surface via
  * lib/salary/payslips/build-payslip-data — both must render identical PDFs.
+ *
+ * Without a query this is the employer's own view: every section printed.
+ * `?audience=employee` renders the copy the employer hands out (the bulk ZIP
+ * on the run page), which follows the company's payslip section switches
+ * exactly like the emailed link does.
  */
 export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: string }> }>(
   'salary.run.payslip.pdf',
-  async (_request, ctx, { params }) => {
+  async (request, ctx, { params }) => {
     const { id, employeeId } = await params
     const { supabase, companyId } = ctx
+
+    const audienceKind = parsePayslipAudienceParam(new URL(request.url).searchParams.get('audience'))
+    if (!audienceKind) {
+      return NextResponse.json({ error: 'Ogiltig mottagare för lönespecifikationen' }, { status: 400 })
+    }
 
     // Load salary run
     const { data: run } = await supabase
@@ -68,11 +83,23 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
     // Employer name on the payslip follows the current company name
     // (company_settings.company_name), not the frozen onboarding companies.name.
     const displayName = await getCompanyDisplayName(supabase, companyId)
+
+    let audience: PayslipAudience = { kind: 'employer' }
+    if (audienceKind === 'employee') {
+      const { data: sectionSettings } = await supabase
+        .from('company_settings')
+        .select('salary_payslip_show_employer_cost, salary_payslip_show_breakdown')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      audience = { kind: 'employee', settings: sectionSettings }
+    }
+
     const data = buildPayslipData({
       run,
       sre,
       employee: emp,
       company: { name: displayName ?? company.name, org_number: company.org_number },
+      audience,
     })
     const fileName = payslipFileName(run, emp)
 

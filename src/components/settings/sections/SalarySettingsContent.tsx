@@ -68,6 +68,10 @@ export function SalarySettingsContent() {
   // Controlled: the Radix Switch is not a form element, so its value rides
   // along in handleSave instead of FormData.
   const [netRounding, setNetRounding] = useState<boolean | null>(null)
+  // Payslip sections on the employee's copy (crm#202). Controlled Switches,
+  // same null = not touched rule.
+  const [showEmployerCost, setShowEmployerCost] = useState<boolean | null>(null)
+  const [showBreakdown, setShowBreakdown] = useState<boolean | null>(null)
   // Employer flags moved here from Skatt (2026-09-24). Controlled for the
   // same reason; null = not touched, read the saved value.
   const [paysSalaries, setPaysSalaries] = useState<boolean | null>(null)
@@ -79,6 +83,8 @@ export function SalarySettingsContent() {
 
   const effectiveFormat = format ?? settings.preferred_payment_format ?? 'pain001'
   const effectiveNetRounding = netRounding ?? settings.salary_net_rounding ?? false
+  const effectiveShowEmployerCost = showEmployerCost ?? settings.salary_payslip_show_employer_cost ?? true
+  const effectiveShowBreakdown = showBreakdown ?? settings.salary_payslip_show_breakdown ?? true
   const effectivePays = paysSalaries ?? settings.pays_salaries ?? false
   // Fall back to pays_salaries for rows saved before the registration flag
   // existed; saving attests the shown value.
@@ -109,6 +115,8 @@ export function SalarySettingsContent() {
       preferred_payment_format: paymentFormat,
       salary_default_bank: bank === 'none' ? null : bank,
       salary_net_rounding: effectiveNetRounding,
+      salary_payslip_show_employer_cost: effectiveShowEmployerCost,
+      salary_payslip_show_breakdown: effectiveShowBreakdown,
       salary_deviation_period: deviationPeriod,
       pays_salaries: effectivePays,
       employer_registered: effectiveRegistered,
@@ -289,6 +297,28 @@ export function SalarySettingsContent() {
               </SettingsSelect>
             </SettingsRow>
           ))}
+        </SettingsGroup>
+
+        {/* What the employee's copy of the payslip prints (crm#202). The
+            employer's own view always prints both sections
+            (lib/salary/payslips/build-payslip-data). */}
+        <SettingsGroup label={t('payslip_heading')} help={t('payslip_help')}>
+          <SettingsRow label={t('payslip_employer_cost_label')} help={t('payslip_employer_cost_help')}>
+            <Switch
+              id="salary_payslip_show_employer_cost"
+              aria-label={t('payslip_employer_cost_toggle')}
+              checked={effectiveShowEmployerCost}
+              onCheckedChange={(next) => setShowEmployerCost(next)}
+            />
+          </SettingsRow>
+          <SettingsRow label={t('payslip_breakdown_label')} help={t('payslip_breakdown_help')}>
+            <Switch
+              id="salary_payslip_show_breakdown"
+              aria-label={t('payslip_breakdown_toggle')}
+              checked={effectiveShowBreakdown}
+              onCheckedChange={(next) => setShowBreakdown(next)}
+            />
+          </SettingsRow>
         </SettingsGroup>
 
         <SettingsGroup label={t('accounting_heading')}>

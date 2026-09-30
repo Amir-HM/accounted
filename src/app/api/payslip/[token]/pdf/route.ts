@@ -64,7 +64,7 @@ export async function GET(
       .single(),
     serviceClient
       .from('company_settings')
-      .select('company_name')
+      .select('company_name, salary_payslip_show_employer_cost, salary_payslip_show_breakdown')
       .eq('company_id', link.company_id)
       .maybeSingle(),
   ])
@@ -85,12 +85,14 @@ export async function GET(
   }
 
   // Employer name follows the current company_settings.company_name, falling
-  // back to the frozen onboarding companies.name.
+  // back to the frozen onboarding companies.name. This link is what the
+  // employee receives, so the company's section switches apply.
   const data = buildPayslipData({
     run,
     sre,
     employee: emp,
     company: { name: settings?.company_name || company.name, org_number: company.org_number },
+    audience: { kind: 'employee', settings },
   })
   const fileName = payslipFileName(run, emp)
 

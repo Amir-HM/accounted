@@ -3,7 +3,10 @@
  *
  * Render one employee's payslip as application/pdf. Byte-equivalent to the
  * dashboard download: data assembly is shared via
- * lib/salary/payslips/build-payslip-data.
+ * lib/salary/payslips/build-payslip-data, and ?audience= means the same as
+ * on the dashboard route (absent: the employer view with every section;
+ * employee: the copy the employee receives, which follows the company's
+ * payslip section switches).
  *
  * Per BFL: payslips are räkenskapsinformation linked to posted journal
  * entries (7-year retention). Read-only: no Idempotency-Key, no dry-run.
@@ -12,12 +15,25 @@
 import { z } from 'zod'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { PayslipPDF } from '@/lib/salary/pdf/payslip-template'
-import { buildPayslipData, payslipFileName } from '@/lib/salary/payslips/build-payslip-data'
+import {
+  buildPayslipData,
+  payslipFileName,
+  type PayslipAudience,
+} from '@/lib/salary/payslips/build-payslip-data'
 import { contentDisposition } from '@/lib/api/content-disposition'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { registerEndpoint } from '@/lib/api/v1/registry'
 import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
+
+const PayslipPdfQuery = z.object({
+  audience: z
+    .enum(['employer', 'employee'])
+    .optional()
+    .describe(
+      'employer (default): every section, the employer\'s own view. employee: the copy the employee receives; Arbetsgivarkostnad and Beräkningsunderlag follow salary_payslip_show_employer_cost / salary_payslip_show_breakdown (GET /salary/settings).',
+    ),
+})
 
 registerEndpoint({
   operation: 'salary-runs.payslip.pdf',
@@ -27,12 +43,13 @@ registerEndpoint({
   description:
     'Returns the rendered payslip (lönespecifikation) as application/pdf, byte-equivalent to the dashboard download. Content-Disposition is attachment with a filename derived from the period and employee name.',
   useWhen:
-    'You need the payslip document itself: archiving, forwarding to the employee outside the Accounted send flow, or attaching to an external HR system.',
+    'You need the payslip document itself: archiving, forwarding to the employee outside the Accounted send flow (pass audience=employee), or attaching to an external HR system.',
   doNotUseFor:
     'The payslip DATA (amounts, line items): use GET /salary-runs/{id}/employees/{employeeId}, which is cheaper and structured. Emailing payslips to employees: POST /salary-runs/{id}/send-payslips sends each a secure link.',
   pitfalls: [
     'The PDF renders whatever the run currently holds: for a draft run that has not been calculated, amounts are 0.',
     'PDF rendering takes a few hundred milliseconds; cache on the client if requesting repeatedly.',
+    'Without audience the PDF is the employer view and always prints Arbetsgivarkostnad and Beräkningsunderlag. A PDF you forward to the employee should use audience=employee, so it matches the emailed payslip link and honours the company\'s section switches.',
   ],
   example: {
     response: {
@@ -44,6 +61,7 @@ registerEndpoint({
   idempotent: true,
   reversible: false,
   dryRunSupported: false,
+  request: { query: PayslipPdfQuery },
   response: {
     success: z.unknown(), // Marker: binary response, see contentType.
     contentType: 'application/pdf',
@@ -52,7 +70,7 @@ registerEndpoint({
 
 export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; employeeId: string }> }>(
   'salary-runs.payslip.pdf',
-  async (_request, ctx, params) => {
+  async (request, ctx, params) => {
     const { id, employeeId } = await params.params
     const runParse = z.string().uuid().safeParse(id)
     const empParse = z.string().uuid().safeParse(employeeId)
@@ -63,6 +81,14 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
           field: runParse.success ? 'employeeId' : 'id',
           message: 'Path ids must be UUIDs.',
         },
+      })
+    }
+    const audienceParam = new URL(request.url).searchParams.get('audience')
+    const queryParse = PayslipPdfQuery.safeParse({ audience: audienceParam ?? undefined })
+    if (!queryParse.success) {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        details: { field: 'audience', message: 'audience must be employer or employee.' },
       })
     }
 
@@ -116,6 +142,19 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
       clearing_number: string | null; bank_account_number: string | null;
     }
 
+    let audience: PayslipAudience = { kind: 'employer' }
+    if (queryParse.data.audience === 'employee') {
+      const { data: sectionSettings, error: settingsErr } = await ctx.supabase
+        .from('company_settings')
+        .select('salary_payslip_show_employer_cost, salary_payslip_show_breakdown')
+        .eq('company_id', ctx.companyId!)
+        .maybeSingle()
+      if (settingsErr) {
+        return v1ErrorResponse(settingsErr, ctx.log, { requestId: ctx.requestId })
+      }
+      audience = { kind: 'employee', settings: sectionSettings }
+    }
+
     let pdfBuffer: Buffer
     let fileName: string
     try {
@@ -125,6 +164,7 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
         sre,
         employee: emp,
         company: { name: displayName ?? company.name, org_number: company.org_number },
+        audience,
       })
       fileName = payslipFileName(run, emp)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

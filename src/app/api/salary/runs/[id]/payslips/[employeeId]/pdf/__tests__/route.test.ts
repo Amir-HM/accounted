@@ -15,10 +15,14 @@ vi.mock('@react-pdf/renderer', () => ({
   renderToBuffer: vi.fn(async () => Buffer.from('%PDF-fake')),
 }))
 vi.mock('@/lib/salary/pdf/payslip-template', () => ({ PayslipPDF: vi.fn(() => null) }))
-vi.mock('@/lib/salary/payslips/build-payslip-data', () => ({
-  buildPayslipData: vi.fn(() => ({})),
-  payslipFileName: vi.fn(() => 'lonespec_Test_2026-06.pdf'),
-}))
+vi.mock('@/lib/salary/payslips/build-payslip-data', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/salary/payslips/build-payslip-data')>()
+  return {
+    ...actual,
+    buildPayslipData: vi.fn(() => ({})),
+    payslipFileName: vi.fn(() => 'lonespec_Test_2026-06.pdf'),
+  }
+})
 
 import { GET } from '../route'
 import { requireAuth } from '@/lib/auth/require-auth'
@@ -86,6 +90,60 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
     expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
       expect.objectContaining({ company: { name: 'Ny Firma AB', org_number: '5560000000' } }),
     )
+  })
+
+  it('renders the employer view with every section when no audience is given', async () => {
+    const { enqueueMany } = authed()
+    enqueueMany([
+      { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf'),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({ audience: { kind: 'employer' } }),
+    )
+  })
+
+  it('renders the employee copy with the company section switches for ?audience=employee', async () => {
+    const { enqueueMany } = authed()
+    enqueueMany([
+      { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: false } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'employee' } }),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audience: {
+          kind: 'employee',
+          settings: { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: false },
+        },
+      }),
+    )
+  })
+
+  it('returns 400 for an unknown audience', async () => {
+    authed()
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'auditor' } }),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+    expect(response.status).toBe(400)
+    expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
   })
 
   it('falls back to companies.name when the resolver returns null', async () => {

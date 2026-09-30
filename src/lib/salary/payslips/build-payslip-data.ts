@@ -4,6 +4,13 @@
  * The per-employee PDF route and the payslip send/link surfaces must render
  * identical payslips — override coalescing, breakdown steps and masking live
  * here so the logic can't drift between callers.
+ *
+ * The one deliberate difference is the audience. The employer's own view of
+ * a payslip (the dashboard "view payslip" link) always carries every section.
+ * The copy the employee receives (the emailed token link, the bulk ZIP the
+ * employer hands out, the v1 API download) follows the company's
+ * salary_payslip_show_employer_cost / salary_payslip_show_breakdown switches.
+ * Callers say which copy they render; this module never guesses it.
  */
 import type { PayslipData, PayslipLineItem } from '@/lib/salary/pdf/payslip-template'
 import { hasCustomDeviationWindow, runDeviationWindow } from '@/lib/salary/deviation-period'
@@ -41,13 +48,57 @@ export type PayslipSreSource = Record<string, unknown> & {
   line_items?: Array<Record<string, unknown>> | null
 }
 
+/** The company_settings switches for the employee copy. A company without a
+ * settings row (null) gets the column defaults: both sections printed. */
+export interface PayslipSectionSettings {
+  salary_payslip_show_employer_cost?: boolean | null
+  salary_payslip_show_breakdown?: boolean | null
+}
+
+/**
+ * Who the rendered payslip is for. The employer view needs no settings; the
+ * employee copy cannot be built without them, so a caller cannot forget to
+ * read the switches.
+ */
+export type PayslipAudience =
+  | { kind: 'employer' }
+  | { kind: 'employee'; settings: PayslipSectionSettings | null }
+
+export interface PayslipSections {
+  employerCost: boolean
+  breakdown: boolean
+}
+
+/**
+ * The dashboard PDF route's `?audience=` query parameter. Absent means the
+ * employer's own view; `employee` is the copy the employer hands out (the
+ * bulk ZIP). Anything else is null so the route can refuse it instead of
+ * silently rendering a copy the caller did not ask for.
+ */
+export function parsePayslipAudienceParam(value: string | null): 'employer' | 'employee' | null {
+  if (value === null || value === '' || value === 'employer') return 'employer'
+  if (value === 'employee') return 'employee'
+  return null
+}
+
+/** Which optional sections a copy for this audience prints. */
+export function payslipSectionsFor(audience: PayslipAudience): PayslipSections {
+  if (audience.kind === 'employer') return { employerCost: true, breakdown: true }
+  return {
+    employerCost: audience.settings?.salary_payslip_show_employer_cost ?? true,
+    breakdown: audience.settings?.salary_payslip_show_breakdown ?? true,
+  }
+}
+
 export function buildPayslipData(params: {
   run: PayslipRunSource
   sre: PayslipSreSource
   employee: PayslipEmployeeSource
   company: { name: string; org_number: string | null }
+  audience: PayslipAudience
 }): PayslipData {
   const { run, sre, employee: emp, company } = params
+  const sections = payslipSectionsFor(params.audience)
 
   const lineItems: PayslipLineItem[] = ((sre.line_items || []) as Array<Record<string, unknown>>)
     .sort((a, b) => ((a.sort_order as number) || 0) - ((b.sort_order as number) || 0))
@@ -100,7 +151,7 @@ export function buildPayslipData(params: {
       output: Number(sre.avgifter_amount_override),
     })
   }
-  const breakdownSteps = baseSteps.length > 0 || overrideSteps.length > 0
+  const breakdownSteps = sections.breakdown && (baseSteps.length > 0 || overrideSteps.length > 0)
     ? [...baseSteps, ...overrideSteps]
     : undefined
 
@@ -141,11 +192,15 @@ export function buildPayslipData(params: {
     taxWithheld: effectiveTax,
     netSalary: effectiveNet,
     taxReference,
-    avgifterRate: sre.avgifter_rate as number,
-    avgifterAmount: effectiveAvgifter,
-    vacationAccrual,
-    vacationAccrualAvgifter,
-    totalEmployerCost: grossSalary + effectiveAvgifter + vacationAccrual + vacationAccrualAvgifter,
+    employerCost: sections.employerCost
+      ? {
+          avgifterRate: sre.avgifter_rate as number,
+          avgifterAmount: effectiveAvgifter,
+          vacationAccrual,
+          vacationAccrualAvgifter,
+          totalEmployerCost: grossSalary + effectiveAvgifter + vacationAccrual + vacationAccrualAvgifter,
+        }
+      : null,
     ytdGross: sre.ytd_gross as number,
     ytdTax: sre.ytd_tax as number,
     ytdNet: sre.ytd_net as number | null,

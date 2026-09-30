@@ -614,6 +614,11 @@ export interface CompanySettings {
   // Öresavrundning (migration 20260813143000): round each net payout up to
   // whole kronor; the 0-99 öre diff books on 3740 via a derived line item.
   salary_net_rounding: boolean
+  // Payslip sections on the copy the employee receives (migration
+  // 20260930200000): Arbetsgivarkostnad and Beräkningsunderlag. Default true;
+  // the employer's own view always prints both (build-payslip-data).
+  salary_payslip_show_employer_cost: boolean
+  salary_payslip_show_breakdown: boolean
   // Avvikelseperiod (migration 20260918120000): the month a new salary run
   // reads absence and worked days from. 'previous_month' is the common
   // Swedish setup (innevarande månads lön, föregående månads avvikelser).

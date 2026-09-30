@@ -1664,18 +1664,20 @@ Example response `200`:
 
 Returns the rendered payslip (lönespecifikation) as application/pdf, byte-equivalent to the dashboard download. Content-Disposition is attachment with a filename derived from the period and employee name.
 
-**Use when:** You need the payslip document itself: archiving, forwarding to the employee outside the Accounted send flow, or attaching to an external HR system.
+**Use when:** You need the payslip document itself: archiving, forwarding to the employee outside the Accounted send flow (pass audience=employee), or attaching to an external HR system.
 **Do not use for:** The payslip DATA (amounts, line items): use GET /salary-runs/{id}/employees/{employeeId}, which is cheaper and structured. Emailing payslips to employees: POST /salary-runs/{id}/send-payslips sends each a secure link.
 
 **Pitfalls:**
 - The PDF renders whatever the run currently holds: for a draft run that has not been calculated, amounts are 0.
 - PDF rendering takes a few hundred milliseconds; cache on the client if requesting repeatedly.
+- Without audience the PDF is the employer view and always prints Arbetsgivarkostnad and Beräkningsunderlag. A PDF you forward to the employee should use audience=employee, so it matches the emailed payslip link and honours the company's section switches.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
 | `companyId` | path | `string` | yes |  |
 | `id` | path | `string` | yes |  |
 | `employeeId` | path | `string` | yes |  |
+| `audience` | query | `"employer" \| "employee"` | no | employer (default): every section, the employer's own view. employee: the copy the employee receives; Arbetsgivarkostnad and Beräkningsunderlag follow salary_payslip_show_employer_cost / salary_payslip_show_breakdown (GET /salary/settings). |
 
 Response `200` (`application/pdf`).
 
