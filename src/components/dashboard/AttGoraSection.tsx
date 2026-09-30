@@ -29,6 +29,7 @@ import {
   Landmark,
   ReceiptText,
   Scale,
+  Send,
   ShieldCheck,
   Stamp,
   FileQuestion,
@@ -283,7 +284,8 @@ export default function AttGoraSection({
     counts.document_relevance > 0 ||
     counts.document_unclassified > 0 ||
     counts.document_field_review > 0 ||
-    counts.arkiv_finding > 0
+    counts.arkiv_finding > 0 ||
+    counts.peppol_delivery_failed > 0
   const bevakaRows =
     counts.overdue_invoice > 0 ||
     counts.deadline_action > 0 ||
@@ -570,6 +572,15 @@ export default function AttGoraSection({
                         label={t('row_arkiv_finding')}
                         hint={t('row_arkiv_finding_detail')}
                         count={counts.arkiv_finding}
+                      />
+                    )}
+                    {counts.peppol_delivery_failed > 0 && (
+                      <WorklistRow
+                        href="/invoices"
+                        icon={Send}
+                        label={t('row_peppol_delivery_failed')}
+                        hint={t('row_peppol_delivery_failed_detail')}
+                        count={counts.peppol_delivery_failed}
                       />
                     )}
                   </div>
