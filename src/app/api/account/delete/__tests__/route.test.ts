@@ -34,6 +34,12 @@ function mockAuth(
     auth: {
       getUser: vi.fn().mockResolvedValue({ data: { user } }),
       signOut,
+      // A user without a verified factor: requireAuth asks the auth server
+      // for every AAL1 session now that the step-up does not hang on the
+      // NEXT_PUBLIC_REQUIRE_MFA flag.
+      mfa: {
+        listFactors: vi.fn().mockResolvedValue({ data: { all: [], totp: [], phone: [] }, error: null }),
+      },
     },
     rpc,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
