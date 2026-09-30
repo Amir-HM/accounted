@@ -37,7 +37,6 @@ import { CAPABILITY } from '@/lib/entitlements/keys'
 import { isSandboxCompany } from '@/lib/sandbox/guard'
 import {
   PAYSLIP_ISSUABLE_STATUSES,
-  PAYSLIP_SECTION_SNAPSHOT_COLUMNS,
   issuePayslipSections,
   type IssuableRun,
 } from '@/lib/salary/payslips/section-snapshot'
@@ -97,7 +96,7 @@ export async function sendPayslips(
 
   const { data: run } = await supabase
     .from('salary_runs')
-    .select(`id, status, period_year, period_month, payment_date, ${PAYSLIP_SECTION_SNAPSHOT_COLUMNS}`)
+    .select('id, status, period_year, period_month, payment_date, payslip_sections_issued_at, payslip_show_employer_cost, payslip_show_breakdown')
     .eq('id', salaryRunId)
     .eq('company_id', companyId)
     .single()

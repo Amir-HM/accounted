@@ -33,10 +33,6 @@ import {
 /** Run statuses whose payslips are final and may go to employees. */
 export const PAYSLIP_ISSUABLE_STATUSES = ['approved', 'paid', 'booked'] as const
 
-/** The salary_runs columns that hold the snapshot, as one select list. */
-export const PAYSLIP_SECTION_SNAPSHOT_COLUMNS =
-  'payslip_sections_issued_at, payslip_show_employer_cost, payslip_show_breakdown'
-
 export interface IssuableRun extends PayslipSectionSnapshot {
   id: string
   status: string
@@ -97,13 +93,19 @@ export async function issuePayslipSections(
   if (!isPayslipIssuableStatus(run.status)) return { ok: true, snapshot: snapshotOf({}) }
 
   const row = payslipSectionSnapshotRow(settings, new Date().toISOString())
+  // Literal payload and select lists, so the schema guard
+  // (tests/schema/no-phantom-columns.test.ts) can check every column.
   const { data: written, error: writeError } = await client
     .from('salary_runs')
-    .update(row)
+    .update({
+      payslip_sections_issued_at: row.payslip_sections_issued_at,
+      payslip_show_employer_cost: row.payslip_show_employer_cost,
+      payslip_show_breakdown: row.payslip_show_breakdown,
+    })
     .eq('id', run.id)
     .eq('company_id', companyId)
     .is('payslip_sections_issued_at', null)
-    .select(PAYSLIP_SECTION_SNAPSHOT_COLUMNS)
+    .select('payslip_sections_issued_at, payslip_show_employer_cost, payslip_show_breakdown')
     .maybeSingle()
   if (writeError) return { ok: false, error: writeError }
   if (written) return { ok: true, snapshot: snapshotOf(written as PayslipSectionSnapshot) }
@@ -112,7 +114,7 @@ export async function issuePayslipSections(
   // issue stored, never this request's switches.
   const { data: current, error: readError } = await client
     .from('salary_runs')
-    .select(PAYSLIP_SECTION_SNAPSHOT_COLUMNS)
+    .select('payslip_sections_issued_at, payslip_show_employer_cost, payslip_show_breakdown')
     .eq('id', run.id)
     .eq('company_id', companyId)
     .maybeSingle()
