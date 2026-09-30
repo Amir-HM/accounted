@@ -39,6 +39,23 @@ describe('resolveOrderCurrency', () => {
     expect(resolveOrderCurrency('&euro;', 'EUR')).toBe('EUR')
   })
 
+  it("accepts WooCommerce's own symbol table entry for the store currency", () => {
+    // DKK and ISK are "kr." in WooCommerce's table, not Intl's "kr" or "DKK".
+    expect(resolveOrderCurrency('kr.', 'DKK')).toBe('DKK')
+    expect(resolveOrderCurrency(' KR. ', 'DKK')).toBe('DKK')
+    expect(resolveOrderCurrency('kr.', 'ISK')).toBe('ISK')
+    expect(resolveOrderCurrency('&#107;&#114;', 'NOK')).toBe('NOK')
+    expect(resolveOrderCurrency('&pound;', 'GBP')).toBe('GBP')
+    expect(resolveOrderCurrency('&#122;&#322;', 'PLN')).toBe('PLN')
+    expect(resolveOrderCurrency('&#67;&#72;&#70;', 'CHF')).toBe('CHF')
+  })
+
+  it('refuses another currency\'s WooCommerce symbol ("kr." is not the SEK symbol)', () => {
+    expect(resolveOrderCurrency('kr.', 'SEK')).toBeNull()
+    expect(resolveOrderCurrency('kr.', 'NOK')).toBeNull()
+    expect(resolveOrderCurrency('&#122;&#322;', 'SEK')).toBeNull()
+  })
+
   it('never lends the store currency to another currency symbol', () => {
     expect(resolveOrderCurrency('&euro;', 'SEK')).toBeNull()
     expect(resolveOrderCurrency('$', 'SEK')).toBeNull()

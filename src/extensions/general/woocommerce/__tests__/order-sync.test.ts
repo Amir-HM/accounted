@@ -118,24 +118,59 @@ function makeOrder(overrides: Partial<WooOrder> = {}): WooOrder {
   }
 }
 
-/** Minimal chainable supabase mock covering the sync's query patterns. */
-function makeSupabaseMock() {
+/**
+ * Minimal chainable supabase mock covering the sync's query patterns, with an
+ * in-memory extension_data keyed by `key` (the skipped-orders list).
+ */
+function makeSupabaseMock(
+  options: { extensionData?: Map<string, unknown>; failExtensionWrite?: boolean } = {},
+) {
   const updates: Array<{ table: string; values: Record<string, unknown> }> = []
+  const extensionData = options.extensionData ?? new Map<string, unknown>()
   const client = {
     from(table: string) {
+      const filters: Record<string, unknown> = {}
+      let deleting = false
       const builder = {
         select: () => builder,
-        eq: () => builder,
-        maybeSingle: async () => ({ data: null, error: null }),
+        eq: (column: string, value: unknown) => {
+          filters[column] = value
+          if (deleting && column === 'key') {
+            if (!options.failExtensionWrite) extensionData.delete(String(value))
+          }
+          return deleting && column === 'key'
+            ? Promise.resolve({ error: options.failExtensionWrite ? { message: 'boom' } : null })
+            : builder
+        },
+        maybeSingle: async () =>
+          table === 'extension_data' && extensionData.has(String(filters.key))
+            ? { data: { value: extensionData.get(String(filters.key)) }, error: null }
+            : { data: null, error: null },
         update: (values: Record<string, unknown>) => {
           updates.push({ table, values })
+          return builder
+        },
+        upsert: async (row: { key: string; value: unknown }) => {
+          if (options.failExtensionWrite) return { error: { message: 'boom' } }
+          extensionData.set(row.key, row.value)
+          return { error: null }
+        },
+        delete: () => {
+          deleting = true
           return builder
         },
       }
       return builder
     },
   }
-  return { client: client as unknown as SupabaseClient, updates }
+  return { client: client as unknown as SupabaseClient, updates, extensionData }
+}
+
+const SKIPPED_KEY = 'skipped_currency_orders:shop.example.se'
+
+function skippedIds(extensionData: Map<string, unknown>): number[] {
+  const value = extensionData.get(SKIPPED_KEY) as { orders: Array<{ order_id: number }> } | undefined
+  return value?.orders.map((o) => o.order_id) ?? []
 }
 
 function cursorUpdates(updates: Array<{ table: string; values: Record<string, unknown> }>) {
@@ -765,6 +800,93 @@ describe('syncWooCommerceOrders', () => {
     expect(listOrderRefunds).not.toHaveBeenCalled()
     // Syncing again cannot fix the store's data; the feed moves on.
     expect(cursorUpdates(updates)).toHaveLength(1)
+  })
+
+  it('records a skipped order durably with what the panel needs', async () => {
+    const { client, extensionData } = makeSupabaseMock()
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 7, number: 'W-7', currency: '&euro;' })])
+
+    await syncWooCommerceOrders(client, makeConnection())
+
+    const stored = extensionData.get(SKIPPED_KEY) as { orders: Array<Record<string, unknown>> }
+    expect(stored.orders).toHaveLength(1)
+    expect(stored.orders[0]).toMatchObject({
+      order_id: 7,
+      order_number: 'W-7',
+      order_date: '2026-08-01',
+      currency: '&euro;',
+    })
+    expect(stored.orders[0].first_seen_at).toBe(stored.orders[0].last_seen_at)
+  })
+
+  it('keeps one entry per order across runs and keeps its first sighting', async () => {
+    const extensionData = new Map<string, unknown>()
+    const { client } = makeSupabaseMock({ extensionData })
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 7, currency: '&euro;' })])
+    await syncWooCommerceOrders(client, makeConnection())
+    const first = (extensionData.get(SKIPPED_KEY) as { orders: Array<{ first_seen_at: string }> })
+      .orders[0].first_seen_at
+
+    listOrdersPage.mockResolvedValueOnce([
+      makeOrder({ id: 7, currency: '&euro;' }),
+      makeOrder({ id: 8, currency: '??' }),
+    ])
+    await syncWooCommerceOrders(client, makeConnection())
+
+    expect(skippedIds(extensionData)).toEqual([7, 8])
+    const stored = extensionData.get(SKIPPED_KEY) as { orders: Array<{ first_seen_at: string }> }
+    expect(stored.orders[0].first_seen_at).toBe(first)
+  })
+
+  it('removes an order from the skipped list once a later sync imports it', async () => {
+    const extensionData = new Map<string, unknown>()
+    const { client } = makeSupabaseMock({ extensionData })
+    listOrdersPage.mockResolvedValueOnce([
+      makeOrder({ id: 7, currency: '&euro;' }),
+      makeOrder({ id: 8, currency: '??' }),
+    ])
+    await syncWooCommerceOrders(client, makeConnection())
+    expect(skippedIds(extensionData)).toEqual([7, 8])
+
+    // The store fixed order 7; order 8 is still broken.
+    listOrdersPage.mockResolvedValueOnce([
+      makeOrder({ id: 7, currency: 'SEK' }),
+      makeOrder({ id: 8, currency: '??' }),
+    ])
+    await syncWooCommerceOrders(client, makeConnection())
+    expect(skippedIds(extensionData)).toEqual([8])
+
+    // Order 8 fixed too: the row is removed, not left as an empty list.
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 8, currency: 'SEK' })])
+    await syncWooCommerceOrders(client, makeConnection())
+    expect(extensionData.has(SKIPPED_KEY)).toBe(false)
+  })
+
+  it('keeps a listed order while its upsert reports errors', async () => {
+    const extensionData = new Map<string, unknown>()
+    const { client } = makeSupabaseMock({ extensionData })
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 7, currency: '&euro;' })])
+    await syncWooCommerceOrders(client, makeConnection())
+
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 7, currency: 'SEK' })])
+    vi.mocked(upsertWebshopOrders).mockResolvedValueOnce({ ...emptyUpsertResult, errors: 1 })
+    await syncWooCommerceOrders(client, makeConnection())
+
+    expect(skippedIds(extensionData)).toEqual([7])
+  })
+
+  it('holds the cursor below a skipped order when the list cannot be written', async () => {
+    const { client, updates } = makeSupabaseMock({ failExtensionWrite: true })
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ id: 7, currency: '&euro;' })])
+
+    const summary = await syncWooCommerceOrders(client, makeConnection())
+
+    expect(summary).toMatchObject({ unknownCurrency: 1, errors: 1 })
+    // The cursor never passes the order, so the next run sees it again.
+    const cursors = cursorUpdates(updates).map((u) =>
+      Date.parse(String(u.values.last_order_synced_at)),
+    )
+    expect(Math.max(0, ...cursors)).toBeLessThan(Date.parse('2026-08-01T09:05:00Z'))
   })
 
   it('does nothing for a connection without credentials or not active', async () => {

@@ -15,7 +15,9 @@
  * 2. Otherwise, a value that is one of the STORE currency's own symbols is
  *    the store currency: the plugin wrote the symbol of the currency the
  *    store runs in. The store currency comes from the woocommerce_currency
- *    setting, which WooCommerce keeps as a code.
+ *    setting, which WooCommerce keeps as a code. Its symbols are Intl's
+ *    (sv-SE and en) plus WooCommerce's own symbol table entry, which is what
+ *    a plugin copying the store symbol actually writes ("kr." for DKK).
  * 3. Anything else is refused (null). A multi-currency plugin writing "€"
  *    for a EUR order in a SEK store must never be read as SEK; the caller
  *    skips the order and says why.
@@ -58,11 +60,34 @@ export function decodeCurrencyEntities(value: string): string {
 }
 
 /**
+ * WooCommerce's own symbol for a currency, decoded, from
+ * get_woocommerce_currency_symbols() in wc-core-functions.php. Limited to the
+ * currencies a Swedish seller plausibly runs a store in; other store
+ * currencies still get Intl's symbols. Keyed by code, so a symbol only ever
+ * counts for the store currency it belongs to: "kr." is DKK's and ISK's,
+ * never SEK's ("kr").
+ */
+export const WOOCOMMERCE_CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {
+  SEK: 'kr', // &#107;&#114;
+  NOK: 'kr', // &#107;&#114;
+  DKK: 'kr.',
+  ISK: 'kr.',
+  EUR: '€', // &euro;
+  USD: '$', // &#36;
+  GBP: '£', // &pound;
+  CHF: 'CHF', // &#67;&#72;&#70;
+  PLN: 'zł', // &#122;&#322;
+}
+
+/**
  * Every way the store currency is commonly written as a symbol, lowercased:
- * Intl's symbol and narrow symbol in Swedish and English ("kr" for SEK).
+ * WooCommerce's own symbol table entry, plus Intl's symbol and narrow symbol
+ * in Swedish and English ("kr" for SEK).
  */
 function symbolsOf(code: string): Set<string> {
   const symbols = new Set<string>()
+  const wooSymbol = WOOCOMMERCE_CURRENCY_SYMBOLS[code]
+  if (wooSymbol) symbols.add(wooSymbol.toLowerCase())
   for (const locale of ['sv-SE', 'en']) {
     for (const currencyDisplay of ['symbol', 'narrowSymbol'] as const) {
       const part = new Intl.NumberFormat(locale, { style: 'currency', currency: code, currencyDisplay })

@@ -14,6 +14,14 @@ import {
 } from './api-client'
 import { credentialsOf } from './connect'
 import { resolveOrderCurrency } from './order-currency'
+import {
+  mergeSkippedOrders,
+  readSkippedOrders,
+  skippedOrdersChanged,
+  writeSkippedOrders,
+  type SkippedCurrencyOrder,
+  type SkippedSighting,
+} from './skipped-orders'
 import type { WooCommerceConnection, WooOrder, WooRefund } from '../types'
 
 const defaultLog = createLogger('woocommerce/order-sync')
@@ -518,6 +526,16 @@ interface PageRowsOutcome {
    */
   incompleteModifiedMs: number[]
   hitDeadline: boolean
+  /**
+   * Orders skipped for an unresolvable currency, for the durable list (see
+   * lib/skipped-orders), with date_modified (ms) so a failed list write can
+   * hold the cursor below them.
+   */
+  skippedSightings: Array<SkippedSighting & { modifiedMs: number }>
+  /** Orders whose order row is in `rows`: imported once the upsert succeeds. */
+  importedOrderIds: number[]
+  /** Orders the store no longer reports as importing (failed, trash). */
+  goneOrderIds: number[]
 }
 
 /** Upsert rows for one page of orders: order rows plus refund rows. */
@@ -535,6 +553,9 @@ async function buildPageRows(
     removalExternalIds: [],
     incompleteModifiedMs: [],
     hitDeadline: false,
+    skippedSightings: [],
+    importedOrderIds: [],
+    goneOrderIds: [],
   }
 
   for (const order of orders) {
@@ -546,7 +567,10 @@ async function buildPageRows(
     // list call asks for status=any, which excludes trash), and a failed
     // order's refund would parent to a row being removed: an unexplainable
     // negative either way.
-    if (!orderImports(order)) continue
+    if (!orderImports(order)) {
+      outcome.goneOrderIds.push(order.id)
+      continue
+    }
     // A corrupt total is counted and logged, never silently identical to a
     // zero-total order. Deliberately NOT held via the cursor: a permanently
     // corrupt total would stall the whole feed forever, where a skipped row
@@ -560,8 +584,10 @@ async function buildPageRows(
     }
     // Same doctrine for a currency that is no ISO code: skipped with its
     // refunds (a refund row without its parent is an unexplainable negative),
-    // counted and logged, cursor not held. An order that imports nothing
-    // anyway (zero or corrupt total) is not counted a second time.
+    // counted, logged and recorded in the durable skipped list (the cursor
+    // moves on, so the list is what keeps the order visible until it
+    // imports). An order that imports nothing anyway (zero or corrupt total)
+    // is not counted a second time.
     if (orderCurrency(connection, order) === null) {
       if ((parseAmount(order.total) ?? 0) !== 0) {
         summary.unknownCurrency += 1
@@ -570,10 +596,21 @@ async function buildPageRows(
           currency: order.currency,
           storeCurrency: connection.currency,
         })
+        outcome.skippedSightings.push({
+          order_id: order.id,
+          order_number: typeof order.number === 'string' && order.number
+            ? order.number
+            : String(order.id),
+          order_date: order.date_created_gmt ? isoDateOfGmt(order.date_created_gmt) : null,
+          currency: typeof order.currency === 'string' ? order.currency : String(order.currency),
+          modifiedMs: gmtToMs(order.date_modified_gmt),
+        })
       }
       continue
     }
-    outcome.rows.push(...mapOrderToWebshopRow(connection, storeScope, order))
+    const orderRows = mapOrderToWebshopRow(connection, storeScope, order)
+    outcome.rows.push(...orderRows)
+    if (orderRows.length > 0) outcome.importedOrderIds.push(order.id)
     // Refunds only exist for paid orders; a refund row without its parent
     // would be an unexplainable negative.
     if (!orderIsPaid(order) || (order.refunds?.length ?? 0) === 0) continue
@@ -670,6 +707,13 @@ export async function syncWooCommerceOrders(
 
   const creds = credentialsOf(connection)
   const storeScope = wooStoreScope(connection.store_url)
+  // Loaded before any work: a read failure aborts the run rather than letting
+  // a later write replace the stored list with only this run's sightings.
+  let skippedOrders: SkippedCurrencyOrder[] = await readSkippedOrders(
+    supabase,
+    connection.company_id,
+    storeScope,
+  )
 
   let modifiedAfter = resolveWindowStartIso(connection)
   // Offset page within a same-timestamp tie only; 1 whenever the cursor moves.
@@ -711,6 +755,10 @@ export async function syncWooCommerceOrders(
 
       const firstMs = gmtToMs(orders[0].date_modified_gmt)
       const lastMs = gmtToMs(orders[orders.length - 1].date_modified_gmt)
+      // Orders this page imported for sure; stays empty when the upsert
+      // dropped rows (the service does not say which), so a listed order
+      // leaves the skipped list only once its row is known to be stored.
+      let importedOrderIds: number[] = []
 
       if (page.rows.length > 0) {
         const result = await upsertWebshopOrders(
@@ -725,6 +773,7 @@ export async function syncWooCommerceOrders(
         summary.frozenFlagged += result.frozenFlagged
         summary.crossMarked += result.crossMarked
         summary.errors += result.errors
+        if (result.errors === 0) importedOrderIds = page.importedOrderIds
         if (result.errors > 0) {
           // Failed upserts are dropped inside the service; hold the cursor
           // below this page so the next run re-lists and retries it rather
@@ -748,6 +797,39 @@ export async function syncWooCommerceOrders(
       }
       for (const ms of page.incompleteModifiedMs) {
         failureFloorMs = Math.min(failureFloorMs, ms - 1000)
+      }
+
+      // Durable skipped list, written before the cursor can pass this page.
+      // A failed write holds the cursor below the page's skipped orders so
+      // the next run sees them again and retries the write.
+      const nextSkipped = mergeSkippedOrders(
+        skippedOrders,
+        {
+          sighted: page.skippedSightings,
+          resolvedOrderIds: [...importedOrderIds, ...page.goneOrderIds],
+        },
+        new Date().toISOString(),
+      )
+      if (skippedOrdersChanged(skippedOrders, nextSkipped)) {
+        const written = await writeSkippedOrders(
+          supabase,
+          connection.company_id,
+          connection.user_id,
+          storeScope,
+          nextSkipped,
+        )
+        if (written) {
+          skippedOrders = nextSkipped
+        } else {
+          summary.errors += 1
+          for (const sighting of page.skippedSightings) {
+            failureFloorMs = Math.min(failureFloorMs, sighting.modifiedMs - 1000)
+          }
+          log.warn('skipped-orders list write failed; cursor held for retry', {
+            connectionId: connection.id,
+            skipped: page.skippedSightings.length,
+          })
+        }
       }
 
       // Persist the cursor after each page: monotonic (never regresses below
