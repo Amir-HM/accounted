@@ -99,6 +99,7 @@ const noNetwork = async (): Promise<never> => {
 }
 registerPeppolTransport({
   provider: PEPPOL_TEST_PROVIDER,
+  tenantId: PEPPOL_TEST_PROVIDER,
   lookupRecipient: noNetwork,
   submit: noNetwork,
   verifyWebhook: noNetwork,
@@ -359,6 +360,8 @@ const SETTLED_SKATTEKONTO_ROW = {
   status: 'booked',
   journal_entry_id: null,
   is_ignored: false,
+  // The ledger-twin search windows on the event date.
+  transaktionsdatum: '2026-02-12',
   transaktionstext: 'Moms jan 2026',
   belopp_skatteverket: -5000,
 }
@@ -698,6 +701,8 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
       company_settings: LIMITED_COMPANY,
       companies: LIMITED_COMPANY,
     },
+    // No 1630 verifikat in the window: the ledger-twin guard lets it through.
+    empty: ['journal_entries'],
   },
   gnubok_book_skattekonto_rows: {
     rows: {
@@ -705,6 +710,8 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
       company_settings: LIMITED_COMPANY,
       companies: LIMITED_COMPANY,
     },
+    // No 1630 verifikat in the window: the ledger-twin guard lets it through.
+    empty: ['journal_entries'],
   },
   gnubok_link_documents_to_vouchers: {
     args: {

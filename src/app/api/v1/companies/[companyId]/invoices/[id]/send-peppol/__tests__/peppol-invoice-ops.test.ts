@@ -12,7 +12,8 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeCompanySettings, makeCustomer, makeInvoice } from '@/tests/helpers'
-import { registerPeppolTransport, type PeppolTransport } from '@/lib/invoices/peppol-transport'
+import { PeppolTransportError, registerPeppolTransport, type PeppolTransport } from '@/lib/invoices/peppol-transport'
+import { createConnectorPeppolTransport } from '@/lib/invoices/transports/connector'
 
 beforeAll(() => {
   if (process.env.NODE_ENV !== 'test') throw new Error('NODE_ENV=test required')
@@ -101,6 +102,11 @@ const wrote = (client: ReturnType<typeof makeClient>) =>
   client.calls.some((c) => (!DOOR_TABLES.has(c.table) && WRITES.has(c.method)) || c.table === 'rpc')
 const rpcNames = (client: ReturnType<typeof makeClient>) =>
   client.calls.filter((c) => c.table === 'rpc').map((c) => c.method)
+/** The arguments of every lifecycle event the send recorded, in order. */
+const eventArgs = (client: ReturnType<typeof makeClient>) =>
+  client.calls
+    .filter((c) => c.table === 'rpc' && c.method === 'record_peppol_delivery_event')
+    .map((c) => c.args[0] as Record<string, unknown>)
 
 const COMPANY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const INV_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -169,6 +175,7 @@ const delivery = {
 function makeTransport(overrides: Partial<PeppolTransport> = {}): PeppolTransport {
   return {
     provider: 'test-ap',
+    tenantId: 'test-ap-account',
     lookupRecipient: vi.fn().mockResolvedValue({
       reachable: true,
       participant: { scheme: '0007', identifier: '5566778899' },
@@ -407,7 +414,44 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     expect(transport.lookupRecipient).toHaveBeenCalledWith({ scheme: '0007', identifier: '5566778899' })
     expect(transport.submit).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: IDEMPOTENCY_KEY, tenantReference: COMPANY_ID }))
     expect(rpcNames(client).filter((n) => n === 'record_peppol_delivery_event')).toHaveLength(3)
+    // Every event carries the transport's own tenant label.
+    expect(eventArgs(client).map((a) => a.p_provider_tenant_id)).toEqual(['test-ap-account', 'test-ap-account', 'test-ap-account'])
     expect(markSentMock).not.toHaveBeenCalled()
+  })
+
+  it('records a send through the connector under the connector label', async () => {
+    unregister?.()
+    process.env.PEPPOL_TRANSPORT_PROVIDER = 'connector'
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({
+        reachable: true,
+        participant: { scheme: '0007', identifier: '5566778899' },
+        capabilities: [],
+        checkedAt: '2026-09-29T10:00:01.000Z',
+      }))
+      .mockResolvedValueOnce(json({
+        provider: 'qvalia',
+        providerSubmissionId: 'int-1',
+        idempotencyKey: IDEMPOTENCY_KEY,
+        tenantReference: COMPANY_ID,
+        acceptedAt: '2026-09-29T10:00:02.000Z',
+      }))
+    unregister = registerPeppolTransport(createConnectorPeppolTransport(
+      { baseUrl: 'https://connect.example.test/api/connect/peppol', key: 'gnubok_ck_test' },
+      { fetch: fetchMock as unknown as typeof fetch },
+    ))
+    const client = sendClient()
+    mockServiceClient.mockReturnValue(client)
+
+    const res = await send()
+
+    expect(res.status).toBe(201)
+    const events = eventArgs(client)
+    expect(events.map((a) => a.p_normalized_status)).toEqual(['recipient_verified', 'submitting', 'submission_accepted'])
+    for (const event of events) {
+      expect(event).toMatchObject({ p_provider: 'connector', p_provider_tenant_id: 'connector' })
+    }
   })
 
   it('numbers a draft before building the document and issues it before the network gets it', async () => {
@@ -486,6 +530,119 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     expect(body.error.details).toMatchObject({ identifier: '5566778899', reason: 'participant_not_registered' })
     expect(transport.submit).not.toHaveBeenCalled()
     expect(rpcNames(client)).not.toContain('record_peppol_delivery_event')
+  })
+
+  describe('after a failed delivery', () => {
+    /** The staging RPC's answer to a resend: a new delivery of the same document. */
+    const resend = { ...delivery, id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', idempotency_key: '99999999-9999-4999-8999-999999999999' }
+    /** The send count, then the invoice's latest submission to the recipient. */
+    const latestSubmission = (latest: Record<string, unknown> | null) => [SENT_COUNT, { data: latest, error: null }]
+    const submitted = () => (transport.submit as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+
+    it('resends as a new delivery that replaces the failed submission', async () => {
+      const client = sendClient({
+        peppol_deliveries: latestSubmission({ provider_submission_id: 'int-0', status: 'failed' }),
+        'rpc:stage_peppol_delivery_as_actor': { data: resend, error: null },
+      })
+      mockServiceClient.mockReturnValue(client)
+
+      const res = await send()
+
+      expect(res.status).toBe(201)
+      expect(submitted()).toMatchObject({ replacesSubmissionId: 'int-0' })
+      expect(client.calls).toContainEqual({ table: 'peppol_deliveries', method: 'eq', args: ['provider', 'test-ap'] })
+      expect(client.calls).toContainEqual({ table: 'peppol_deliveries', method: 'eq', args: ['recipient_identifier', '5566778899'] })
+      // The first event lands on the new delivery the staging RPC answered.
+      expect(eventArgs(client)[0].p_idempotency_key).toBe(resend.idempotency_key)
+    })
+
+    it('passes no replacement when no failed submission to this recipient exists', async () => {
+      mockServiceClient.mockReturnValue(sendClient({
+        peppol_deliveries: latestSubmission(null),
+        'rpc:stage_peppol_delivery_as_actor': { data: resend, error: null },
+      }))
+
+      expect((await send()).status).toBe(201)
+      expect(submitted()).not.toHaveProperty('replacesSubmissionId')
+    })
+
+    it('409 PEPPOL_BUSINESS_REJECTED when the buyer refused the invoice: nothing is sent again', async () => {
+      mockServiceClient.mockReturnValue(sendClient({
+        'rpc:stage_peppol_delivery_as_actor': {
+          data: {
+            ...delivery,
+            provider: 'test-ap',
+            provider_submission_id: 'int-1',
+            status: 'business_rejected',
+            terminal_at: '2026-09-29T09:00:00.000Z',
+          },
+          error: null,
+        },
+      }))
+
+      const res = await send()
+
+      expect(res.status).toBe(409)
+      expect((await res.json()).error.code).toBe('PEPPOL_BUSINESS_REJECTED')
+      expect(transport.lookupRecipient).not.toHaveBeenCalled()
+      expect(transport.submit).not.toHaveBeenCalled()
+    })
+  })
+
+  it('409 PEPPOL_DUPLICATE_INVOICE_NUMBER ends the delivery with the provider\'s reason as its detail', async () => {
+    transport.submit = vi.fn().mockRejectedValue(new PeppolTransportError('Connector: duplicate', {
+      retryable: false,
+      code: 'PEPPOL_DUPLICATE_INVOICE_NUMBER',
+      detail: 'Duplicate Invoice, F-2026-42 request rejected!',
+    }))
+    const client = sendClient()
+    mockServiceClient.mockReturnValue(client)
+
+    const res = await send()
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('PEPPOL_DUPLICATE_INVOICE_NUMBER')
+    expect(eventArgs(client).at(-1)).toMatchObject({
+      p_normalized_status: 'failed',
+      p_is_terminal: true,
+      p_detail: 'Duplicate Invoice, F-2026-42 request rejected!',
+    })
+  })
+
+  it('422 PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE when a draft booked on issue is refused, with the sentence in details.reason', async () => {
+    transport.submit = vi.fn().mockRejectedValue(new PeppolTransportError('Qvalia rejected the document (422)', {
+      retryable: false,
+      detail: 'BR-CO-10 Sum of invoice line net amount',
+    }))
+    mockServiceClient.mockReturnValue(sendClient({ invoices: { data: invoiceRow({ status: 'draft' }), error: null } }))
+
+    const res = await send()
+
+    expect(res.status).toBe(422)
+    const body = await res.json()
+    expect(body.error.code).toBe('PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE')
+    expect(body.error.details).toMatchObject({
+      invoice_status: 'sent',
+      journal_entry_id: JE_ID,
+      reason: 'Fakturan är utfärdad och bokförd, men Peppol-operatören tog inte emot den: BR-CO-10 Sum of invoice line net amount. Rätta och skicka igen, eller skicka PDF:en via e-post.',
+    })
+  })
+
+  it('502 PEPPOL_SUBMISSION_FAILED when the draft was put back with nothing booked', async () => {
+    transport.submit = vi.fn().mockRejectedValue(new PeppolTransportError('Connector: could not reach the hosted service', {
+      retryable: true,
+      code: 'CONNECTOR_UNREACHABLE',
+    }))
+    markSentMock.mockResolvedValue({ ok: true, journalEntryId: null, partialFailures: [] })
+    mockServiceClient.mockReturnValue(sendClient({ invoices: { data: invoiceRow({ status: 'draft' }), error: null } }))
+
+    const res = await send()
+
+    expect(res.status).toBe(502)
+    const body = await res.json()
+    expect(body.error.code).toBe('PEPPOL_SUBMISSION_FAILED')
+    expect(body.error.details).not.toHaveProperty('invoice_status')
+    expect(restoreDraftMock).toHaveBeenCalled()
   })
 
   it('422 PEPPOL_FISCAL_PERIOD_MISSING when the staging RPC has no retention basis', async () => {

@@ -1655,6 +1655,16 @@ export const MarkSupplierInvoicePaidSchema = z.object({
   amount: z.number().positive().optional(),
   payment_date: isoDate.optional(),
   exchange_rate_difference: z.number().optional(),
+  // #2955: the SEK that actually left the payment account, for a
+  // foreign-currency invoice. The amount cleared off 2440 is read from the
+  // ledger; a difference to it books as kursvinst (3960) or kursförlust (7960).
+  amount_sek: z
+    .number()
+    .positive()
+    .optional()
+    .describe(
+      'Foreign-currency invoices only: the SEK that left the payment account for this payment. Defaults to the SEK the invoice carries on 2440 for the paid share (no kursdifferens); a different figure books the difference on 3960 (gain) or 7960 (loss). Under kontantmetoden (no registration verifikat) it instead translates the whole payment verifikat at the rate it implies. Not combinable with exchange_rate_difference or lines.',
+    ),
   notes: z.string().optional(),
   force: z.boolean().optional(),
   // Which BAS account to credit for the payment. Defaults to 1930 to preserve
