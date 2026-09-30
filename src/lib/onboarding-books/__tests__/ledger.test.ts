@@ -145,6 +145,28 @@ describe('a manual row of another bank account keeps the account off the currenc
     expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
   })
 
+  it('a row left on a revoked connection has no claim, as on the server', () => {
+    // findFreeLedgerAccount and promote_psd2_cash_account read the connection
+    // status, not the row's enabled flag: the same account gets its slot back.
+    const revoked = (iban: string) => [
+      { ledger_account: '1930', bank_connection_id: 'conn-old', enabled: true, iban, currency: 'SEK', bank_connection: { status: 'revoked' } },
+    ]
+    const same = ledgerClaims(revoked(OWN), 'conn-new')
+    expect(same.connected).toEqual([])
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], same.used, {}, same.connected, [], same.holders)).toEqual({ a: '1930' })
+    const other = ledgerClaims(revoked(OTHER), 'conn-new')
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], other.used, {}, other.connected, [], other.holders)).toEqual({ a: '1931' })
+  })
+
+  it('an enabled row of an active connection keeps its claim even for the same account', () => {
+    const { used, connected, holders } = ledgerClaims(
+      [{ ledger_account: '1930', bank_connection_id: 'conn-old', enabled: true, iban: OWN, currency: 'SEK', bank_connection: { status: 'active' } }],
+      'conn-new',
+    )
+    expect(connected).toEqual(['1930'])
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
   it('the Ändra list leaves 1930 out only for another account', () => {
     const other = ledgerClaims(rows(OTHER), 'conn-new')
     expect(ledgerOptions('SEK', other.used, '1931', other.connected, [], other.holders, OWN)).not.toContain('1930')

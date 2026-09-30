@@ -89,7 +89,11 @@ export function allocateLedgers(
  * seen from one bank connection: `used` is every ledger held by a row outside
  * that connection, `connected` only those another enabled bank connection
  * syncs onto, and `holders` those rows with the identity the server checks
- * before it promotes one in place.
+ * before it promotes one in place. A disabled row of another connection has
+ * no claim: save_bank_account_selection releases it to a manual row before it
+ * promotes. Nor has a row left on a revoked connection (`bank_connection.status`,
+ * as findFreeLedgerAccount and promote_psd2_cash_account read it): a
+ * disconnect from before the disconnect RPC released its rows left them there.
  */
 export function ledgerClaims(
   cashAccounts: ReadonlyArray<{
@@ -98,6 +102,7 @@ export function ledgerClaims(
     enabled?: boolean | null
     iban?: string | null
     currency?: string
+    bank_connection?: { status?: string | null } | null
   }>,
   connectionId: string | null,
 ): { used: string[]; connected: string[]; holders: SlotHolder[] } {
@@ -106,7 +111,7 @@ export function ledgerClaims(
     ledger_account: c.ledger_account,
     iban: c.iban ?? null,
     currency: c.currency ?? '',
-    live: c.bank_connection_id !== null && c.enabled !== false,
+    live: c.bank_connection_id !== null && c.enabled !== false && c.bank_connection?.status !== 'revoked',
   }))
   return {
     used: holders.map((h) => h.ledger_account),
