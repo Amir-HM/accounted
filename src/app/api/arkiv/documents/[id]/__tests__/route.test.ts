@@ -76,7 +76,9 @@ describe('GET /api/arkiv/documents/[id]', () => {
     expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
   })
 
-  // crm#230 founder question: a document a registered record holds without a verifikat link is not offered for delete.
+  // crm#230: a document a registered record holds is not offered, by the server's own rule (documentDeleteRefusal).
+  // Pins are read in readDocumentDeletePins' order: supplier invoices, expense claims, bank transactions,
+  // inbox items by file, inbox items by received Peppol XML.
   const unlinkedReceipt = { id: DOC, file_name: 'kvitto.pdf', created_at: '2026-09-15', page_count: 1, doc_type: 'receipt', admission_state: 'admitted', journal_entry_id: null, journal_entry_line_id: null, pages_read_at: '2026-09-15', read_error: null, extracted_data: null }
 
   it('does not offer the delete for the underlag of a supplier invoice', async () => {
@@ -107,6 +109,7 @@ describe('GET /api/arkiv/documents/[id]', () => {
     enqueue({ data: [] })
     enqueue({ data: [] })
     enqueue({ data: [] })
+    enqueue({ data: [] })
     enqueue({ data: [{ created_journal_entry_id: 'je-1', created_supplier_invoice_id: null }] })
     const { body } = await parseJsonResponse(await call())
     expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
@@ -119,10 +122,36 @@ describe('GET /api/arkiv/documents/[id]', () => {
     enqueue({ data: null })
     enqueue({ data: [] })
     enqueue({ data: [] })
+    enqueue({ data: [] })
     enqueue({ data: [{ created_journal_entry_id: null, created_supplier_invoice_id: null }] })
     enqueue({ data: [] })
     const { body } = await parseJsonResponse(await call())
     expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: true })
+  })
+
+  it('does not offer the delete for the file of an inbox item turned into a supplier invoice', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [{ created_journal_entry_id: null, created_supplier_invoice_id: 'si-1' }] })
+    enqueue({ data: [] })
+    const { body } = await parseJsonResponse(await call())
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+  })
+
+  it('does not offer the delete for the underlag of a bank transaction', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [{ id: 'tx-1' }] })
+    const { body } = await parseJsonResponse(await call())
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+    expect(findCalls('transactions', 'eq')).toEqual([['company_id', 'company-1'], ['document_id', DOC]])
   })
 
   it('is 500 when a pin lookup fails', async () => {

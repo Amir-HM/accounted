@@ -1,6 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { previewPath } from '@/lib/documents/preview'
-import { canDeleteDocument } from '@/lib/documents/deletion'
+import {
+  DOCUMENT_DELETE_REFUSALS,
+  canDeleteDocument,
+  documentDeleteRefusal,
+  readDocumentDeletePins,
+  type DocumentDeleteBlock,
+  type DocumentDeleteRefusalCode,
+} from '@/lib/documents/deletion'
 import { after } from 'next/server'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { dbError } from '@/lib/errors/db-error'
@@ -1316,20 +1323,34 @@ export async function linkToJournalEntry(
 
 export type DeleteDocumentResult =
   | { ok: true; document: Pick<DocumentAttachment, 'id' | 'file_name'> }
-  | { ok: false; reason: 'not_found' | 'linked_to_entry'; status: number; message: string }
+  | { ok: false; reason: 'not_found'; status: number; message: string }
+  | {
+      ok: false
+      /** 'linked_to_entry' for a verifikat link (block 'verifikat'), 'pinned' for any other record that holds it. */
+      reason: 'linked_to_entry' | 'pinned'
+      block: DocumentDeleteBlock
+      code: DocumentDeleteRefusalCode
+      status: number
+      message: string
+    }
 
 /**
- * Delete a document if and only if it is not yet linked to a journal entry
- * (canDeleteDocument, lib/documents/deletion.ts).
+ * Delete a document if and only if nothing holds it: the rule is
+ * documentDeleteRefusal() in lib/documents/deletion.ts, shared with the Arkiv
+ * record's offer so the two cannot disagree.
  *
  * BFL 7 kap 2§: once a document is attached to a verifikation it becomes
  * räkenskapsinformation and may not be deleted within the 7-year retention
  * window. Linked docs must be superseded via createNewVersion() instead.
- * The block_document_deletion() trigger is the DB-level backstop.
+ * The block_document_deletion() trigger is the DB-level backstop. The
+ * underlag of a registered supplier invoice or utlägg, the file or received
+ * Peppol XML of a booked inbox item, and a bank transaction's underlag are
+ * refused the same way, each with its own Swedish sentence.
  *
- * A document another record still pins through a RESTRICT foreign key (a bank
- * transaction's underlag) is refused by the database; the error is thrown
- * with its SQLSTATE intact so lib/errors/foreign-key-refusal.ts answers it.
+ * A record that pins the document through a RESTRICT foreign key between the
+ * pin read and the delete (a bank transaction's underlag) is still refused by
+ * the database; the error is thrown with its SQLSTATE intact so
+ * lib/errors/foreign-key-refusal.ts answers it.
  */
 export async function deleteDocument(
   supabase: SupabaseClient,
@@ -1352,13 +1373,19 @@ export async function deleteDocument(
     }
   }
 
-  if (!canDeleteDocument(doc)) {
+  // The verifikat link needs no further read; the other pins are read only
+  // for a document it lets go.
+  const refusal = canDeleteDocument(doc)
+    ? documentDeleteRefusal(doc, await readDocumentDeletePins(supabase, companyId, documentId))
+    : documentDeleteRefusal(doc, { supplierInvoice: false, expenseClaim: false, bankTransaction: false, inboxItems: [] })
+  if (refusal) {
     return {
       ok: false,
-      reason: 'linked_to_entry',
+      reason: refusal.block === 'verifikat' ? 'linked_to_entry' : 'pinned',
+      block: refusal.block,
+      code: refusal.code,
       status: 409,
-      message:
-        'Underlaget är knutet till en verifikation och utgör räkenskapsinformation enligt Bokföringslagen 7 kap 2§. Räkenskapsinformation ska bevaras i minst 7 år och får inte raderas. Använd "Ersätt med ny version" om underlaget behöver korrigeras.',
+      message: refusal.message,
     }
   }
 
@@ -1374,6 +1401,8 @@ export async function deleteDocument(
       return {
         ok: false,
         reason: 'linked_to_entry',
+        block: 'verifikat',
+        code: DOCUMENT_DELETE_REFUSALS.verifikat.code,
         status: 409,
         message:
           'Underlaget kan inte tas bort på grund av Bokföringslagens bevarandekrav (7 kap 2§).',

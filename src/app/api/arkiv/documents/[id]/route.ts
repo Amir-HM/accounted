@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { documentTitle, underlagPayload } from '@/lib/arkiv/documents/title'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { isArkivBrainEnabled, isArkivEnabled } from '@/lib/arkiv/flag'
@@ -10,7 +9,7 @@ import { schemaForType } from '@/lib/documents/extract/schemas'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { needsReadOnDemand, readLaneFor, type ReadLane } from '@/lib/documents/read/lanes'
 import { hasStoredPages, isBookedRow } from '@/lib/documents/locked-period'
-import { canDeleteDocument, offersDocumentDelete, type DocumentRecordPins } from '@/lib/documents/deletion'
+import { canDeleteDocument, offersDocumentDelete, readDocumentDeletePins, type DocumentDeletePins } from '@/lib/documents/deletion'
 
 /**
  * GET /api/arkiv/documents/[id]
@@ -32,8 +31,8 @@ export interface DocumentRecordView {
   read: { state: 'read' | 'partial' | 'unread' | 'skipped'; lane: ReadLane }
   journal_entry: { id: string; voucher: string } | null
   /**
-   * Whether the record offers the delete (offersDocumentDelete): only where DELETE /api/documents/[id] would take it
-   * (canDeleteDocument), and not while a supplier invoice, an utlagg or a booked inbox item holds it.
+   * Whether the record offers the delete (offersDocumentDelete): exactly where DELETE /api/documents/[id] would take it,
+   * by the same rule (documentDeleteRefusal) over the same pins (readDocumentDeletePins).
    */
   deletable: boolean
   classification: { summary: string | null; confidence: number | null; decided_by: string; signals: string[]; suggested_type?: string | null } | null
@@ -124,8 +123,15 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   // stamp (lib/documents/locked-period.ts): shown typed and read all the same.
   const docType = d.doc_type ?? (isBookedRow(d) ? ((classification.data as { doc_type?: string | null } | null)?.doc_type ?? null) : null)
   const storedPages = !d.pages_read_at && (await hasStoredPages(ctx.supabase, id))
-  const pins = canDeleteDocument(d) ? await readDeletePins(ctx.supabase, ctx.companyId, d.id) : null
-  if (pins && 'error' in pins) return NextResponse.json({ error: getErrorMessage(pins.error) }, { status: 500 })
+  // The same pins deleteDocument() reads, only for a document the verifikat half of the rule lets go.
+  let pins: DocumentDeletePins | null = null
+  if (canDeleteDocument(d)) {
+    try {
+      pins = await readDocumentDeletePins(ctx.supabase, ctx.companyId, d.id)
+    } catch (pinError) {
+      return NextResponse.json({ error: getErrorMessage(pinError) }, { status: 500 })
+    }
+  }
 
   const view: DocumentRecordView = {
     document_id: d.id,
@@ -198,27 +204,3 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   return NextResponse.json({ data: view })
 })
 
-/**
- * The records that hold a document without a verifikat link (crm#230): a supplier invoice or an utlagg with it as
- * underlag, and inbox items with it as their file or as the received Peppol XML. Read only for a document the server
- * would let go, so a booked one costs nothing extra.
- */
-async function readDeletePins(supabase: SupabaseClient, companyId: string, id: string): Promise<DocumentRecordPins | { error: unknown }> {
-  const [supplierInvoice, expenseClaim, inboxFile, inboxXml] = await Promise.all([
-    supabase.from('supplier_invoices').select('id').eq('company_id', companyId).eq('document_id', id).limit(1),
-    supabase.from('expense_claims').select('id').eq('company_id', companyId).eq('document_id', id).limit(1),
-    supabase.from('invoice_inbox_items').select('created_journal_entry_id, created_supplier_invoice_id').eq('company_id', companyId).eq('document_id', id),
-    supabase
-      .from('invoice_inbox_items')
-      .select('created_journal_entry_id, created_supplier_invoice_id')
-      .eq('company_id', companyId)
-      .eq('channel_context->>peppol_xml_document_id', id),
-  ])
-  for (const r of [supplierInvoice, expenseClaim, inboxFile, inboxXml]) if (r.error) return { error: r.error }
-  type InboxPin = DocumentRecordPins['inboxItems'][number]
-  return {
-    supplierInvoice: ((supplierInvoice.data ?? []) as unknown[]).length > 0,
-    expenseClaim: ((expenseClaim.data ?? []) as unknown[]).length > 0,
-    inboxItems: [...((inboxFile.data ?? []) as InboxPin[]), ...((inboxXml.data ?? []) as InboxPin[])],
-  }
-}

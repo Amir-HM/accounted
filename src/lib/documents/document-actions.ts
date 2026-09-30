@@ -11,6 +11,10 @@
  *     never deleted; the DB trigger block_document_deletion() is the
  *     backstop, deleteDocument() the application check. Correcting one means
  *     a new version, never a delete.
+ *   - a document another registered record holds (a supplier invoice or an
+ *     utlägg with it as underlag, a booked inbox item with it as its file or
+ *     received Peppol XML, a bank transaction) is refused too, each with its
+ *     own code (documentDeleteRefusal, lib/documents/deletion.ts).
  *
  * Reads return metadata only: never the file bytes (GET .../download) and
  * never the extracted text (the Arkiv reading tools serve that).
@@ -20,7 +24,7 @@
 import type { OperationContext, OperationOutcome } from '@/lib/operations/types'
 import { decodeDefaultCursor, encodeDefaultCursor } from '@/lib/api/v1/pagination'
 import { deleteDocument } from '@/lib/core/documents/document-service'
-import { canDeleteDocument } from '@/lib/documents/deletion'
+import { canDeleteDocument, documentDeleteRefusal, readDocumentDeletePins } from '@/lib/documents/deletion'
 import { UUID_RE } from '@/lib/invariants/uuid'
 
 type Failure = Extract<OperationOutcome<never>, { ok: false }>
@@ -199,12 +203,13 @@ export async function getDocumentMetadata(
 }
 
 /**
- * Delete a document that is not linked to a verifikat. The rule is
- * deleteDocument()'s (the dashboard's), canDeleteDocument(): a link to a
- * verifikat or one of its lines refuses, with the BFL 7 kap 2 § explanation.
- * A document a bank transaction still pins answers
- * DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION (lib/errors/foreign-key-refusal.ts).
- * The dry run reads the same row and applies the same rule.
+ * Delete a document nothing holds. The rule is deleteDocument()'s (the
+ * dashboard's), documentDeleteRefusal() in lib/documents/deletion.ts: a link
+ * to a verifikat or one of its lines answers DOC_DELETE_LINKED with the BFL
+ * 7 kap 2 § explanation; the underlag of a registered supplier invoice or
+ * utlägg, the file or received Peppol XML of a booked inbox item and a bank
+ * transaction's underlag each answer their own code. The dry run reads the
+ * same row and pins and applies the same rule.
  */
 export async function removeDocument(
   ctx: OperationContext,
@@ -224,6 +229,13 @@ export async function removeDocument(
     if (!canDeleteDocument(row)) {
       return { ok: false, code: 'DOC_DELETE_LINKED', details: { journal_entry_id: row.journal_entry_id, journal_entry_line_id: row.journal_entry_line_id } }
     }
+    let refusal: ReturnType<typeof documentDeleteRefusal>
+    try {
+      refusal = documentDeleteRefusal(row, await readDocumentDeletePins(ctx.supabase, ctx.companyId, documentId))
+    } catch (err) {
+      return failed(err)
+    }
+    if (refusal) return { ok: false, code: refusal.code, details: { blocked_by: refusal.block } }
     return {
       ok: true,
       dryRun: true,
@@ -240,7 +252,7 @@ export async function removeDocument(
   }
   if (!result.ok) {
     if (result.reason === 'not_found') return NOT_FOUND
-    return { ok: false, code: 'DOC_DELETE_LINKED', messageSv: result.message }
+    return { ok: false, code: result.code, messageSv: result.message, details: { blocked_by: result.block } }
   }
   return { ok: true, data: { id: result.document.id, file_name: result.document.file_name, deleted: true } }
 }
