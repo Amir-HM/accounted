@@ -102,7 +102,7 @@ function toDelivery(d: PeppolDeliverySummary): z.infer<typeof Delivery> {
 }
 
 const SCOPE_PITFALL =
-  'Peppol here is BIS Billing 3: aktiebolag senders, standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.'
+  'Peppol here is BIS Billing 3: senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.'
 
 // ---------------------------------------------------------------------------
 // invoices.peppol-readiness
