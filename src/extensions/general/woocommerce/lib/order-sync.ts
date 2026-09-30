@@ -13,6 +13,7 @@ import {
   type WooCredentials,
 } from './api-client'
 import { credentialsOf } from './connect'
+import { resolveOrderCurrency } from './order-currency'
 import type { WooCommerceConnection, WooOrder, WooRefund } from '../types'
 
 const defaultLog = createLogger('woocommerce/order-sync')
@@ -120,6 +121,12 @@ export interface WooCommerceSyncSummary {
   frozenFlagged: number
   /** Rows linked to a row the retired transactions feed already imported. */
   crossMarked: number
+  /**
+   * Orders skipped because their currency is not an ISO code and not the
+   * store currency's own symbol (see resolveOrderCurrency). Kept apart from
+   * `errors`: syncing again does not help, the store's data has to change.
+   */
+  unknownCurrency: number
   errors: number
   /** Set when the caller's time budget ran out before all pages processed. */
   deadlineReached?: boolean
@@ -392,9 +399,20 @@ function refundedTotal(order: WooOrder): number {
   return sum
 }
 
+/**
+ * The order's ISO currency, or null when it cannot be known (the order is
+ * then skipped, with its refunds; see lib/order-currency).
+ */
+export function orderCurrency(
+  connection: Pick<WooCommerceConnection, 'currency'>,
+  order: Pick<WooOrder, 'currency'>,
+): string | null {
+  return resolveOrderCurrency(order.currency, connection.currency)
+}
+
 /** Map one order to its webshop_orders upsert row. */
 export function mapOrderToWebshopRow(
-  connection: Pick<WooCommerceConnection, 'id' | 'store_name'>,
+  connection: Pick<WooCommerceConnection, 'id' | 'store_name' | 'currency'>,
   storeScope: string,
   order: WooOrder,
 ): WebshopOrderUpsert[] {
@@ -404,6 +422,8 @@ export function mapOrderToWebshopRow(
   // them would strand an unbookable "Att bokföra" row (the engine refuses
   // zero-sum entries and feed rows are undeletable).
   if (total === null || total === 0) return []
+  const currency = orderCurrency(connection, order)
+  if (currency === null) return []
   return [
     {
       platform: 'woocommerce',
@@ -419,7 +439,7 @@ export function mapOrderToWebshopRow(
       is_paid: orderIsPaid(order),
       order_date: isoDateOfGmt(order.date_created_gmt),
       paid_date: order.date_paid_gmt ? isoDateOfGmt(order.date_paid_gmt) : null,
-      currency: order.currency.toUpperCase(),
+      currency,
       total,
       total_tax: parseAmount(order.total_tax) ?? 0,
       vat_breakdown: buildVatBreakdown(order),
@@ -439,13 +459,15 @@ export function mapOrderToWebshopRow(
 
 /** Map one refund of a paid order to its negative upsert row. */
 export function mapRefundToWebshopRow(
-  connection: Pick<WooCommerceConnection, 'id' | 'store_name'>,
+  connection: Pick<WooCommerceConnection, 'id' | 'store_name' | 'currency'>,
   storeScope: string,
   order: WooOrder,
   refund: WooRefund,
 ): WebshopOrderUpsert[] {
   const amount = parseAmount(refund.amount)
   if (amount === null || amount === 0) return []
+  const currency = orderCurrency(connection, order)
+  if (currency === null) return []
   // The refund's VAT reversal: from its own line allocation, else prorated
   // from the parent order's mix. Without this the refund books with zero
   // moms and ruta 10 stays over-declared (skeptic finding). Buckets hold
@@ -467,7 +489,7 @@ export function mapRefundToWebshopRow(
       is_paid: true,
       order_date: isoDateOfGmt(refund.date_created_gmt),
       paid_date: isoDateOfGmt(refund.date_created_gmt),
-      currency: order.currency.toUpperCase(),
+      currency,
       total: -Math.abs(amount),
       total_tax: -totalTax,
       vat_breakdown: breakdown,
@@ -535,6 +557,21 @@ async function buildPageRows(
         orderId: order.id,
         total: order.total,
       })
+    }
+    // Same doctrine for a currency that is no ISO code: skipped with its
+    // refunds (a refund row without its parent is an unexplainable negative),
+    // counted and logged, cursor not held. An order that imports nothing
+    // anyway (zero or corrupt total) is not counted a second time.
+    if (orderCurrency(connection, order) === null) {
+      if ((parseAmount(order.total) ?? 0) !== 0) {
+        summary.unknownCurrency += 1
+        log.warn('order currency is not an ISO code; order skipped', {
+          orderId: order.id,
+          currency: order.currency,
+          storeCurrency: connection.currency,
+        })
+      }
+      continue
     }
     outcome.rows.push(...mapOrderToWebshopRow(connection, storeScope, order))
     // Refunds only exist for paid orders; a refund row without its parent
@@ -620,6 +657,7 @@ export async function syncWooCommerceOrders(
     removed: 0,
     frozenFlagged: 0,
     crossMarked: 0,
+    unknownCurrency: 0,
     errors: 0,
   }
   if (

@@ -339,6 +339,7 @@ describe('woocommerce extension routes', () => {
         removed: 0,
         frozenFlagged: 0,
         crossMarked: 0,
+        unknownCurrency: 0,
         errors: 0,
       })
       const res = await findRoute('POST', '/sync').handler(
@@ -372,6 +373,7 @@ describe('woocommerce extension routes', () => {
       removed: 0,
       frozenFlagged: 0,
       crossMarked: 0,
+      unknownCurrency: 0,
       errors: 0,
     }
 

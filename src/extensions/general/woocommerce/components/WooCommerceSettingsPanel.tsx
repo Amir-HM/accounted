@@ -201,16 +201,40 @@ export default function WooCommerceSettingsPanel() {
     failedTitle: string,
   ) {
     const summary = syncSummary(payload ?? null)
+    // Orders skipped for an unusable currency get their own sentence on any
+    // counted outcome: syncing again does not bring them in.
+    const withCurrencyNote = (text: string, unknownCurrency: number) =>
+      unknownCurrency > 0
+        ? `${text} ${t('sync_unknown_currency', { count: unknownCurrency })}`
+        : text
     if (summary.reason === 'revoked') {
       toast({ title: failedTitle, description: t('sync_revoked'), variant: 'destructive' })
     } else if (summary.reason === 'partial') {
-      toast({ title: t('sync_partial_title'), description: t('sync_partial', summary.values) })
+      toast({
+        title: t('sync_partial_title'),
+        description: withCurrencyNote(
+          t('sync_partial', summary.values),
+          summary.values.unknownCurrency,
+        ),
+      })
     } else if (summary.reason === 'empty') {
       toast({ title: doneTitle, description: t('sync_done_empty') })
     } else if (summary.reason === 'errors') {
-      toast({ title: doneTitle, description: t('sync_done_feed_errors', summary.values) })
+      toast({
+        title: doneTitle,
+        description: withCurrencyNote(
+          t('sync_done_feed_errors', summary.values),
+          summary.values.unknownCurrency,
+        ),
+      })
     } else if (summary.reason === 'feed') {
-      toast({ title: doneTitle, description: t('sync_done_feed', summary.values) })
+      toast({
+        title: doneTitle,
+        description: withCurrencyNote(
+          t('sync_done_feed', summary.values),
+          summary.values.unknownCurrency,
+        ),
+      })
     } else {
       toast({ title: doneTitle })
     }

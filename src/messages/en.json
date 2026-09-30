@@ -624,6 +624,7 @@
     "sync_partial": "{fetched} order(s) fetched so far: {imported} new rows in the inbox.{errors, plural, =0 {} other { # row(s) could not be imported.}} Not all orders were fetched in time: sync again to continue where it stopped.",
     "sync_failed_title": "Sync failed",
     "sync_revoked": "The store rejected the API key, so no orders could be fetched. Connect the store again.",
+    "sync_unknown_currency": "{count} order(s) were not fetched: the store gives no valid currency code (such as SEK or EUR) on them, which usually comes from a currency plugin in WooCommerce. Correct the currency in the store, then fetch them with Fetch older orders.",
     "transaction_sync_title": "Orders from WooCommerce",
     "transaction_sync_description": "Fetch the store's paid orders and refunds into the transaction inbox every night, as a bank-style feed for the store. You book the rows from the inbox as usual.",
     "transaction_sync_backfill_note": "Orders are fetched from the day you connected the store. You fetch older orders yourself below.",

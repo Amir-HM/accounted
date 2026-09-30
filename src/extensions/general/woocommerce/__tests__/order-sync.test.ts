@@ -29,6 +29,7 @@ import {
   mapRefundToWebshopRow,
   orderImports,
   orderIsPaid,
+  orderCurrency,
   orderRemoves,
   syncWooCommerceOrders,
   wooOrderExternalId,
@@ -206,7 +207,7 @@ describe('orderImports / orderRemoves / orderIsPaid', () => {
 })
 
 describe('mapOrderToWebshopRow', () => {
-  const connection = { id: 'conn-1', store_name: 'Testbutiken' }
+  const connection = { id: 'conn-1', store_name: 'Testbutiken', currency: 'SEK' }
 
   it('maps the full booking underlag', () => {
     const rows = mapOrderToWebshopRow(connection, 'shop.example.se', makeOrder())
@@ -301,8 +302,53 @@ describe('mapOrderToWebshopRow', () => {
   })
 })
 
+describe('order currency', () => {
+  const connection = { id: 'conn-1', store_name: 'Testbutiken', currency: 'SEK' }
+  const refund: WooRefund = {
+    id: 77,
+    amount: '250.00',
+    reason: 'Retur',
+    date_created_gmt: '2026-08-03T10:00:00',
+  }
+
+  it('keeps an ISO code, whatever its case', () => {
+    expect(mapOrderToWebshopRow(connection, 's', makeOrder({ currency: 'SEK' }))[0].currency).toBe('SEK')
+    expect(mapOrderToWebshopRow(connection, 's', makeOrder({ currency: 'sek' }))[0].currency).toBe('SEK')
+    // A code other than the store's is kept as-is: multi-currency stores.
+    expect(mapOrderToWebshopRow(connection, 's', makeOrder({ currency: 'EUR' }))[0].currency).toBe('EUR')
+  })
+
+  it('reads the HTML-encoded store currency symbol as the store currency', () => {
+    // "&#107;&#114;" is "kr", the SEK symbol as WooCommerce stores it.
+    const rows = mapOrderToWebshopRow(connection, 's', makeOrder({ currency: '&#107;&#114;' }))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].currency).toBe('SEK')
+    expect(mapOrderToWebshopRow(connection, 's', makeOrder({ currency: ' kr ' }))[0].currency).toBe('SEK')
+    expect(
+      mapRefundToWebshopRow(connection, 's', makeOrder({ currency: '&#107;&#114;' }), refund)[0]
+        .currency,
+    ).toBe('SEK')
+  })
+
+  it('refuses a symbol that is not the store currency: the euro sign never becomes SEK', () => {
+    for (const currency of ['&euro;', '&#8364;', '\u20ac']) {
+      expect(orderCurrency(connection, makeOrder({ currency }))).toBeNull()
+      expect(mapOrderToWebshopRow(connection, 's', makeOrder({ currency }))).toEqual([])
+      expect(mapRefundToWebshopRow(connection, 's', makeOrder({ currency }), refund)).toEqual([])
+    }
+  })
+
+  it('refuses a symbol when the store currency is unknown, and garbage outright', () => {
+    const noStoreCurrency = { ...connection, currency: null }
+    expect(orderCurrency(noStoreCurrency, makeOrder({ currency: '&#107;&#114;' }))).toBeNull()
+    expect(orderCurrency(connection, makeOrder({ currency: '' }))).toBeNull()
+    expect(orderCurrency(connection, makeOrder({ currency: 'XX' }))).toBeNull()
+    expect(orderCurrency(connection, makeOrder({ currency: 'ABC' }))).toBeNull()
+  })
+})
+
 describe('mapRefundToWebshopRow', () => {
-  const connection = { id: 'conn-1', store_name: 'Testbutiken' }
+  const connection = { id: 'conn-1', store_name: 'Testbutiken', currency: 'SEK' }
   const refund: WooRefund = {
     id: 77,
     amount: '250.00',
@@ -692,6 +738,32 @@ describe('syncWooCommerceOrders', () => {
     expect(summary.errors).toBe(1)
     expect(upsertWebshopOrders).not.toHaveBeenCalled()
     // Deliberate: a permanently corrupt total must not stall the feed.
+    expect(cursorUpdates(updates)).toHaveLength(1)
+  })
+
+  it('stores the store currency for an order carrying the encoded symbol', async () => {
+    const { client } = makeSupabaseMock()
+    listOrdersPage.mockResolvedValueOnce([makeOrder({ currency: '&#107;&#114;' })])
+
+    const summary = await syncWooCommerceOrders(client, makeConnection())
+
+    expect(summary.unknownCurrency).toBe(0)
+    const rows = vi.mocked(upsertWebshopOrders).mock.calls[0][3] as WebshopOrderUpsert[]
+    expect(rows.map((r) => r.currency)).toEqual(['SEK'])
+  })
+
+  it('skips an order whose currency cannot be known, with its refunds, without stalling the cursor', async () => {
+    const { client, updates } = makeSupabaseMock()
+    listOrdersPage.mockResolvedValueOnce([
+      makeOrder({ currency: '&euro;', refunds: [{ id: 77, reason: '', total: '-250.00' }] }),
+    ])
+
+    const summary = await syncWooCommerceOrders(client, makeConnection())
+
+    expect(summary).toMatchObject({ fetched: 1, unknownCurrency: 1, errors: 0 })
+    expect(upsertWebshopOrders).not.toHaveBeenCalled()
+    expect(listOrderRefunds).not.toHaveBeenCalled()
+    // Syncing again cannot fix the store's data; the feed moves on.
     expect(cursorUpdates(updates)).toHaveLength(1)
   })
 
