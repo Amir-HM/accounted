@@ -2201,6 +2201,39 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Peppol-operatören kunde inte nås just nu. Fakturan har inte skickats; försök igen om en stund.',
     message_en: 'The Peppol access point could not be reached. The invoice has not been sent; try again shortly.',
   },
+  // The two above once the invoice is issued: a draft is issued (and booked,
+  // under faktureringsmetoden) before the network gets it, so the failure
+  // must not say it was not sent. The send composes the sentence it answers
+  // (booked or not, the access point's reason) in peppolAfterIssueMessages
+  // (lib/invoices/peppol-send-service.ts); these static texts hold for every
+  // case and are what an envelope without that sentence carries.
+  PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE: {
+    httpStatus: 422,
+    message_sv: 'Fakturan är utfärdad, men Peppol-operatören tog inte emot den. Rätta och skicka igen, eller skicka PDF:en via e-post.',
+    message_en: 'The invoice is issued, but the Peppol access point did not accept it. Correct it and send again, or send the PDF by email.',
+    thrown_message_sv: true,
+  },
+  PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE: {
+    httpStatus: 502,
+    message_sv: 'Fakturan är utfärdad, men kunde inte skickas via Peppol just nu. Försök igen om en stund, eller skicka PDF:en via e-post.',
+    message_en: 'The invoice is issued, but could not be sent via Peppol right now. Try again shortly, or send the PDF by email.',
+    thrown_message_sv: true,
+  },
+  // The access point already holds an invoice with this number for this
+  // receiver (the connector's 409). Its verdict: the delivery ends failed,
+  // and only a resend that replaces a failed submission gets past it.
+  PEPPOL_DUPLICATE_INVOICE_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'Mottagaren har redan en faktura med det här numret via Peppol. Behöver den rättas, kreditera den och skapa en ny faktura.',
+    message_en: 'The recipient already holds an invoice with this number via Peppol. If it needs correcting, credit it and create a new invoice.',
+  },
+  // The buyer refused the invoice (a business response): the same document
+  // is never sent again.
+  PEPPOL_BUSINESS_REJECTED: {
+    httpStatus: 409,
+    message_sv: 'Mottagaren har avvisat fakturan via Peppol. Kreditera den och skapa en ny faktura.',
+    message_en: 'The recipient rejected the invoice via Peppol. Credit it and create a new invoice.',
+  },
   // The SMP lookup itself failed (#2484), as opposed to a lookup that
   // answered "not registered": the staged delivery stays staged and nothing
   // terminal is recorded. The route answers 502 when the transport says the
@@ -2370,6 +2403,22 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     httpStatus: 502,
     message_sv: 'Svaret från Peppol-tjänsten kunde inte tolkas. Kontakta support om felet kvarstår.',
     message_en: 'The answer from the Peppol service could not be read. Contact support if the problem persists.',
+  },
+  // The access point answered a documented call in a shape the adapter does
+  // not know (PEPPOL_UPSTREAM_SHAPE_CODE): not retryable, asking again gets
+  // the same shape.
+  // A resend that names a submission the access point has not reported as
+  // failed (it is delivered or still in flight): the connector refuses the
+  // overwrite so the buyer never gets the invoice twice.
+  CONNECTOR_PEPPOL_RESEND_NOT_FAILED: {
+    httpStatus: 409,
+    message_sv: 'Peppol-operatören har inte rapporterat den tidigare leveransen som misslyckad, så fakturan skickas inte igen. Vänta på leveransstatusen eller kontakta support.',
+    message_en: 'The Peppol access point has not reported the earlier delivery as failed, so the invoice is not sent again. Wait for the delivery status or contact support.',
+  },
+  CONNECTOR_UPSTREAM_SHAPE: {
+    httpStatus: 502,
+    message_sv: 'Peppol-operatören svarade i ett format som tjänsten inte känner igen. Kontakta support om felet kvarstår.',
+    message_en: 'The Peppol access point answered in a format the service does not recognise. Contact support if the problem persists.',
   },
 }
 

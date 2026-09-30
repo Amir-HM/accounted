@@ -349,6 +349,29 @@ describe('Qvalia transport: submit', () => {
     }))
     await expect(transport.submit(submission())).rejects.toMatchObject({ kind: 'duplicate', retryable: false })
   })
+
+  it('resends with overwrite=true when the submission replaces a failed one, and answers the new integrationId', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {
+      status: 'success',
+      data: { message: 'invoice F-2026-42 sent', invoice_id: 'F-2026-42', integrationId: 'int-new' },
+    }))
+
+    const receipt = await transport.submit(submission({ replacesSubmissionId: 'int-failed' }))
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api-qa.qvalia.com/partner/SE5560000000/transaction/SE5560000000/invoices/outgoing?overwrite=true',
+    )
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(XML)
+    expect(receipt.providerSubmissionId).toBe('int-new')
+  })
+
+  it('never adopts an earlier integrationId for a resend: its 409 stays a duplicate error', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(409, { status: 'error', data: 'duplicate' }))
+
+    await expect(transport.submit(submission({ replacesSubmissionId: 'int-failed' })))
+      .rejects.toMatchObject({ kind: 'duplicate', retryable: false })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('Qvalia transport: verifyWebhook', () => {

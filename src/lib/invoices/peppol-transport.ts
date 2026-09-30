@@ -52,10 +52,10 @@ export interface PeppolSubmission {
   document: string
   documentSha256: string
   /**
-   * Resend after a failed delivery: the connector service submits with the
-   * access point's overwrite and returns a NEW submission id. Honoured only
-   * for a submission owned by the same key and company. Mirrors
-   * `peppolSubmissionSchema` in @accounted/connect-contract.
+   * Resend after a failed delivery: the transport submits with the access
+   * point's overwrite and returns a NEW submission id (the connector service
+   * honours it only for a submission owned by the same key and company).
+   * Mirrors `peppolSubmissionSchema` in @accounted/connect-contract.
    */
   replacesSubmissionId?: string
 }
@@ -202,6 +202,14 @@ export class PeppolTransportError extends Error {
  * the same code.
  */
 export const PEPPOL_UPSTREAM_SHAPE_CODE = 'CONNECTOR_UPSTREAM_SHAPE'
+
+/**
+ * The access point already holds an invoice with this number for this
+ * receiver. A verdict on the document, never retryable: only a resend that
+ * names the failed submission it replaces (`replacesSubmissionId`) gets past
+ * it. The connector answers it under this code.
+ */
+export const PEPPOL_DUPLICATE_INVOICE_NUMBER_CODE = 'PEPPOL_DUPLICATE_INVOICE_NUMBER'
 
 export function isPeppolTransportError(error: unknown): error is PeppolTransportError {
   return error instanceof PeppolTransportError

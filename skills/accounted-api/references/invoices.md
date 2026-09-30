@@ -895,7 +895,7 @@ Every document staged for the Peppol network for this invoice, newest first, wit
 
 **Pitfalls:**
 - submission_accepted means the access point took the document, not that the buyer received it; transport_succeeded and business_accepted come later.
-- A delivery in retryable_failure can be resent with POST /invoices/{id}/send-peppol; a terminal failed or business_rejected one cannot be resent unchanged.
+- A delivery in retryable_failure, failed or no_route can be resent with POST /invoices/{id}/send-peppol (a failed one as a new delivery that replaces its submission); a business_rejected one cannot: the buyer refused the invoice.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1151,7 +1151,7 @@ Example response `200`:
 **Send a customer invoice as a Peppol e-invoice (BIS Billing 3) through the access point.**
 `scope:invoices:write · risk:high · idempotent · dry-run`
 
-Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice's fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and issued before the network gets it (status sent, verifikat under faktureringsmetoden); once the network accepted it the PDF is archived as underlag, as :mark-sent does. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.
+Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice's fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and issued before the network gets it (status sent, verifikat under faktureringsmetoden); once the network accepted it the PDF is archived as underlag, as :mark-sent does. Resending the exact same document while its delivery is live replays the first submission instead of transmitting twice; after a failed delivery it is sent again as a new delivery that replaces the failed submission at the access point, and counts as a send. The dry run validates everything as reads and contacts no network.
 
 **Use when:** The buyer receives e-invoices over Peppol (typically public sector, where Lag 2018:1277 requires it, or a company that asks for it) and GET /invoices/{id}/peppol shows no blockers.
 **Do not use for:** Emailing the invoice (POST /invoices/{id}/send), recording one delivered another way (:mark-sent), credit notes, quotes or proformas.
@@ -1159,9 +1159,11 @@ Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with th
 **Pitfalls:**
 - Needs the company's Peppol access grant: 403 PEPPOL_ACCESS_REQUIRED until the operators enable it (POST /peppol/access-request), 409 PEPPOL_SEND_LIMIT_REACHED once the sending cap is used.
 - A buyer not registered in Peppol answers 422 PEPPOL_RECIPIENT_NOT_REACHABLE and nothing is transmitted; a failed lookup answers 502 PEPPOL_LOOKUP_FAILED and is safe to retry.
-- 422 PEPPOL_SUBMISSION_REJECTED is the access point's verdict on the document: fix the invoice (a correction is a credit note plus a new invoice once issued), do not resend unchanged.
+- 422 PEPPOL_SUBMISSION_REJECTED is the access point's verdict on the document and ends the delivery (failed): fix what the reason names and send again, which stages a new delivery; once issued, a correction of the invoice itself is a credit note plus a new invoice.
 - 502 PEPPOL_SUBMISSION_FAILED and 409 PEPPOL_SEND_PRECONDITION_FAILED leave the delivery resendable: retry later or fix the Peppol settings.
-- A draft whose verifikat the engine refuses (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) is not transmitted: the engine's error comes back and the invoice stays in draft. If the network then fails to take a draft that was booked on issue, the invoice stays issued (details.invoice_status sent) and the delivery can be resent.
+- When the invoice stays issued after the failure (issued before this send, or a draft booked on issue) the codes are 422 PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE and 502 PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE, with details.invoice_status and details.journal_entry_id: the invoice is issued, so resend it or deliver the PDF another way.
+- 409 PEPPOL_DUPLICATE_INVOICE_NUMBER: the access point already holds an invoice with this number for this recipient (ends the delivery). 409 PEPPOL_BUSINESS_REJECTED: the buyer refused the invoice via Peppol; it is not sent again, credit it and create a new invoice. 409 CONNECTOR_PEPPOL_RESEND_NOT_FAILED: a resend was refused because the access point has not reported the earlier delivery as failed (nothing is sent).
+- A draft whose verifikat the engine refuses (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) is not transmitted: the engine's error comes back and the invoice stays in draft. If the network then fails to take a draft that was booked on issue, the invoice stays issued (details.invoice_status sent) and can be resent.
 - An invoice date outside every fiscal year answers 422 PEPPOL_FISCAL_PERIOD_MISSING (the delivery needs its retention basis).
 - Peppol here is BIS Billing 3: senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.
 

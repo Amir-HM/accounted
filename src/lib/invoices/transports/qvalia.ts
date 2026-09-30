@@ -21,8 +21,10 @@
  * - Outgoing invoice: POST the BIS Billing 3 UBL XML with
  *   `content-type: application/xml`; the response carries an `integrationId`
  *   (UUID) that identifies the message at Qvalia. The same document id for the
- *   same receiver answers `409`. `integrationId` appears in several places of
- *   the response, always with the same value (by design per Qvalia). Since
+ *   same receiver answers `409`; with `?overwrite=true` (a resend after a
+ *   failed delivery) Qvalia sends it again under a new `integrationId`.
+ *   `integrationId` appears in several places of the response, always with
+ *   the same value (by design per Qvalia). Since
  *   September the docs also describe an `Idempotency-Key` request header (a
  *   repeat within 24 h returns the original response and `integrationId`);
  *   this adapter does not send it yet and relies on the 409 recovery below.
@@ -645,7 +647,14 @@ export function createQvaliaTransport(
         detail: `unsupported content type ${submission.contentType}`,
       })
     }
-    const response = await request('POST', `${transactionBase}/invoices/outgoing`, {
+    // A resend after a failed delivery (replacesSubmissionId): with
+    // `?overwrite=true` Qvalia sends the document again under a NEW
+    // integrationId instead of answering 409 for the invoice number it holds
+    // for this receiver (confirmed by Qvalia). A 409 is then never answered
+    // by adopting an earlier integrationId: that is the failed submission
+    // the resend replaces, already recorded on another delivery.
+    const overwrite = submission.replacesSubmissionId ? '?overwrite=true' : ''
+    const response = await request('POST', `${transactionBase}/invoices/outgoing${overwrite}`, {
       headers: { 'content-type': 'application/xml' },
       body: submission.document,
     })
@@ -653,7 +662,9 @@ export function createQvaliaTransport(
 
     if (!response.ok) {
       const failure = classifyHttpFailure(response.status, json, text)
-      if (failure.kind === 'duplicate') return recoverDuplicateSubmission(submission, failure)
+      if (failure.kind === 'duplicate' && !submission.replacesSubmissionId) {
+        return recoverDuplicateSubmission(submission, failure)
+      }
       throw failure
     }
 
