@@ -6784,9 +6784,20 @@ async function commitBookSkattekontoRows(
   if (ids.length === 0) {
     return { error: 'ids (eller transaction_id) krävs', status: 400 }
   }
+  // Rows approved for booking although the ledger already holds a verifikat
+  // for the event: the batch op stores allow_duplicate_ids, the single-row op
+  // allow_duplicate. Anything else keeps the ledger-twin guard on.
+  const allowDuplicateIds = Array.isArray(params.allow_duplicate_ids)
+    ? params.allow_duplicate_ids.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : params.allow_duplicate === true
+      ? ids
+      : []
 
   const services = getSkattekontoBookingService()
-  const result = await services.commitBookSkattekontoRows(supabase, userId, companyId, { ids })
+  const result = await services.commitBookSkattekontoRows(supabase, userId, companyId, {
+    ids,
+    ...(allowDuplicateIds.length > 0 ? { allow_duplicate_ids: allowDuplicateIds } : {}),
+  })
   if (!result.ok) {
     if (result.recoverable) {
       throw new SkatteverketRecoverableError(result.error, result.code, result.http_status)

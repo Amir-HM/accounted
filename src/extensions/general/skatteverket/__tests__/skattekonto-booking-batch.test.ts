@@ -15,7 +15,24 @@ vi.mock('@/lib/bookkeeping/engine', async (importOriginal) => {
   }
 })
 
+// The ledger-twin search itself is covered in skattekonto-match-twins.test.ts:
+// stub it here so these tests keep exercising the booking flow. Default: no
+// twin.
+vi.mock('../lib/skattekonto-match', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/skattekonto-match')>()
+  return {
+    ...actual,
+    findLedgerTwinCandidates: vi.fn(),
+    findLedgerTwinCandidatesForIds: vi.fn(),
+  }
+})
+
 import { findFiscalPeriod, createDraftEntry, commitEntry } from '@/lib/bookkeeping/engine'
+import {
+  findLedgerTwinCandidates,
+  findLedgerTwinCandidatesForIds,
+  type SkattekontoMatchCandidate,
+} from '../lib/skattekonto-match'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import {
   attachBookingSuggestions,
@@ -93,6 +110,12 @@ beforeEach(() => {
   vi.mocked(commitEntry).mockImplementation(async () =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ({ id: 'je-draft-1', voucher_number: 42, voucher_series: 'A' }) as any,
+  )
+  vi.mocked(findLedgerTwinCandidates).mockImplementation(
+    async (_supabase, _companyId, probes) => new Map(probes.map((p) => [p.id, []])),
+  )
+  vi.mocked(findLedgerTwinCandidatesForIds).mockImplementation(
+    async (_supabase, _companyId, ids) => new Map(ids.map((id) => [id, []])),
   )
 })
 
@@ -675,5 +698,190 @@ describe('bokforSkattekontoTransaction (single row)', () => {
     expect((err as SkattekontoBookingError).message).toBe('Transaktionen är redan bokförd.')
     // No claim attempted: the row was only read.
     expect(fromCount(supabase, 'skattekonto_transactions')).toBe(1)
+  })
+})
+
+/** An imported 1630 verifikat carrying the same event (a twin). */
+function twinCandidate(overrides: Partial<SkattekontoMatchCandidate> = {}): SkattekontoMatchCandidate {
+  return {
+    journal_entry_id: 'je-imported-185',
+    voucher_number: 185,
+    voucher_series: 'A',
+    entry_date: '2026-01-15',
+    description: 'Intäktsränta (import)',
+    status: 'posted',
+    matched_amount: 1,
+    matched_side: 'debit',
+    matched_via_agi_period: false,
+    ...overrides,
+  }
+}
+
+describe('ledger twin guard (an SIE-imported or manual verifikat already carries the event)', () => {
+  it('refuses a single row with LEDGER_TWIN_EXISTS before any rule, period or draft work', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const row = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    enqueue({ data: row }) // tx fetch
+    vi.mocked(findLedgerTwinCandidates).mockResolvedValueOnce(new Map([[row.id, [twinCandidate()]]]))
+
+    const err = await bokforSkattekontoTransaction(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      row.id,
+    ).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(SkattekontoBookingError)
+    const refusal = err as SkattekontoBookingError
+    expect(refusal.code).toBe('LEDGER_TWIN_EXISTS')
+    expect(refusal.message).toContain('verifikat A185 (2026-01-15)')
+    expect(refusal.message).toContain('Koppla raden')
+    expect(refusal.ledgerTwins).toEqual([
+      {
+        journal_entry_id: 'je-imported-185',
+        voucher_series: 'A',
+        voucher_number: 185,
+        entry_date: '2026-01-15',
+        description: 'Intäktsränta (import)',
+        status: 'posted',
+      },
+    ])
+    // The search ran for exactly this row.
+    expect(vi.mocked(findLedgerTwinCandidates).mock.calls[0][2]).toEqual([row])
+    expect(vi.mocked(findFiscalPeriod)).not.toHaveBeenCalled()
+    expect(vi.mocked(createDraftEntry)).not.toHaveBeenCalled()
+    // Only the row itself was read: no rules fetch, no claim.
+    expect(fromCount(supabase, 'skattekonto_rules')).toBe(0)
+  })
+
+  it('books the row when allowDuplicate is set, without searching', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const row = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    enqueue({ data: row })
+    enqueue({ data: SEED_RULES })
+    enqueue({ data: { entity_type: 'aktiebolag' } })
+    enqueue({ data: [{ id: row.id }] }) // claim
+
+    const entry = await bokforSkattekontoTransaction(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      row.id,
+      undefined,
+      { allowDuplicate: true },
+    )
+
+    expect(entry.id).toBe('je-draft-1')
+    expect(vi.mocked(findLedgerTwinCandidates)).not.toHaveBeenCalled()
+    expect(vi.mocked(createDraftEntry)).toHaveBeenCalledTimes(1)
+  })
+
+  it('books a row with no twin unchanged', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const row = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    enqueue({ data: row })
+    enqueue({ data: SEED_RULES })
+    enqueue({ data: { entity_type: 'aktiebolag' } })
+    enqueue({ data: [{ id: row.id }] })
+
+    const entry = await bokforSkattekontoTransaction(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      row.id,
+    )
+
+    expect(entry.id).toBe('je-draft-1')
+    expect(vi.mocked(findLedgerTwinCandidates)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(createDraftEntry)).toHaveBeenCalledTimes(1)
+  })
+
+  it('batch: searches once for all rows, skips the twin with its code and twins, books the rest', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const twinRow = makeSkvRow({ transaktionstext: 'Kostnadsränta', belopp_skatteverket: -1 })
+    const cleanRow = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    vi.mocked(findLedgerTwinCandidatesForIds).mockResolvedValueOnce(
+      new Map([
+        [twinRow.id, [twinCandidate({ matched_side: 'credit' }), twinCandidate({ journal_entry_id: 'je-imported-186', voucher_number: 186, entry_date: '2026-01-17' })]],
+        [cleanRow.id, []],
+      ]),
+    )
+
+    enqueue({ data: SEED_RULES })
+    enqueue({ data: { entity_type: 'aktiebolag' } })
+    enqueue({ data: twinRow }) // tx fetch twin row: refused before rules/claim
+    enqueue({ data: cleanRow }) // tx fetch clean row
+    enqueue({ data: [{ id: cleanRow.id }] }) // claim clean row
+
+    const result = await bokforSkattekontoTransactionsBatch(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      [twinRow.id, cleanRow.id],
+    )
+
+    expect(vi.mocked(findLedgerTwinCandidatesForIds)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(findLedgerTwinCandidatesForIds).mock.calls[0][2]).toEqual([twinRow.id, cleanRow.id])
+    // Precomputed: no per-row search.
+    expect(vi.mocked(findLedgerTwinCandidates)).not.toHaveBeenCalled()
+
+    expect(result.results[0]).toMatchObject({ id: twinRow.id, ok: false, error_code: 'LEDGER_TWIN_EXISTS' })
+    expect(result.results[0].error_message).toContain('verifikat A185 (2026-01-15) och verifikat A186 (2026-01-17)')
+    expect(result.results[0].ledger_twins?.map((t) => t.journal_entry_id)).toEqual([
+      'je-imported-185',
+      'je-imported-186',
+    ])
+    expect(result.results[1]).toMatchObject({ id: cleanRow.id, ok: true, voucher_number: 42 })
+    expect(result.summary).toEqual({ total: 2, succeeded: 1, failed: 1 })
+    expect(vi.mocked(createDraftEntry)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(commitEntry)).toHaveBeenCalledTimes(1)
+  })
+
+  it('batch: allowDuplicateIds books that one row anyway and keeps the guard on for the others', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const approved = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    const guarded = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    vi.mocked(findLedgerTwinCandidatesForIds).mockImplementationOnce(
+      async (_s, _c, ids) => new Map(ids.map((id) => [id, [twinCandidate()]])),
+    )
+
+    enqueue({ data: SEED_RULES })
+    enqueue({ data: { entity_type: 'aktiebolag' } })
+    enqueue({ data: approved })
+    enqueue({ data: [{ id: approved.id }] }) // claim approved row
+    enqueue({ data: guarded })
+
+    const result = await bokforSkattekontoTransactionsBatch(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      [approved.id, guarded.id],
+      { allowDuplicateIds: [approved.id] },
+    )
+
+    // The approved row is not even searched.
+    expect(vi.mocked(findLedgerTwinCandidatesForIds).mock.calls[0][2]).toEqual([guarded.id])
+    expect(result.results[0]).toMatchObject({ id: approved.id, ok: true })
+    expect(result.results[1]).toMatchObject({ id: guarded.id, ok: false, error_code: 'LEDGER_TWIN_EXISTS' })
+  })
+
+  it('batch: a failed twin search books nothing (fails closed)', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const row = makeSkvRow({ transaktionstext: 'Intäktsränta' })
+    vi.mocked(findLedgerTwinCandidatesForIds).mockRejectedValueOnce(
+      new Error('Kunde inte söka kandidater: timeout'),
+    )
+    enqueue({ data: SEED_RULES })
+    enqueue({ data: { entity_type: 'aktiebolag' } })
+
+    await expect(
+      bokforSkattekontoTransactionsBatch(
+        supabase as unknown as SupabaseClient,
+        'company-1',
+        'user-1',
+        [row.id],
+      ),
+    ).rejects.toThrow(/Kunde inte söka kandidater/)
+    expect(vi.mocked(createDraftEntry)).not.toHaveBeenCalled()
   })
 })
