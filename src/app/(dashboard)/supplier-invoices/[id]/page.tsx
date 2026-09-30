@@ -243,6 +243,10 @@ export default function SupplierInvoiceDetailPage() {
   const [isFileDialogOpen, setIsFileDialogOpen] = useState(false)
   const [markPaidPreview, setMarkPaidPreview] = useState<MarkPaidPreview | null>(null)
   const [markPaidPreviewFailed, setMarkPaidPreviewFailed] = useState(false)
+  // The refusal the preview returned (its Swedish message and code), shown in
+  // place of the rows: e.g. SI_PAID_SEK_UNRESOLVED or an overpaid foreign
+  // invoice, which the POST would refuse the same way.
+  const [markPaidPreviewError, setMarkPaidPreviewError] = useState<{ message: string; code: string | null } | null>(null)
   const [isEditingLines, setIsEditingLines] = useState(false)
   const [editLines, setEditLines] = useState<EditableLine[]>([])
   const { dialogProps: confirmDialogProps, confirm: confirmAction } = useDestructiveConfirm()
@@ -407,6 +411,7 @@ export default function SupplierInvoiceDetailPage() {
     if (!isPayDialogOpen || !invoice) {
       setMarkPaidPreview(null)
       setMarkPaidPreviewFailed(false)
+      setMarkPaidPreviewError(null)
       return
     }
     const amountNum = Number(payAmount)
@@ -418,6 +423,7 @@ export default function SupplierInvoiceDetailPage() {
     const ctrl = new AbortController()
     ;(async () => {
       setMarkPaidPreviewFailed(false)
+      setMarkPaidPreviewError(null)
       try {
         const qs = new URLSearchParams({
           amount: String(amountNum),
@@ -429,7 +435,14 @@ export default function SupplierInvoiceDetailPage() {
           { signal: ctrl.signal },
         )
         if (!res.ok) {
-          if (!cancelled) setMarkPaidPreviewFailed(true)
+          const errBody = await res.json().catch(() => null)
+          if (!cancelled) {
+            setMarkPaidPreviewError({
+              message: getErrorMessage(errBody, { statusCode: res.status, context: 'supplier_invoice' }),
+              code: (errBody as { error?: { code?: string } } | null)?.error?.code ?? null,
+            })
+            setMarkPaidPreviewFailed(true)
+          }
           return
         }
         const data = (await res.json()) as MarkPaidPreview
@@ -1328,7 +1341,7 @@ export default function SupplierInvoiceDetailPage() {
                   <div className="rounded-lg border p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium">Bokföring</p>
-                      {markPaidPreview && (
+                      {markPaidPreview && (!markPaidPreviewFailed || isEditingLines) && (
                         <div className="flex gap-2">
                           {isEditingLines && (
                             <Button variant="ghost" size="sm" onClick={resetEditLines} disabled={isProcessing}>
@@ -1352,13 +1365,22 @@ export default function SupplierInvoiceDetailPage() {
                       )}
                     </div>
 
-                    {markPaidPreviewFailed && !markPaidPreview && (
-                      <p className="text-sm text-muted-foreground">
-                        Kunde inte förhandsgranska bokföringen. Fortsätt eller avbryt.
-                      </p>
+                    {/* A failed preview hides rows left over from other inputs
+                        and says why; the user's own edited rows stay. */}
+                    {markPaidPreviewFailed && !isEditingLines && (
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">
+                          {markPaidPreviewError?.message ?? 'Kunde inte förhandsgranska bokföringen. Fortsätt eller avbryt.'}
+                        </p>
+                        {markPaidPreviewError?.code === 'SI_PAID_SEK_UNRESOLVED' && (
+                          <Button variant="outline" size="sm" onClick={() => setPayTab('existing')}>
+                            {t('preview_use_existing_voucher')}
+                          </Button>
+                        )}
+                      </div>
                     )}
 
-                    {markPaidPreview && !isEditingLines && (
+                    {markPaidPreview && !markPaidPreviewFailed && !isEditingLines && (
                       <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 gap-y-1 text-sm tabular-nums">
                         <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Konto</div>
                         <div />

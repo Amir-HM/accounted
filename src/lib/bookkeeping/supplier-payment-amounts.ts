@@ -24,11 +24,15 @@
  *     conversion the bank-match door uses. No rate: SI_FX_RATE_MISSING.
  *
  * Links that contradict each other (a voucher shared with another invoice,
- * payment rows that do not add up to paid_amount, a registration reversed
- * with no single correction) are refused with SI_PAID_SEK_UNRESOLVED rather
- * than guessed: the user can still book the payment with edited rows. So is
- * an amount above what a foreign invoice still owes: no SEK on 244x stands
- * behind the excess.
+ * payment rows that do not add up to paid_amount, a registration or payment
+ * voucher reversed with no single correction) are refused with
+ * SI_PAID_SEK_UNRESOLVED rather than guessed: the user can still book the
+ * payment with edited rows. So is a ledger figure more than 10% away from
+ * what the invoice's own rate says it owes: that gap is a rättelse of the
+ * skuld itself (e.g. moms taken off the registration), not a rate movement,
+ * and booking it on 3960/7960 would call it a kursdifferens. So is an amount
+ * above what a foreign invoice still owes: no SEK on 244x stands behind the
+ * excess.
  *
  * The SEK that left the payment account is a separate input (`amountSek`).
  * When it differs from the SEK cleared, the difference is the realised
@@ -54,12 +58,14 @@ export type SupplierPaymentSekUnresolvedReason =
   | 'registration_voucher_shared'
   /** Payment rows without a voucher, or not adding up to paid_amount. */
   | 'payment_history_mismatch'
-  /** A payment voucher that is missing or no longer posted. */
+  /** A payment voucher that is missing, or reversed with no single correction. */
   | 'payment_voucher_not_posted'
   /** A payment voucher that also settles another supplier invoice. */
   | 'payment_voucher_shared'
   /** 244x carries nothing for an invoice the reskontra says is open. */
   | 'no_liability_left'
+  /** 244x is more than LEDGER_RATE_BAND away from remaining x exchange_rate. */
+  | 'ledger_rate_mismatch'
 
 type InvoiceForSek = Pick<
   SupplierInvoice,
@@ -67,6 +73,10 @@ type InvoiceForSek = Pick<
 >
 
 const AP_ACCOUNT_PREFIX = '244'
+// Same 10% band as match_batch_allocate and link_supplier_invoice_to_voucher:
+// outside it the SEK is not the invoice's skuld at another rate, it is a
+// different skuld (the registration was corrected for something else).
+const LEDGER_RATE_BAND = 0.1
 // Keeps an `in (...)` list well inside PostgREST's URL limit.
 const ID_CHUNK = 100
 
@@ -127,17 +137,19 @@ export type SupplierInvoiceRemainingSek =
   | { ok: false; reason: SupplierPaymentSekUnresolvedReason }
 
 /**
- * Follow a registration verifikat through storno corrections (correctEntry
- * links the replacement by correction_of_id) to the one that is posted now.
- * Returns null when there is no single live one.
+ * Follow a verifikat through storno corrections (correctEntry links the
+ * replacement by correction_of_id) to the one that is posted now. Returns
+ * null when there is no single live one. Used for the registration and for
+ * payment vouchers: correctEntry leaves supplier_invoice_payments pointing at
+ * the reversed original, while its correction carries the 244x debit.
  */
-async function liveRegistrationEntryId(
+async function liveEntryId(
   supabase: SupabaseClient,
   companyId: string,
-  registrationId: string,
+  entryId: string,
 ): Promise<string | null> {
   const seen = new Set<string>()
-  let currentId = registrationId
+  let currentId = entryId
   for (let hop = 0; hop <= MAX_CHAIN_WALK; hop++) {
     if (seen.has(currentId)) return null
     seen.add(currentId)
@@ -148,7 +160,7 @@ async function liveRegistrationEntryId(
       .eq('company_id', companyId)
       .eq('id', currentId)
       .maybeSingle()
-    if (error) throw dbError(error, 'supplier payment SEK: registration voucher')
+    if (error) throw dbError(error, 'supplier payment SEK: live voucher')
     const row = entry as { id: string; status: string } | null
     if (!row) return null
     if (row.status === 'posted') return row.id
@@ -161,7 +173,7 @@ async function liveRegistrationEntryId(
       .eq('correction_of_id', row.id)
       .in('status', ['posted', 'reversed'])
       .limit(2)
-    if (correctionError) throw dbError(correctionError, 'supplier payment SEK: registration correction')
+    if (correctionError) throw dbError(correctionError, 'supplier payment SEK: voucher correction')
     const next = (corrections ?? []) as Array<{ id: string }>
     if (next.length !== 1) return null
     currentId = next[0].id
@@ -172,8 +184,8 @@ async function liveRegistrationEntryId(
 /**
  * The SEK this invoice still carries on 244x, read off its linked vouchers:
  * the live registration's 244x credit minus the 244x debits of the invoice's
- * payment vouchers. Company-scoped at every step; paginated. Throws only on a
- * read error.
+ * payment vouchers (each followed to its live correction when stornoed).
+ * Company-scoped at every step; paginated. Throws only on a read error.
  */
 export async function loadSupplierInvoiceRemainingSek(
   supabase: SupabaseClient,
@@ -182,7 +194,7 @@ export async function loadSupplierInvoiceRemainingSek(
 ): Promise<SupplierInvoiceRemainingSek> {
   const registrationId = invoice.registration_journal_entry_id
 
-  const liveId = await liveRegistrationEntryId(supabase, companyId, registrationId)
+  const liveId = await liveEntryId(supabase, companyId, registrationId)
   if (!liveId) return { ok: false, reason: 'registration_voucher_not_live' }
 
   const { data: sharedRegistration, error: sharedRegistrationError } = await supabase
@@ -218,6 +230,9 @@ export async function loadSupplierInvoiceRemainingSek(
     return { ok: false, reason: 'payment_history_mismatch' }
   }
 
+  // The vouchers whose 244x debits count: each payment voucher, or its live
+  // correction when it was stornoed.
+  const livePaymentEntryIds = new Set<string>()
   for (const ids of chunk(paymentEntryIds, ID_CHUNK)) {
     const entries = await fetchAllRows<{ id: string; status: string }>(({ from, to }) =>
       supabase
@@ -229,7 +244,12 @@ export async function loadSupplierInvoiceRemainingSek(
         .range(from, to),
     )
     const posted = new Set(entries.filter((e) => e.status === 'posted').map((e) => e.id))
-    if (ids.some((id) => !posted.has(id))) return { ok: false, reason: 'payment_voucher_not_posted' }
+    for (const id of ids) {
+      const live = posted.has(id) ? id : await liveEntryId(supabase, companyId, id)
+      if (!live) return { ok: false, reason: 'payment_voucher_not_posted' }
+      if (live === liveId) return { ok: false, reason: 'payment_history_mismatch' }
+      livePaymentEntryIds.add(live)
+    }
 
     // A batch voucher settles several invoices with no line-level link to
     // each: its 244x debit cannot be attributed to this one.
@@ -252,7 +272,7 @@ export async function loadSupplierInvoiceRemainingSek(
     credit_amount: number
   }>(
     supabase,
-    [liveId, ...paymentEntryIds],
+    [liveId, ...livePaymentEntryIds],
     'id, journal_entry_id, debit_amount, credit_amount',
     (q) => q.like('account_number', `${AP_ACCOUNT_PREFIX}%`),
   )
@@ -348,6 +368,26 @@ export async function resolveSupplierPaymentSek(
         ok: false,
         code: SI_PAID_SEK_UNRESOLVED,
         details: { reason: ledger.reason, invoice_currency: invoice.currency },
+      }
+    }
+    // The ledger is exact, but only for the skuld the invoice describes. A gap
+    // to the invoice's own rate beyond the band is not a rate movement (a
+    // bank-matched part payment clears booked SEK plus a kursdifferens, so it
+    // keeps the two in step): refuse it rather than book it as one.
+    const rate = Number(invoice.exchange_rate)
+    if (rate > 0) {
+      const expectedSek = roundOre(remaining * rate)
+      if (Math.abs(ledger.remainingSek - expectedSek) > expectedSek * LEDGER_RATE_BAND) {
+        return {
+          ok: false,
+          code: SI_PAID_SEK_UNRESOLVED,
+          details: {
+            reason: 'ledger_rate_mismatch' satisfies SupplierPaymentSekUnresolvedReason,
+            invoice_currency: invoice.currency,
+            expected_sek: expectedSek,
+            ledger_sek: ledger.remainingSek,
+          },
+        }
       }
     }
     clearingSek = prorateSupplierPaymentSek({

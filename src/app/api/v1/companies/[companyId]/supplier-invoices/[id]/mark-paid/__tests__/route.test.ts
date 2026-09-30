@@ -654,6 +654,56 @@ describe('POST .../supplier-invoices/:id/mark-paid: foreign currency books SEK (
     expect(calls.some((c) => c.table === 'supplier_invoices' && c.method === 'update')).toBe(false)
   })
 
+  // The select used to omit registration_journal_entry_id, so this door
+  // routed every kontantmetoden payment to the cash entry, even for an
+  // invoice registered on 2440 before the company switched method: expense
+  // and ingående moms booked a second time, the 2440 credit never cleared.
+  // The mock returns every column whatever the select asks for, so each test
+  // also pins the column onto the select the routing depends on.
+  describe('routes on the booking state, not the current accounting method', () => {
+    function cashCompanyClient(si: typeof APPROVED_SI | typeof USD_SI, calls?: RecordedCall[]) {
+      return makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        supplier_invoices: [
+          { data: si, error: null },
+          { data: { ...si, status: 'paid', paid_amount: si.total, remaining_amount: 0 }, error: null },
+        ],
+        company_settings: { data: { accounting_method: 'cash' }, error: null },
+        supplier_invoice_payments: { data: null, error: null },
+      }, calls)
+    }
+
+    it('kontantmetoden, SEK invoice with a registration verifikat: clears 2440, no second cash entry', async () => {
+      const calls: RecordedCall[] = []
+      mockServiceClient.mockReturnValue(cashCompanyClient(APPROVED_SI, calls))
+
+      const res = await markPaid(makeRequest({ payment_date: '2026-05-12' }), detailParams())
+
+      expect(res.status).toBe(200)
+      expect(mockPaymentEntry).toHaveBeenCalledTimes(1)
+      expect(mockPaymentEntry.mock.calls[0][SEK_ARG]).toBe(1000)
+      expect(mockCashEntry).not.toHaveBeenCalled()
+      const invoiceSelect = calls.find((c) => c.table === 'supplier_invoices' && c.method === 'select')
+      expect(String(invoiceSelect?.args[0])).toContain('registration_journal_entry_id')
+    })
+
+    it('kontantmetoden, registered foreign invoice: the SEK outcome is required like under accrual', async () => {
+      const calls: RecordedCall[] = []
+      mockServiceClient.mockReturnValue(cashCompanyClient(USD_SI, calls))
+
+      const res = await markPaid(makeRequest({ payment_date: '2026-05-12' }), detailParams())
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error.code).toBe('VALIDATION_ERROR')
+      expect(body.error.details.issues[0].field).toBe('exchange_rate_difference')
+      expect(mockPaymentEntry).not.toHaveBeenCalled()
+      expect(mockCashEntry).not.toHaveBeenCalled()
+      const invoiceSelect = calls.find((c) => c.table === 'supplier_invoices' && c.method === 'select')
+      expect(String(invoiceSelect?.args[0])).toContain('registration_journal_entry_id')
+    })
+  })
+
   it('dry-run shows the SEK the commit would clear and the kursdifferens', async () => {
     mockServiceClient.mockReturnValue(usdClient())
 

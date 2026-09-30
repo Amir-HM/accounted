@@ -7,7 +7,8 @@
  *   1. the registration verifikat (plus its corrections when stornoed)
  *   2. another invoice naming the same registration verifikat?
  *   3. this invoice's payment rows
- *   4. per chunk of payment vouchers: their status, then sharing
+ *   4. per chunk of payment vouchers: their status, a stornoed one's
+ *      correction chain, then sharing
  *   5. the 244x lines of the live registration and the payment vouchers
  */
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -177,17 +178,53 @@ describe('resolveSupplierPaymentSek', () => {
   })
 
   it('a stornoed registration is followed to its correction, whose 244x is the skuld now', async () => {
+    // The original booked 37.50 kr (no rate); its rättelse books 361.55 kr.
+    enqueue({ data: { id: 'je-reg', status: 'reversed' } })
+    enqueue({ data: [{ id: 'je-corr' }] })
+    enqueue({ data: { id: 'je-corr', status: 'posted' } })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [apLine('l-9', 'je-corr', 0, 361.55)] })
+    const result = await resolveSupplierPaymentSek(supabase as never, COMPANY, usdInvoice(), { amount: 37.5 })
+    expect(result).toMatchObject({ ok: true, clearingSek: 361.55 })
+    // Lines are read for the live correction, not the reversed original.
+    const lineRead = findCalls('journal_entry_lines', 'in')[0]
+    expect(lineRead).toEqual(['journal_entry_id', ['je-corr']])
+  })
+
+  it('a ledger skuld far from the invoice rate is refused, not booked as a kursdifferens', async () => {
+    // 99.58 USD at 9.2738 owes 923.49 kr, but the registration was corrected
+    // to omvänd skattskyldighet and its rättelse credits 2440 only 738.75 kr.
+    // Paying 930 kr would otherwise book 191.25 kr on 7960 as a kursförlust.
     enqueue({ data: { id: 'je-reg', status: 'reversed' } })
     enqueue({ data: [{ id: 'je-corr' }] })
     enqueue({ data: { id: 'je-corr', status: 'posted' } })
     enqueue({ data: [] })
     enqueue({ data: [] })
     enqueue({ data: [apLine('l-9', 'je-corr', 0, 738.75)] })
+    const result = await resolveSupplierPaymentSek(
+      supabase as never,
+      COMPANY,
+      usdInvoice({ total: 99.58, remaining_amount: 99.58, exchange_rate: 9.2738 }),
+      { amount: 99.58, amountSek: 930 },
+    )
+    expect(result).toEqual({
+      ok: false,
+      code: 'SI_PAID_SEK_UNRESOLVED',
+      details: {
+        reason: 'ledger_rate_mismatch',
+        invoice_currency: 'USD',
+        expected_sek: 923.49,
+        ledger_sek: 738.75,
+      },
+    })
+  })
+
+  it('a ledger skuld inside the 10% band still clears what the ledger says', async () => {
+    // 37.50 x 9.6414 = 361.55; the registration credited 330 kr (8.7% off).
+    enqueueFreshLedger(330)
     const result = await resolveSupplierPaymentSek(supabase as never, COMPANY, usdInvoice(), { amount: 37.5 })
-    expect(result).toMatchObject({ ok: true, clearingSek: 738.75 })
-    // Lines are read for the live correction, not the reversed original.
-    const lineRead = findCalls('journal_entry_lines', 'in')[0]
-    expect(lineRead).toEqual(['journal_entry_id', ['je-corr']])
+    expect(result).toMatchObject({ ok: true, clearingSek: 330 })
   })
 
   it('a foreign invoice with no registration verifikat uses its own booked rate', async () => {
@@ -260,14 +297,33 @@ describe('loadSupplierInvoiceRemainingSek: contradictions are refused, not guess
     ).toEqual({ ok: false, reason: 'payment_history_mismatch' })
   })
 
-  it('a payment voucher that is no longer posted', async () => {
+  it('a payment voucher reversed with no correction', async () => {
     enqueue({ data: { id: 'je-reg', status: 'posted' } })
     enqueue({ data: [] })
     enqueue({ data: [{ id: 'p-1', amount: 12.5, journal_entry_id: 'je-pay-1' }] })
     enqueue({ data: [{ id: 'je-pay-1', status: 'reversed' }] })
+    enqueue({ data: { id: 'je-pay-1', status: 'reversed' } }) // chain walk
+    enqueue({ data: [] }) // no correction
     expect(
       await loadSupplierInvoiceRemainingSek(supabase as never, COMPANY, { ...invoice, paid_amount: 12.5 }),
     ).toEqual({ ok: false, reason: 'payment_voucher_not_posted' })
+  })
+
+  it('a stornoed payment voucher counts its correction, which carries the payment now', async () => {
+    // correctEntry leaves the payment row on the reversed original.
+    enqueue({ data: { id: 'je-reg', status: 'posted' } })
+    enqueue({ data: [] })
+    enqueue({ data: [{ id: 'p-1', amount: 12.5, journal_entry_id: 'je-pay-1' }] })
+    enqueue({ data: [{ id: 'je-pay-1', status: 'reversed' }] })
+    enqueue({ data: { id: 'je-pay-1', status: 'reversed' } })
+    enqueue({ data: [{ id: 'je-pay-1-corr' }] })
+    enqueue({ data: { id: 'je-pay-1-corr', status: 'posted' } })
+    enqueue({ data: [] }) // settles no other invoice
+    enqueue({ data: [apLine('l-1', 'je-reg', 0, 361.55), apLine('l-2', 'je-pay-1-corr', 120.52, 0)] })
+    expect(
+      await loadSupplierInvoiceRemainingSek(supabase as never, COMPANY, { ...invoice, paid_amount: 12.5 }),
+    ).toEqual({ ok: true, remainingSek: 241.03 })
+    expect(findCalls('journal_entry_lines', 'in')[0]).toEqual(['journal_entry_id', ['je-reg', 'je-pay-1-corr']])
   })
 
   it('a batch payment voucher that also settles another invoice', async () => {

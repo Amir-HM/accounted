@@ -5659,6 +5659,7 @@
     "paid_sek_label": "Paid in SEK",
     "paid_sek_help": "The SEK amount that left the account. Leave empty for {amount}.",
     "paid_sek_difference_note": "A difference to the invoice's booked amount is booked as an exchange gain (3960) or loss (7960).",
+    "preview_use_existing_voucher": "Link an existing voucher",
     "cancel": "Cancel",
     "register_payment": "Register payment",
     "processing": "Processing...",

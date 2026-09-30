@@ -4,9 +4,10 @@
  * The amount is entered in the invoice's currency (37.50 USD) and stays that
  * way on the invoice and the payment row, but the verifikat clears the SEK the
  * invoice carries on 2440 (361.55 kr), read from the ledger by the real
- * resolver below. Only the generators and the duplicate detector are mocked:
- * the detector sweeps once per currency, and its query shape is pinned by its
- * own tests.
+ * resolver below. Only the generators' DB writes and the duplicate detector
+ * are mocked: the detector sweeps once per currency, and its query shape is
+ * pinned by its own tests. The line builders stay real, so the parity test
+ * can drive the preview GET and the POST against the same ledger.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
@@ -33,7 +34,8 @@ vi.mock('@/lib/auth/require-write', () => ({
 
 const mockPaymentEntry = vi.fn()
 const mockCashEntry = vi.fn()
-vi.mock('@/lib/bookkeeping/supplier-invoice-entries', () => ({
+vi.mock('@/lib/bookkeeping/supplier-invoice-entries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/bookkeeping/supplier-invoice-entries')>()),
   createSupplierInvoicePaymentEntry: (...args: unknown[]) => mockPaymentEntry(...args),
   createSupplierInvoiceCashEntry: (...args: unknown[]) => mockCashEntry(...args),
 }))
@@ -56,7 +58,10 @@ vi.mock('@/lib/invoices/duplicate-guard-history', () => ({
 }))
 
 import { eventBus } from '@/lib/events'
+import { buildSupplierInvoicePaymentLines } from '@/lib/bookkeeping/supplier-invoice-entries'
+import type { SupplierInvoice } from '@/types'
 import { POST } from '../route'
+import { GET as previewGET } from '../preview/route'
 
 // createSupplierInvoicePaymentEntry(supabase, companyId, userId, invoice,
 // paymentAmount, paymentDate, exchangeRateDifference, supplierName, account)
@@ -159,6 +164,57 @@ describe('POST /api/supplier-invoices/[id]/mark-paid: foreign currency (#2955)',
     expect(findCalls('supplier_invoice_payments', 'insert')[0][0]).toMatchObject({
       exchange_rate_difference: -3.45,
     })
+  })
+
+  it('preview == post: the dialog shows exactly the SEK rows the POST books', async () => {
+    // The preview GET, against the ledger...
+    enqueueUsdUpToLedger()
+    const previewRes = await previewGET(
+      new Request(
+        'http://localhost/api/supplier-invoices/si-1/mark-paid/preview?amount=37.5&payment_account=1686&amount_sek=365',
+      ),
+      createMockRouteParams({ id: 'si-1' }),
+    )
+    const { status: previewStatus, body: preview } = await parseJsonResponse<{
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+      clearing_sek: number
+      paid_sek: number
+    }>(previewRes)
+    expect(previewStatus).toBe(200)
+
+    // ...then the POST with the same inputs against the same ledger.
+    enqueueUsdUpToLedger()
+    enqueue({ data: [{ id: 'si-1' }] })
+    enqueue({ data: null })
+    const res = await post({ amount: 37.5, amount_sek: 365, payment_account: '1686' })
+    expect(res.status).toBe(200)
+
+    // What the POST handed the generator, built by the generator's own builder.
+    const [, , , invoice, paymentAmount, , exchangeRateDifference, supplierName, paymentAccount] =
+      mockPaymentEntry.mock.calls[0] as [
+        unknown, unknown, unknown, SupplierInvoice, number, string, number | undefined, string | undefined, string,
+      ]
+    const posted = buildSupplierInvoicePaymentLines(invoice, {
+      paymentAmount,
+      exchangeRateDifference,
+      supplierName,
+      paymentAccount,
+    })
+    const shape = (l: { account_number: string; debit_amount: number; credit_amount: number }) => [
+      l.account_number,
+      l.debit_amount,
+      l.credit_amount,
+    ]
+    expect(preview.lines.map(shape)).toEqual(posted.lines.map(shape))
+    expect(new Set(preview.lines.map(shape))).toEqual(
+      new Set([
+        ['2440', 361.55, 0],
+        ['1686', 0, 365],
+        ['7960', 3.45, 0],
+      ]),
+    )
+    expect(preview.clearing_sek).toBe(361.55)
+    expect(preview.paid_sek).toBe(365)
   })
 
   it('amount_sek on a SEK invoice is a 400 and books nothing', async () => {

@@ -5659,6 +5659,7 @@
     "paid_sek_label": "Betalt i SEK",
     "paid_sek_help": "Beloppet i kronor som lämnade kontot. Lämna tomt för {amount}.",
     "paid_sek_difference_note": "En skillnad mot fakturans bokförda belopp bokförs som kursvinst (3960) eller kursförlust (7960).",
+    "preview_use_existing_voucher": "Koppla en befintlig verifikation",
     "cancel": "Avbryt",
     "register_payment": "Registrera betalning",
     "processing": "Bearbetar...",
