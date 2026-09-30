@@ -6,7 +6,8 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { SIEJobFailedError } from '@/lib/import/sie-job-client'
 import { formatImportFailure } from '@/lib/import/import-failure'
 import { countSieVouchers, importProviderYears, planProviderYears, providerYearsComplete, type ProviderYearsOutcome } from '@/lib/onboarding-books/provider-years'
-import { obsAccountsOf, resolveOnboardingMappings } from '@/lib/onboarding-books/mappings'
+import { resolveOnboardingMappings } from '@/lib/onboarding-books/mappings'
+import { obsAccountsOf } from '@/lib/import/sie-preview-mappings'
 import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useCompanySettings } from '@/components/settings/useSettings'
@@ -239,6 +240,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
     if (!consentId || (preview?.sieAvailable !== false && years.length === 0)) return
     setPhase('importing')
     setImportError(null)
+    setObs([])
     setKeptYears([])
     setUnfetched([])
     setTick(0)

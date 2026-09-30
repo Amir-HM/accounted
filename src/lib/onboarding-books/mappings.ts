@@ -49,18 +49,3 @@ export function resolveOnboardingMappings<M extends Mapping>(
   })
   return { mappings: resolved, create, unresolved }
 }
-
-/**
- * The class 9 source accounts the server's decision sent to 2999 OBS-konto
- * (sie-preview-mappings.ts). The flow has no mapping page to show them on,
- * so it names them instead.
- */
-export function obsAccountsOf(mappings: Mapping[]): string[] {
-  const accounts = new Set<string>()
-  for (const mapping of mappings) {
-    if (mapping.targetAccount === '2999' && mapping.matchType === 'class' && /^9\d{3}$/.test(mapping.sourceAccount)) {
-      accounts.add(mapping.sourceAccount)
-    }
-  }
-  return [...accounts].sort()
-}

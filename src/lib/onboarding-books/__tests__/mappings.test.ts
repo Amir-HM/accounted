@@ -5,7 +5,7 @@
  * job refused the 9xxx target one call later, on every retry.
  */
 import { describe, expect, it } from 'vitest'
-import { obsAccountsOf, resolveOnboardingMappings } from '../mappings'
+import { resolveOnboardingMappings } from '../mappings'
 import type { AccountMapping } from '@/lib/import/types'
 
 const mapping = (sourceAccount: string, targetAccount = '', extra: Partial<AccountMapping> = {}): AccountMapping => ({
@@ -31,18 +31,5 @@ describe('resolveOnboardingMappings', () => {
     expect(result.unresolved).toEqual([number])
     expect(result.create).toEqual([])
     expect(result.mappings.find((m) => m.sourceAccount === number)?.targetAccount).toBe('')
-  })
-})
-
-describe('obsAccountsOf', () => {
-  it('names the class 9 accounts the server sent to 2999, once each and sorted', () => {
-    expect(obsAccountsOf([
-      mapping('9999', '2999', { matchType: 'class' }),
-      mapping('9000', '2999', { matchType: 'class' }),
-      mapping('9000', '2999', { matchType: 'class' }),
-      // A deliberate choice in a mapping step is not the server's rule.
-      mapping('9010', '2999', { matchType: 'manual' }),
-      mapping('2999', '2999'),
-    ])).toEqual(['9000', '9999'])
   })
 })

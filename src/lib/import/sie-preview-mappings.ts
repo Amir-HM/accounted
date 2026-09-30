@@ -26,6 +26,23 @@ export function suggestSIEMappings(parsed: ParsedSIEFile, targets: MappableAccou
   return prepareSIEPreviewMappings(parsed, suggestMappings(accounts, targets, stored))
 }
 
+/**
+ * The class 9 source accounts the rule below sent to 2999 OBS-konto. A flow
+ * with a mapping page shows them there for review; a flow without one names
+ * them. A 2999 target chosen by hand (matchType 'manual') is not listed.
+ */
+export function obsAccountsOf(
+  mappings: ReadonlyArray<Pick<AccountMapping, 'sourceAccount' | 'targetAccount'> & { matchType: string }>,
+): string[] {
+  const accounts = new Set<string>()
+  for (const mapping of mappings) {
+    if (mapping.targetAccount === OBS_ACCOUNT && mapping.matchType === 'class' && isClass9Account(mapping.sourceAccount)) {
+      accounts.add(mapping.sourceAccount)
+    }
+  }
+  return [...accounts].sort()
+}
+
 /** Preview evidence only. Execution revalidates the original file independently. */
 export function prepareSIEPreviewMappings(parsed: ParsedSIEFile, suggested: AccountMapping[]) {
   const referenced = new Set<string>()
