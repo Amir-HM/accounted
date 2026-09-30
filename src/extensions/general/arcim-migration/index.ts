@@ -690,6 +690,13 @@ export const arcimMigrationExtension: Extension = {
                 details: { provider, reason: error.message },
               })
             }
+            // Bokio: the plan has no API access, so re-pasting the token
+            // cannot help; name the plans that include it instead.
+            if (error.kind === 'plan-no-api') {
+              return errorResponseFromCode('BOKIO_PLAN_NO_API', moduleLog, {
+                details: { provider, reason: error.message },
+              })
+            }
             return errorResponseFromCode('PROVIDER_TOKEN_INVALID', moduleLog, {
               details: { provider, reason: error.message },
             })
