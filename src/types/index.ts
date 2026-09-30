@@ -4526,6 +4526,12 @@ export interface SalaryRun {
   notes: string | null
   is_correction: boolean
   corrects_run_id: string | null
+  // Payslip sections the employee copy was issued with (migration
+  // 20260930200000). All null until the payslips first go to employees;
+  // written once (lib/salary/payslips/section-snapshot).
+  payslip_sections_issued_at: string | null
+  payslip_show_employer_cost: boolean | null
+  payslip_show_breakdown: boolean | null
   created_at: string
   updated_at: string
   // Relations

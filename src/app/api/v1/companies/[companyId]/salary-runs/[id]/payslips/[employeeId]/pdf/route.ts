@@ -20,6 +20,7 @@ import {
   payslipFileName,
   type PayslipAudience,
 } from '@/lib/salary/payslips/build-payslip-data'
+import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
 import { contentDisposition } from '@/lib/api/content-disposition'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { registerEndpoint } from '@/lib/api/v1/registry'
@@ -50,6 +51,7 @@ registerEndpoint({
     'The PDF renders whatever the run currently holds: for a draft run that has not been calculated, amounts are 0.',
     'PDF rendering takes a few hundred milliseconds; cache on the client if requesting repeatedly.',
     'Without audience the PDF is the employer view and always prints Arbetsgivarkostnad and Beräkningsunderlag. A PDF you forward to the employee should use audience=employee, so it matches the emailed payslip link and honours the company\'s section switches.',
+    'audience=employee on an approved, paid or booked run issues the payslip: the first employee copy of the run (or the payslip email, whichever comes first) fixes which sections it prints, and every later employee copy of that run prints the same sections even after the company changes its switches. On a draft or review run the employee copy follows the current switches and fixes nothing.',
   ],
   example: {
     response: {
@@ -143,6 +145,7 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
     }
 
     let audience: PayslipAudience = { kind: 'employer' }
+    let renderRun = run
     if (queryParse.data.audience === 'employee') {
       const { data: sectionSettings, error: settingsErr } = await ctx.supabase
         .from('company_settings')
@@ -153,6 +156,17 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
         return v1ErrorResponse(settingsErr, ctx.log, { requestId: ctx.requestId })
       }
       audience = { kind: 'employee', settings: sectionSettings }
+      // The employee copy is handed out: the first one of an approved run
+      // fixes its sections on the run, later ones print what was fixed.
+      const issued = await issuePayslipSections(ctx.supabase, {
+        companyId: ctx.companyId!,
+        run,
+        settings: sectionSettings,
+      })
+      if (!issued.ok) {
+        return v1ErrorResponse(issued.error, ctx.log, { requestId: ctx.requestId })
+      }
+      renderRun = { ...run, ...issued.snapshot }
     }
 
     let pdfBuffer: Buffer
@@ -160,7 +174,7 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
     try {
       const displayName = await getCompanyDisplayName(ctx.supabase, ctx.companyId!)
       const data = buildPayslipData({
-        run,
+        run: renderRun,
         sre,
         employee: emp,
         company: { name: displayName ?? company.name, org_number: company.org_number },

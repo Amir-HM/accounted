@@ -7,6 +7,7 @@ vi.mock('@/lib/salary/personnummer', () => ({
 
 import {
   buildPayslipData,
+  issuedPayslipSections,
   parsePayslipAudienceParam,
   payslipFileName,
   payslipSectionsFor,
@@ -276,6 +277,76 @@ describe('buildPayslipData: audience (crm#202)', () => {
         settings: { salary_payslip_show_employer_cost: null, salary_payslip_show_breakdown: null },
       }),
     ).toEqual({ employerCost: true, breakdown: true })
+  })
+})
+
+describe('buildPayslipData: sections fixed when the run was issued (BFL 7 kap. 1 §)', () => {
+  const company = { name: 'Bolaget AB', org_number: '5560000000' }
+  const HIDDEN_NOW: PayslipAudience = {
+    kind: 'employee',
+    settings: { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: false },
+  }
+  const SHOWN_NOW: PayslipAudience = {
+    kind: 'employee',
+    settings: { salary_payslip_show_employer_cost: true, salary_payslip_show_breakdown: true },
+  }
+  const issuedShown = {
+    ...run,
+    payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+    payslip_show_employer_cost: true,
+    payslip_show_breakdown: true,
+  }
+  const issuedHidden = {
+    ...run,
+    payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+    payslip_show_employer_cost: false,
+    payslip_show_breakdown: false,
+  }
+
+  it('keeps both sections on a run sent with them shown after the company hides them', () => {
+    const data = buildPayslipData({ run: issuedShown, sre: sre(), employee, company, audience: HIDDEN_NOW })
+    expect(data.employerCost).not.toBeNull()
+    expect(data.breakdownSteps?.map(s => s.label)).toEqual(['Bruttolön'])
+  })
+
+  it('keeps both sections hidden on a run sent with them hidden after the company shows them again', () => {
+    const data = buildPayslipData({ run: issuedHidden, sre: sre(), employee, company, audience: SHOWN_NOW })
+    expect(data.employerCost).toBeNull()
+    expect(data.breakdownSteps).toBeUndefined()
+  })
+
+  it('follows the live switches on a run not yet sent', () => {
+    const notSent = {
+      ...run,
+      payslip_sections_issued_at: null,
+      payslip_show_employer_cost: null,
+      payslip_show_breakdown: null,
+    }
+    const hidden = buildPayslipData({ run: notSent, sre: sre(), employee, company, audience: HIDDEN_NOW })
+    expect(hidden.employerCost).toBeNull()
+    expect(hidden.breakdownSteps).toBeUndefined()
+    const shown = buildPayslipData({ run: notSent, sre: sre(), employee, company, audience: SHOWN_NOW })
+    expect(shown.employerCost).not.toBeNull()
+    expect(shown.breakdownSteps).toHaveLength(1)
+  })
+
+  it('prints everything on the employer view of an issued run, whatever it was issued with', () => {
+    const data = buildPayslipData({ run: issuedHidden, sre: sre(), employee, company, audience: EMPLOYER })
+    expect(data.employerCost).not.toBeNull()
+    expect(data.breakdownSteps).toHaveLength(1)
+  })
+
+  it('reads a snapshot only once it carries an issue time, and never shows the breakdown without the employer cost', () => {
+    expect(issuedPayslipSections(null)).toBeNull()
+    expect(issuedPayslipSections({ payslip_sections_issued_at: null, payslip_show_employer_cost: false })).toBeNull()
+    expect(
+      issuedPayslipSections({
+        payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+        payslip_show_employer_cost: false,
+        payslip_show_breakdown: true,
+      }),
+    ).toEqual({ employerCost: false, breakdown: false })
+    expect(payslipSectionsFor(HIDDEN_NOW, issuedShown)).toEqual({ employerCost: true, breakdown: true })
   })
 })
 

@@ -10,6 +10,8 @@ import {
   payslipFileName,
   type PayslipAudience,
 } from '@/lib/salary/payslips/build-payslip-data'
+import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
+import { createServiceClient } from '@/lib/supabase/server'
 import { contentDisposition } from '@/lib/api/content-disposition'
 
 ensureInitialized()
@@ -26,7 +28,10 @@ ensureInitialized()
  * Without a query this is the employer's own view: every section printed.
  * `?audience=employee` renders the copy the employer hands out (the bulk ZIP
  * on the run page), which follows the company's payslip section switches
- * exactly like the emailed link does.
+ * exactly like the emailed link does. Handing that copy out issues the run:
+ * the first employee copy of an approved run fixes its sections on the run
+ * (section-snapshot), and every later employee copy prints those, whatever
+ * the switches say by then.
  */
 export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: string }> }>(
   'salary.run.payslip.pdf',
@@ -85,6 +90,7 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
     const displayName = await getCompanyDisplayName(supabase, companyId)
 
     let audience: PayslipAudience = { kind: 'employer' }
+    let renderRun = run
     if (audienceKind === 'employee') {
       const { data: sectionSettings, error: settingsError } = await supabase
         .from('company_settings')
@@ -97,10 +103,19 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
         return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
       }
       audience = { kind: 'employee', settings: sectionSettings }
+      // Service role for this one write: the RLS-scoped reads above proved
+      // the caller may see the run, and a read-only member downloading the
+      // copy is handing it out, not editing the run. Scoped by id and
+      // company; the snapshot is written once and never changed.
+      const issued = await issuePayslipSections(createServiceClient(), { companyId, run, settings: sectionSettings })
+      if (!issued.ok) {
+        return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+      }
+      renderRun = { ...run, ...issued.snapshot }
     }
 
     const data = buildPayslipData({
-      run,
+      run: renderRun,
       sre,
       employee: emp,
       company: { name: displayName ?? company.name, org_number: company.org_number },

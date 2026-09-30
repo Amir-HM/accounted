@@ -9,8 +9,12 @@
  * a payslip (the dashboard "view payslip" link) always carries every section.
  * The copy the employee receives (the emailed token link, the bulk ZIP the
  * employer hands out, the v1 API download) follows the company's
- * salary_payslip_show_employer_cost / salary_payslip_show_breakdown switches.
- * Callers say which copy they render; this module never guesses it.
+ * salary_payslip_show_employer_cost / salary_payslip_show_breakdown switches
+ * until the run's payslips are issued to employees; from then on it follows
+ * the sections fixed on the run (salary_runs.payslip_show_*, written once by
+ * lib/salary/payslips/section-snapshot), so a payslip already handed out keeps
+ * the content it had (BFL 7 kap. 1 §). Callers say which copy they render;
+ * this module never guesses it.
  */
 import type { PayslipData, PayslipLineItem } from '@/lib/salary/pdf/payslip-template'
 import { hasCustomDeviationWindow, runDeviationWindow } from '@/lib/salary/deviation-period'
@@ -23,7 +27,18 @@ const EMPLOYMENT_LABELS: Record<string, string> = {
   board_member: 'Styrelseledamot',
 }
 
-export interface PayslipRunSource {
+/**
+ * The sections a run's employee copy was issued with (migration
+ * 20260930200000). All null until the payslips first go to employees; the
+ * database keeps them unchanged once set.
+ */
+export interface PayslipSectionSnapshot {
+  payslip_sections_issued_at?: string | null
+  payslip_show_employer_cost?: boolean | null
+  payslip_show_breakdown?: boolean | null
+}
+
+export interface PayslipRunSource extends PayslipSectionSnapshot {
   period_year: number
   period_month: number
   payment_date: string
@@ -82,7 +97,22 @@ export function parsePayslipAudienceParam(value: string | null): 'employer' | 'e
 }
 
 /**
+ * The sections fixed on a run when its payslips were issued, or null when
+ * they have not been issued yet. The breakdown rule below holds here too
+ * (the database refuses a snapshot that breaks it; this keeps a hand-built
+ * row honest).
+ */
+export function issuedPayslipSections(run: PayslipSectionSnapshot | null | undefined): PayslipSections | null {
+  if (!run?.payslip_sections_issued_at) return null
+  const employerCost = run.payslip_show_employer_cost ?? true
+  return { employerCost, breakdown: employerCost && (run.payslip_show_breakdown ?? true) }
+}
+
+/**
  * Which optional sections a copy for this audience prints.
+ *
+ * The employee copy of a run that has been issued prints what it was issued
+ * with, whatever the switches say now; before that it follows the switches.
  *
  * Hiding the employer cost also hides Beräkningsunderlag: the engine's steps
  * carry the employer cost figures (Arbetsgivaravgifter, Semesteravsättning,
@@ -91,8 +121,13 @@ export function parsePayslipAudienceParam(value: string | null): 'employer' | 'e
  * reliably from historical runs. Showing the breakdown therefore requires
  * showing the employer cost.
  */
-export function payslipSectionsFor(audience: PayslipAudience): PayslipSections {
+export function payslipSectionsFor(
+  audience: PayslipAudience,
+  run?: PayslipSectionSnapshot | null,
+): PayslipSections {
   if (audience.kind === 'employer') return { employerCost: true, breakdown: true }
+  const issued = issuedPayslipSections(run)
+  if (issued) return issued
   const employerCost = audience.settings?.salary_payslip_show_employer_cost ?? true
   return {
     employerCost,
@@ -108,7 +143,7 @@ export function buildPayslipData(params: {
   audience: PayslipAudience
 }): PayslipData {
   const { run, sre, employee: emp, company } = params
-  const sections = payslipSectionsFor(params.audience)
+  const sections = payslipSectionsFor(params.audience, run)
 
   const lineItems: PayslipLineItem[] = ((sre.line_items || []) as Array<Record<string, unknown>>)
     .sort((a, b) => ((a.sort_order as number) || 0) - ((b.sort_order as number) || 0))

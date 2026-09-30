@@ -22,4 +22,97 @@ COMMENT ON COLUMN public.company_settings.salary_payslip_show_employer_cost IS
 COMMENT ON COLUMN public.company_settings.salary_payslip_show_breakdown IS
   'Print the Beräkningsunderlag section on the payslip the employee receives. The employer view always prints it.';
 
+-- ---------------------------------------------------------------------------
+-- What a run's employee payslips printed when they were issued.
+-- pg-test: covered-by tests/pg/salary-run-payslip-sections-snapshot.pg.test.ts
+--
+-- A payslip is räkenskapsinformation (7-year retention) and BFL 7 kap. 1 §
+-- requires electronic räkenskapsinformation to be kept with the content it
+-- had when it was compiled. The switches above live on company_settings and
+-- can change at any time, so the employee copy of a run that has already
+-- reached its employees must not follow them: it keeps the sections it was
+-- issued with.
+--
+-- The first time a run's payslips go to employees (the payslip email, or an
+-- employee-copy download such as "Ladda ner alla lönebesked", whichever
+-- happens first) the application writes the effective sections here, once.
+-- Every employee copy of that run is then rendered from these columns.
+-- NULL on all three means not yet issued: the employee copy follows the
+-- live switches. The employer's own view always prints both sections.
+ALTER TABLE public.salary_runs
+  ADD COLUMN IF NOT EXISTS payslip_sections_issued_at timestamptz,
+  ADD COLUMN IF NOT EXISTS payslip_show_employer_cost boolean,
+  ADD COLUMN IF NOT EXISTS payslip_show_breakdown boolean;
+
+COMMENT ON COLUMN public.salary_runs.payslip_sections_issued_at IS
+  'When the payslips of this run first went to employees and their sections were fixed. NULL = not yet issued: the employee copy follows company_settings.';
+COMMENT ON COLUMN public.salary_runs.payslip_show_employer_cost IS
+  'Whether the employee copy of this run prints Arbetsgivarkostnad, fixed at first issue. NULL = not yet issued.';
+COMMENT ON COLUMN public.salary_runs.payslip_show_breakdown IS
+  'Whether the employee copy of this run prints Beräkningsunderlag, fixed at first issue. NULL = not yet issued. Never true while payslip_show_employer_cost is false.';
+
+-- Runs whose payslips already went out before this migration were issued
+-- with both sections: the payslip had no switches then. Evidence of issue is
+-- a payslip link (created by the send) or a delivery logged as sent. Runs
+-- only downloaded before this migration left no trace and stay unissued.
+UPDATE public.salary_runs r
+   SET payslip_sections_issued_at = issued.first_issued_at,
+       payslip_show_employer_cost = true,
+       payslip_show_breakdown = true
+  FROM (
+    SELECT salary_run_id, min(created_at) AS first_issued_at
+      FROM (
+        SELECT salary_run_id, created_at FROM public.salary_payslip_links
+        UNION ALL
+        SELECT salary_run_id, created_at FROM public.salary_payslip_deliveries WHERE status = 'sent'
+      ) evidence
+     GROUP BY salary_run_id
+  ) issued
+ WHERE r.id = issued.salary_run_id
+   AND r.payslip_sections_issued_at IS NULL;
+
+-- All three set together, and the breakdown never without the employer cost
+-- (its steps carry the employer cost figures).
+ALTER TABLE public.salary_runs
+  DROP CONSTRAINT IF EXISTS salary_runs_payslip_sections_snapshot_shape;
+ALTER TABLE public.salary_runs
+  ADD CONSTRAINT salary_runs_payslip_sections_snapshot_shape CHECK (
+    (payslip_sections_issued_at IS NULL
+      AND payslip_show_employer_cost IS NULL
+      AND payslip_show_breakdown IS NULL)
+    OR (payslip_sections_issued_at IS NOT NULL
+      AND payslip_show_employer_cost IS NOT NULL
+      AND payslip_show_breakdown IS NOT NULL
+      AND (payslip_show_employer_cost OR NOT payslip_show_breakdown))
+  );
+
+-- Written once. salary_runs_update lets any company writer PATCH a run, so
+-- the database, not only the application, keeps an issued snapshot as it
+-- was: once payslip_sections_issued_at is set none of the three columns can
+-- change, for any caller.
+CREATE OR REPLACE FUNCTION public.salary_runs_payslip_sections_write_once()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+BEGIN
+  IF OLD.payslip_sections_issued_at IS NOT NULL AND (
+       NEW.payslip_sections_issued_at IS DISTINCT FROM OLD.payslip_sections_issued_at
+    OR NEW.payslip_show_employer_cost IS DISTINCT FROM OLD.payslip_show_employer_cost
+    OR NEW.payslip_show_breakdown IS DISTINCT FROM OLD.payslip_show_breakdown
+  ) THEN
+    RAISE EXCEPTION 'The payslip sections of salary run % were fixed when its payslips were issued and cannot change', OLD.id
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS salary_runs_payslip_sections_write_once ON public.salary_runs;
+CREATE TRIGGER salary_runs_payslip_sections_write_once
+  BEFORE UPDATE OF payslip_sections_issued_at, payslip_show_employer_cost, payslip_show_breakdown
+  ON public.salary_runs
+  FOR EACH ROW
+  EXECUTE FUNCTION public.salary_runs_payslip_sections_write_once();
+
 NOTIFY pgrst, 'reload schema';

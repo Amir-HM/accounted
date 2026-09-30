@@ -4,6 +4,8 @@ import { createQueuedMockSupabase, createMockRequest, createMockRouteParams } fr
 
 // The route is wrapped in withRouteContext. Auth/company are injected via the
 // mocked requireAuth + getActiveCompanyId; the PDF pipeline is fully stubbed.
+const { SERVICE_CLIENT } = vi.hoisted(() => ({ SERVICE_CLIENT: { service: true } }))
+
 vi.mock('@/lib/init', () => ({ ensureInitialized: vi.fn() }))
 vi.mock('@/lib/auth/require-auth', () => ({ requireAuth: vi.fn() }))
 vi.mock('@/lib/company/context', () => ({
@@ -24,12 +26,24 @@ vi.mock('@/lib/salary/payslips/build-payslip-data', async (importOriginal) => {
   }
 })
 
+vi.mock('@/lib/salary/payslips/section-snapshot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/salary/payslips/section-snapshot')>()),
+  issuePayslipSections: vi.fn(),
+}))
+vi.mock('@/lib/supabase/server', () => ({ createServiceClient: vi.fn(() => SERVICE_CLIENT) }))
+
 import { GET } from '../route'
 import { requireAuth } from '@/lib/auth/require-auth'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { buildPayslipData } from '@/lib/salary/payslips/build-payslip-data'
+import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
 
 const mockUser = { id: 'user-1', email: 'test@test.se' }
+const NOT_ISSUED = {
+  payslip_sections_issued_at: null,
+  payslip_show_employer_cost: null,
+  payslip_show_breakdown: null,
+}
 
 function authed() {
   const { supabase, enqueue, enqueueMany } = createQueuedMockSupabase()
@@ -45,6 +59,7 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getCompanyDisplayName).mockResolvedValue('Ny Firma AB')
+    vi.mocked(issuePayslipSections).mockResolvedValue({ ok: true, snapshot: NOT_ISSUED })
   })
 
   it('returns 401 when unauthenticated', async () => {
@@ -152,6 +167,77 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
 
     expect(response.status).toBe(500)
     expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
+  })
+
+  it('renders the employee copy from the sections the run was issued with', async () => {
+    const { enqueueMany } = authed()
+    const run = { id: 'run-1', status: 'paid', period_year: 2026, period_month: 6, payment_date: '2026-06-25' }
+    const hiddenNow = { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: false }
+    enqueueMany([
+      { data: run },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: hiddenNow },
+    ])
+    const issuedShown = {
+      payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+      payslip_show_employer_cost: true,
+      payslip_show_breakdown: true,
+    }
+    vi.mocked(issuePayslipSections).mockResolvedValue({ ok: true, snapshot: issuedShown })
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'employee' } }),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(200)
+    // Handing out the copy issues the run, through the service client (a
+    // read-only member may download it) scoped to the active company.
+    expect(vi.mocked(issuePayslipSections)).toHaveBeenCalledWith(SERVICE_CLIENT, {
+      companyId: 'company-1',
+      run,
+      settings: hiddenNow,
+    })
+    expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+      expect.objectContaining({ run: { ...run, ...issuedShown } }),
+    )
+  })
+
+  it('returns 500 when the issued sections cannot be fixed', async () => {
+    const { enqueueMany } = authed()
+    enqueueMany([
+      { data: { id: 'run-1', status: 'approved', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: { salary_payslip_show_employer_cost: true, salary_payslip_show_breakdown: true } },
+    ])
+    vi.mocked(issuePayslipSections).mockResolvedValue({ ok: false, error: new Error('timeout') })
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'employee' } }),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(500)
+    expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
+  })
+
+  it('never issues the run for the employer view', async () => {
+    const { enqueueMany } = authed()
+    enqueueMany([
+      { data: { id: 'run-1', status: 'booked', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf'),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
   })
 
   it('returns 400 for an unknown audience', async () => {

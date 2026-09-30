@@ -40,10 +40,15 @@ vi.mock('@/lib/salary/payslips/build-payslip-data', () => ({
   payslipFileName: vi.fn(() => 'payslip.pdf'),
 }))
 vi.mock('@/lib/company/context', () => ({ getCompanyDisplayName: vi.fn() }))
+vi.mock('@/lib/salary/payslips/section-snapshot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/salary/payslips/section-snapshot')>()),
+  issuePayslipSections: vi.fn(),
+}))
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { buildPayslipData } from '@/lib/salary/payslips/build-payslip-data'
+import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
 import { GET } from '../route'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
@@ -183,6 +188,10 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
         mode: 'live',
       })
       vi.mocked(renderToBuffer).mockResolvedValue(Buffer.from('%PDF-fake'))
+      vi.mocked(issuePayslipSections).mockResolvedValue({
+        ok: true,
+        snapshot: { payslip_sections_issued_at: null, payslip_show_employer_cost: null, payslip_show_breakdown: null },
+      })
     })
 
     it('renders the employer view (every section) without an audience and never reads the switches', async () => {
@@ -200,6 +209,7 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
         expect.objectContaining({ audience: { kind: 'employer' } }),
       )
       expect(stub.from.mock.calls.map((c) => c[0])).not.toContain('company_settings')
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
     })
 
     it('renders the employee copy with the company section switches for audience=employee', async () => {
@@ -219,6 +229,44 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
           },
         }),
       )
+    })
+      it('renders the employee copy from the sections the run was issued with', async () => {
+      const stub = makeTableStub(rows)
+      mockServiceClient.mockReturnValue(stub)
+      const issuedShown = {
+        payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+        payslip_show_employer_cost: true,
+        payslip_show_breakdown: true,
+      }
+      vi.mocked(issuePayslipSections).mockResolvedValue({ ok: true, snapshot: issuedShown })
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).toHaveBeenCalledWith(stub, {
+        companyId: COMPANY_A,
+        run: rows.salary_runs,
+        settings: rows.company_settings,
+      })
+      expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+        expect.objectContaining({ run: { ...rows.salary_runs, ...issuedShown } }),
+      )
+    })
+
+    it('answers an error and renders nothing when the issued sections cannot be fixed', async () => {
+      mockServiceClient.mockReturnValue(makeTableStub(rows))
+      vi.mocked(issuePayslipSections).mockResolvedValue({ ok: false, error: { message: 'timeout' } })
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
     })
   })
 })
