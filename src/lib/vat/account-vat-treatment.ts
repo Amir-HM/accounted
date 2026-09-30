@@ -177,7 +177,18 @@ export function vatRateFromLabel(label: string): 0.25 | 0.12 | 0.06 | null {
  * declaration side.
  */
 const NOT_DOMESTIC_SALE =
-  /momsfri|utan moms|omvänd|\bvmb\b|vinstmarginal|export|utanför|unionsintern|\boss\b|(?<![\d,.])\b0\s*%/
+  /momsfri|utan moms|\bej moms|undantag|momsbefri|omvänd|\bvmb\b|vinstmarginal|export|utanför|unionsintern|\boss\b|(?<![\d,.])\b0\s*%/
+
+/**
+ * Renting out premises or a dwelling is exempt; it carries moms only under
+ * frivillig skattskyldighet (ML 12 kap), which files ruta 08, not ruta 05
+ * (swedish-vat skill, section 6). The frivillig rule in suggestVatTreatment
+ * handles a label that says so; any other premises rental with a rate stays
+ * for review rather than being suggested as an ordinary ruta 05 sale.
+ */
+function isPremisesRental(name: string): boolean {
+  return /hyr/.test(name) && /lokal|fastighet|bostad/.test(name)
+}
 
 /**
  * Suggest a VAT treatment from a SIE account label. SIE #SRU and #KTYP are
@@ -238,7 +249,7 @@ export function suggestVatTreatment(
     // one signal the label gives and the only one needed: ruta 05 is the same
     // box for all three rates. A union or exempt marker that no rule above
     // resolved means the label is not a domestic sale, so it stays for review.
-    if (percent && !UNION.test(name) && !NOT_DOMESTIC_SALE.test(name)) {
+    if (percent && !UNION.test(name) && !NOT_DOMESTIC_SALE.test(name) && !isPremisesRental(name)) {
       return {
         treatment: percent === 0.12 ? 'reduced_12' : percent === 0.06 ? 'reduced_6' : 'standard_25',
         rate: percent,

@@ -305,6 +305,27 @@ describe('a label that names a Swedish sats', () => {
     expect(suggestVatTreatment('3549', 'Faktureringsavgift 0% / 25%')).toBeNull()
   })
 
+  it('leaves a rate label with an exempt wording other than momsfri for review', () => {
+    expect(suggestVatTreatment('3009', 'Försäljning undantagen moms 25%')).toBeNull()
+    expect(suggestVatTreatment('3990', 'Övr intäkter ej momspliktiga 25%')).toBeNull()
+    expect(suggestVatTreatment('3991', 'Intäkter ej moms 12%')).toBeNull()
+    expect(suggestVatTreatment('3992', 'Momsbefriad försäljning 6%')).toBeNull()
+  })
+
+  it('does not suggest ruta 05 for premises rental with a rate but no frivillig marker', () => {
+    // Premises rental carries moms only under frivillig skattskyldighet,
+    // which is ruta 08; the frivillig rule handles labels that say so.
+    expect(suggestVatTreatment('3911', 'Hyra lokal 25%')).toBeNull()
+    expect(suggestVatTreatment('3912', 'Uthyrning lokaler 25%')).toBeNull()
+    expect(suggestVatTreatment('3913', 'Frivillig uthyrning lokal 25%')).toEqual({
+      treatment: 'rental_voluntary', rate: 0.25,
+    })
+    // Renting out equipment is an ordinary taxable supply.
+    expect(suggestVatTreatment('3914', 'Uthyrning maskiner 25%')).toEqual({
+      treatment: 'standard_25', rate: 0.25,
+    })
+  })
+
   it('does not guess a purchase treatment from a rate alone', () => {
     // The treatment model has no domestic purchase treatment: a domestic
     // purchase has no base ruta, and its moms reaches ruta 48 via 2641.
