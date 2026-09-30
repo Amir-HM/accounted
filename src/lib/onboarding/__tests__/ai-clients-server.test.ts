@@ -6,7 +6,7 @@ const warn = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/auth/api-keys', () => ({ OAUTH_MCP_KEY_NAME: 'MCP OAuth' }))
 vi.mock('@/lib/logger', () => ({ createLogger: () => ({ warn, info: vi.fn(), error: vi.fn() }) }))
 
-import { loadConnectedAiClients, readAiConnection, readConnectedAiClients } from '../ai-clients.server'
+import { loadAiConnection, loadConnectedAiClients, readAiConnection, readConnectedAiClients } from '../ai-clients.server'
 
 const { supabase, enqueue, reset } = createQueuedMockSupabase()
 const client = supabase as unknown as SupabaseClient
@@ -52,5 +52,16 @@ describe('connected AI clients read', () => {
     await expect(loadConnectedAiClients(client, 'user-1')).resolves.toEqual([])
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn.mock.calls[0][1]).toMatchObject({ userId: 'user-1' })
+  })
+
+  it('answers no connection from the lenient connection read, and logs the failure', async () => {
+    enqueue({ data: null, error: { message: 'connection reset' } })
+    await expect(loadAiConnection(client, 'user-1')).resolves.toEqual({ connected: false, clients: [] })
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an unknown-client key connected in the lenient connection read', async () => {
+    enqueue({ data: [{ client: null }], error: null })
+    await expect(loadAiConnection(client, 'user-1')).resolves.toEqual({ connected: true, clients: [] })
   })
 })

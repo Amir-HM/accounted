@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { OAUTH_MCP_KEY_NAME } from '@/lib/auth/api-keys'
 import { createLogger } from '@/lib/logger'
-import { aiConnection, type AiClient, type AiConnection } from '@/lib/onboarding/ai-clients'
+import { aiConnection, NO_AI_CONNECTION, type AiClient, type AiConnection } from '@/lib/onboarding/ai-clients'
 
 const log = createLogger('onboarding-ai-clients')
 
@@ -33,15 +33,20 @@ export async function readConnectedAiClients(supabase: SupabaseClient, userId: s
 }
 
 /**
- * The verified clients where the readout only decorates a button: a failed
- * read answers an empty list rather than throwing, and is logged so a
+ * The connection where the readout only decorates a page or a button: a
+ * failed read answers no connection rather than throwing, and is logged so a
  * degraded api_keys read stays visible to monitoring.
  */
-export async function loadConnectedAiClients(supabase: SupabaseClient, userId: string): Promise<AiClient[]> {
+export async function loadAiConnection(supabase: SupabaseClient, userId: string): Promise<AiConnection> {
   try {
-    return await readConnectedAiClients(supabase, userId)
+    return await readAiConnection(supabase, userId)
   } catch (error) {
     log.warn('connected AI clients read failed, answering none', { userId, error })
-    return []
+    return NO_AI_CONNECTION
   }
+}
+
+/** The verified clients from loadAiConnection, for handoff buttons. Never throws. */
+export async function loadConnectedAiClients(supabase: SupabaseClient, userId: string): Promise<AiClient[]> {
+  return (await loadAiConnection(supabase, userId)).clients
 }

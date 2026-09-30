@@ -54,7 +54,9 @@ export function connectedAiClients(rows: { client: string | null }[]): AiClient[
  * Whether an agent is connected, and which of the three it is when known.
  *
  * `connected` is the one fact every "is an agent connected" readout answers
- * from (the Hem agent chip, the checklist's connect step): a live, unrevoked
+ * from (the Hem agent chip, the checklist's connect step, the Instruktioner
+ * pages' connect gate, the books act's chips; the browser gets it as
+ * `agentConnected`, see aiConnectionFromWire): a live, unrevoked
  * OAuth MCP key for this user, whatever its `client` value. A key's client
  * is null when it predates migration 20260913120000 or came from a
  * registered client, and Cursor or a localhost bridge store their own
@@ -77,6 +79,26 @@ export const NO_AI_CONNECTION: AiConnection = { connected: false, clients: [] }
 /** Pure: `rows` are the user's live OAuth MCP keys (ai-clients.server.ts). */
 export function aiConnection(rows: { client: string | null }[]): AiConnection {
   return { connected: rows.length > 0, clients: connectedAiClients(rows) }
+}
+
+/**
+ * The connection as the browser reads it back from /api/ai/connections,
+ * /api/onboarding/ai-status or the books findings: the verified clients plus
+ * the `agentConnected` fact. A verified client is itself a live key, so a
+ * payload without the flag still reads as connected when it names one.
+ */
+export function aiConnectionFromWire(clients: AiClient[], agentConnected: boolean | undefined): AiConnection {
+  return { connected: agentConnected === true || clients.length > 0, clients }
+}
+
+/**
+ * An agent is connected, but not one of the three we can name. A surface that
+ * lists the three clients with connect offers (the books act's chips) shows a
+ * generic connected agent instead: any offer would only earn "a connector
+ * with this URL already exists" from the client the user already added.
+ */
+export function unknownAgentOnly(connection: AiConnection): boolean {
+  return connection.connected && connection.clients.length === 0
 }
 
 /**
