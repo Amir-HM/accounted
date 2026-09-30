@@ -5,7 +5,7 @@ import type {
   JournalEntry,
   JournalEntryLine,
 } from '@/types'
-import { validateBalance, getNextVoucherNumber } from '@/lib/bookkeeping/engine'
+import { validateBalance, getNextVoucherNumber, cancelOrphanedEntry } from '@/lib/bookkeeping/engine'
 import {
   dimensionsBagKey,
   normalizeLineDimensions,
@@ -97,24 +97,21 @@ function isIdenticalToOriginal(
  */
 
 /**
- * Cancel a journal entry and delete its lines.
- * Uses status='cancelled' instead of DELETE (DB trigger blocks all DELETEs).
- * Works for both draft→cancelled and posted→cancelled transitions.
+ * Roll back an entry this correction created before a later step failed.
+ * Goes through the engine's gated cleanup door (cancel_orphaned_entry), which
+ * cancels the entry whether it is still a draft or already posted, and keeps
+ * its lines as the record of the used voucher number. Never throws, so the
+ * error that triggered the rollback is the one the caller sees.
  */
-async function cancelEntry(supabase: SupabaseClient, entryId: string): Promise<void> {
-  const { error: statusErr } = await supabase
-    .from('journal_entries')
-    .update({ status: 'cancelled' })
-    .eq('id', entryId)
-  if (statusErr) {
-    console.error(`[storno] cancelEntry: failed to cancel ${entryId}:`, statusErr.message)
-  }
-  const { error: linesErr } = await supabase
-    .from('journal_entry_lines')
-    .delete()
-    .eq('journal_entry_id', entryId)
-  if (linesErr) {
-    console.error(`[storno] cancelEntry: failed to delete lines for ${entryId}:`, linesErr.message)
+async function cancelEntry(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  entryId: string,
+): Promise<void> {
+  const { error } = await cancelOrphanedEntry(supabase, companyId, userId, entryId)
+  if (error) {
+    console.error(`[storno] cancelEntry: failed to cancel ${entryId}:`, error.message)
   }
 }
 
@@ -347,7 +344,7 @@ export async function correctEntry(
     .insert(reversalLineInserts)
 
   if (reversalLinesError) {
-    await cancelEntry(supabase, reversalEntry.id)
+    await cancelEntry(supabase, companyId, userId, reversalEntry.id)
     throw new BookkeepingDatabaseError('create_reversal_lines', reversalLinesError.message)
   }
 
@@ -358,7 +355,7 @@ export async function correctEntry(
     .eq('id', reversalEntry.id)
 
   if (postReversalError) {
-    await cancelEntry(supabase, reversalEntry.id)
+    await cancelEntry(supabase, companyId, userId, reversalEntry.id)
     throw new BookkeepingDatabaseError('post_reversal_entry', postReversalError.message)
   }
 
@@ -433,7 +430,7 @@ export async function correctEntry(
       .insert(correctedLineInserts)
 
     if (correctedLinesError) {
-      await cancelEntry(supabase, correctedEntry.id)
+      await cancelEntry(supabase, companyId, userId, correctedEntry.id)
       throw new BookkeepingDatabaseError('create_corrected_lines', correctedLinesError.message)
     }
 
@@ -444,13 +441,13 @@ export async function correctEntry(
       .eq('id', correctedEntry.id)
 
     if (postCorrectedError) {
-      await cancelEntry(supabase, correctedEntry.id)
+      await cancelEntry(supabase, companyId, userId, correctedEntry.id)
       throw new BookkeepingDatabaseError('post_corrected_entry', postCorrectedError.message)
     }
   } catch (err) {
     // Cancel the reversal entry (posted → cancelled). Original was never
     // modified so no rollback needed: it's still 'posted'.
-    await cancelEntry(supabase, reversalEntry.id)
+    await cancelEntry(supabase, companyId, userId, reversalEntry.id)
     throw err
   }
 
@@ -467,8 +464,8 @@ export async function correctEntry(
 
   if (casError || !updatedOriginal || updatedOriginal.length === 0) {
     // Concurrent reversal beat us: cancel both our entries
-    await cancelEntry(supabase, reversalEntry.id)
-    await cancelEntry(supabase, correctedEntry!.id)
+    await cancelEntry(supabase, companyId, userId, reversalEntry.id)
+    await cancelEntry(supabase, companyId, userId, correctedEntry!.id)
     throw new EntryAlreadyReversedError()
   }
 
