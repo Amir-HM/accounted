@@ -32,6 +32,7 @@ import {
 import type { AGIEmployeeData, AGICompanyData, AGITotals } from './xml-generator'
 import { agiReportingPeriod, formatAgiPeriodDashed } from './reporting-period'
 import { runDeviationWindow } from '../deviation-period'
+import { VAXA_STOD_AGI_FIELDS_RETIRED_FROM } from '../vaxa-stod'
 import {
   resolveTaxableBenefits,
   staleBenefitTotalRefusal,
@@ -332,6 +333,26 @@ export async function generateAgiDeclaration(
       continue
     }
     const who = `Anställd ${sre.employee?.specification_number ?? '?'}`
+    // A row calculated at the old reduced växa-stöd sats would be declared
+    // under standard at 10,21 %: an under-declaration from 202601, when the
+    // IU must carry the full avgifter (Lag 2025:1334). The engine no longer
+    // writes such rows; one stored before that is refused, not filed.
+    if (
+      sre.avgifter_category === 'vaxa_stod' &&
+      agiPeriod.periodYear * 100 + agiPeriod.periodMonth >= VAXA_STOD_AGI_FIELDS_RETIRED_FROM
+    ) {
+      return {
+        ok: false,
+        code: 'AGI_INCOMPLETE_DATA',
+        details: {
+          missing_fields: ['avgifter_category'],
+          message:
+            `${who}: arbetsgivaravgifterna är beräknade med växa-stödets nedsatta sats, som inte gäller från ` +
+            'redovisningsperiod 2026-01 (Lag 2025:1334). Räkna om lönekörningen så att fulla avgifter redovisas, ' +
+            'och ansök om växa-stöd hos Skatteverket i efterhand.',
+        },
+      }
+    }
     const resolution = resolveTaxableBenefits(
       (sre.line_items ?? []).map((li) => ({ itemType: li.item_type, amount: li.amount ?? 0 })),
     )

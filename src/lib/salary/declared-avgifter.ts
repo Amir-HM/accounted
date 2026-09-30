@@ -168,9 +168,11 @@ export function computeDeclaredAvgifter(
     if (rateHundredths <= 0) continue
 
     // Salary caps: the reduced sats applies up to the monthly cap, the
-    // remainder is charged at the full sats: mirrors the engine's
-    // youth/växa-stöd blend (calculation-engine.ts step 8), applied on the
-    // declared whole-krona underlag the way Skatteverket applies it.
+    // remainder is charged at the full sats: mirrors the engine's youth cap
+    // (calculation-engine.ts step 8), applied on the declared whole-krona
+    // underlag the way Skatteverket applies it. The växa cap only serves
+    // legacy 'vaxa_stod' rows stored before växa-stöd became a refund (Lag
+    // 2025:1334); the engine no longer writes them.
     // The youth cap keys on the RESOLVED category so a legacy null-category
     // row classified as youth by the rate heuristic still gets capped; växa
     // keys on the raw category (it resolves to 'standard' for reporting).

@@ -31,22 +31,56 @@ export const VAXA_STOD_AGI_FIELDS_RETIRED_FROM = 202601
  */
 export const VAXA_STOD_CONFIGURED_CAP_FROM = '2024-05-01'
 
+/**
+ * Växa-stöd covers at most 24 consecutive calendar months per employee
+ * (swedish-payroll social-charges.md), counted from the month the window
+ * starts in.
+ */
+export const VAXA_STOD_MAX_MONTHS = 24
+
+/**
+ * Label of the engine's refund note. It is an instruction to the employer, so
+ * the employee's lönespecifikation leaves the step out (build-payslip-data.ts).
+ */
+export const VAXA_STOD_REFUND_STEP_LABEL = 'Växa-stöd: ansök om återbetalning hos Skatteverket'
+
 export interface VaxaStodWindow {
   eligible: boolean
   start: string | null
-  /** Optional: an open window runs until the employee's stöd months are used up. */
+  /** Optional: an open window runs until the stöd months are used up (VAXA_STOD_MAX_MONTHS). */
   end: string | null
+}
+
+/**
+ * Last day of the VAXA_STOD_MAX_MONTHS-th calendar month counted from the
+ * start month (start 2026-01-15 gives 2027-12-31). Null for a start date that
+ * is not YYYY-MM-DD.
+ */
+export function vaxaStodLastDay(start: string): string | null {
+  const match = /^(\d{4})-(\d{2})-\d{2}/.exec(start)
+  if (!match) return null
+  const lastMonthIndex = Number(match[1]) * 12 + (Number(match[2]) - 1) + VAXA_STOD_MAX_MONTHS - 1
+  const year = Math.floor(lastMonthIndex / 12)
+  const month = (lastMonthIndex % 12) + 1
+  // Day 0 of the following month is the last day of this one.
+  const day = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 /**
  * Whether a payment on this date is one the company can apply for a växa-stöd
  * refund on. Same window the reduced sats used to key on, with the end date
- * optional as the employee API documents it.
+ * optional as the employee API documents it. The window never runs past
+ * VAXA_STOD_MAX_MONTHS, whether the end date is missing or set later than
+ * that.
  */
 export function isVaxaStodRefundMonth(vaxaWindow: VaxaStodWindow, paymentDate: string): boolean {
   if (!vaxaWindow.eligible || !vaxaWindow.start) return false
   if (paymentDate < VAXA_STOD_REFUND_FROM) return false
-  return paymentDate >= vaxaWindow.start && (vaxaWindow.end === null || paymentDate <= vaxaWindow.end)
+  const lastDay = vaxaStodLastDay(vaxaWindow.start)
+  if (lastDay === null) return false
+  const end = vaxaWindow.end !== null && vaxaWindow.end < lastDay ? vaxaWindow.end : lastDay
+  return paymentDate >= vaxaWindow.start && paymentDate <= end
 }
 
 /**

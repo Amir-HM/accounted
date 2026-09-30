@@ -8,7 +8,7 @@ import type { SalaryCalculationPolicy } from './calculation-policy'
 import { groupOneOffBasesByRate, oneOffTaxForGroup, validateOneOffTaxLine } from './one-off-tax'
 import { isBenefitItemType, resolveTaxableBenefits } from './benefit-payments'
 import { degreeAdjustedMonthlySalary } from './work-schedule'
-import { isVaxaStodRefundMonth, VAXA_STOD_CONFIGURED_CAP_FROM } from './vaxa-stod'
+import { isVaxaStodRefundMonth, VAXA_STOD_CONFIGURED_CAP_FROM, VAXA_STOD_REFUND_STEP_LABEL } from './vaxa-stod'
 import type { SalaryLineItemType } from '@/types'
 
 // ============================================================
@@ -887,7 +887,7 @@ function vaxaStodRefundNotice(
   if (!isVaxaStodRefundMonth(vaxaWindow, input.paymentDate)) return null
   if (avgifterBasis <= 0 || (category !== 'standard' && category !== 'youth')) return null
 
-  const label = 'Växa-stöd: ansök om återbetalning hos Skatteverket'
+  const label = VAXA_STOD_REFUND_STEP_LABEL
   const windowInput = { vaxa_start: input.vaxaStodStart ?? '', vaxa_end: input.vaxaStodEnd ?? '' }
   const withoutAmount = (reason: string) => ({
     refund: { amount: null },

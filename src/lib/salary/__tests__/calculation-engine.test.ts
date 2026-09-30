@@ -1479,9 +1479,15 @@ describe('calculateSalary: växa-stöd is a refund, not a reduced sats (Lag 2025
     expect(result.vaxaStodRefund).toEqual({ amount: 6363 })
   })
 
-  it('keeps an open window (no end date) open, as the employee API documents', () => {
-    const result = calculateSalary(vaxa({ vaxaStodEnd: null }), config2026, emptyTaxRates)
-    expect(result.vaxaStodRefund).toEqual({ amount: 7423.5 })
+  it('keeps an open window (no end date) open until the 24th calendar month, as the employee API documents', () => {
+    // Window starts 2025-06: month 24 is 2027-05, month 25 is 2027-06.
+    const inside = calculateSalary(vaxa({ vaxaStodEnd: null, paymentDate: '2027-05-25' }), config2026, emptyTaxRates)
+    expect(inside.vaxaStodRefund).toEqual({ amount: 7423.5 })
+
+    const after = calculateSalary(vaxa({ vaxaStodEnd: null, paymentDate: '2027-06-25' }), config2026, emptyTaxRates)
+    expect(after.avgifterAmount).toBe(12568)
+    expect(after.vaxaStodRefund).toBeNull()
+    expect(refundStep(after.steps)).toBeUndefined()
   })
 
   it('notes nothing outside the window or when the employee is not eligible', () => {

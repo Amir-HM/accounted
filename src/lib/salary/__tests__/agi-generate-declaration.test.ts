@@ -634,6 +634,30 @@ describe('generateAgiDeclaration: växa-stöd never reaches the IU (Lag 2025:133
     expect(result.xml).not.toContain('faltkod="063"')
     expect(result.totals.avgifterByCategory.youth).toEqual({ basis: 20000, amount: 4162 })
   })
+
+  it('refuses a stored row calculated at the old reduced växa-stöd sats instead of declaring 10,21 %', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueSeptemberPayout(enqueueMany, [
+      {
+        ...REGULAR_ROW,
+        // 35 000 × 10,21 % + 5 000 × 31,42 %: the pre-2026 capped växa sats.
+        avgifter_amount: 5144.5,
+        avgifter_rate: 0.1021,
+        avgifter_category: 'vaxa_stod',
+        employee: VAXA_EMPLOYEE,
+      },
+    ])
+
+    const result = await generateAgiDeclaration({ supabase: supabase as never, ...ARGS })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe('AGI_INCOMPLETE_DATA')
+    const details = result.details as { missing_fields: string[]; message: string }
+    expect(details.missing_fields).toEqual(['avgifter_category'])
+    expect(details.message).toContain('Räkna om lönekörningen')
+    expect(details.message).toContain('Lag 2025:1334')
+  })
 })
 
 describe('generateAgiDeclaration: an employee payment for a benefit reduces the declared förmånsvärde', () => {
