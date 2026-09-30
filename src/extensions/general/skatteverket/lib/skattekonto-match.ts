@@ -838,8 +838,10 @@ const LINKED_ID_CHUNK = 100
  * findMatchCandidates (exact to the öre on 1630, alone, joined to rows
  * already linked, or combined with other open same-day rows; storno pairs
  * never count). The window data (1630 entries, links, AGI entries, same-day
- * open rows, storno pairs) is read once for the whole set, so a batch costs
- * the same handful of queries as one row.
+ * open rows, storno pairs) is read once per cluster of rows whose windows lie
+ * close together (clusterProbesByWindow), so a batch of rows in one month
+ * costs the same handful of queries as one row, and a batch spread over
+ * years reads only the rows' own windows, not everything in between.
  *
  * This is both the match dialog's list and the booking guard's "the ledger
  * already has this event" test (skattekonto-booking.ts): one definition, so
@@ -858,6 +860,66 @@ export async function findLedgerTwinCandidates(
   const out = new Map<string, SkattekontoMatchCandidate[]>()
   for (const p of probes) out.set(p.id, [])
   if (probes.length === 0) return out
+
+  // One window read per cluster of rows whose windows lie close together,
+  // never one read across the whole span of a batch: two rows years apart
+  // must not pull every verifikat in between. A row only ever uses entries
+  // inside its own window, so every row still sees all its candidates, and
+  // an isolated row gets exactly the read the single-row search makes.
+  for (const cluster of clusterProbesByWindow(probes)) {
+    const found = await searchLedgerTwinWindow(supabase, companyId, cluster)
+    for (const [id, candidates] of found) out.set(id, candidates)
+  }
+  return out
+}
+
+/**
+ * Rows whose windows lie at most this many days apart share one window read:
+ * reading a short gap costs less than a second round of queries.
+ */
+const TWIN_WINDOW_MERGE_GAP_DAYS = 31
+
+/** The entry dates a row's candidates can have: [combined window start, date + 14 days]. */
+function probeWindow(p: LedgerTwinProbe): { from: string; to: string } {
+  return {
+    from: combinedMatchWindow(p.transaktionsdatum, [p]).from,
+    to: addDays(p.transaktionsdatum, DATE_WINDOW_DAYS),
+  }
+}
+
+/**
+ * Split probes into groups whose windows overlap or lie within
+ * TWIN_WINDOW_MERGE_GAP_DAYS of each other, so a read covers the rows'
+ * windows and short gaps only, never the whole span of a batch.
+ */
+export function clusterProbesByWindow<T extends LedgerTwinProbe>(probes: T[]): T[][] {
+  const sorted = probes
+    .map(p => ({ p, w: probeWindow(p) }))
+    .sort((a, b) => (a.w.from < b.w.from ? -1 : a.w.from > b.w.from ? 1 : 0))
+  const clusters: T[][] = []
+  let current: T[] = []
+  let currentTo = ''
+  for (const { p, w } of sorted) {
+    if (current.length > 0 && w.from > addDays(currentTo, TWIN_WINDOW_MERGE_GAP_DAYS)) {
+      clusters.push(current)
+      current = []
+      currentTo = ''
+    }
+    current.push(p)
+    if (!currentTo || w.to > currentTo) currentTo = w.to
+  }
+  if (current.length > 0) clusters.push(current)
+  return clusters
+}
+
+/** findLedgerTwinCandidates for one cluster of probes: one read of their joint window. */
+async function searchLedgerTwinWindow(
+  supabase: SupabaseClient,
+  companyId: string,
+  probes: LedgerTwinProbe[],
+): Promise<Map<string, SkattekontoMatchCandidate[]>> {
+  const out = new Map<string, SkattekontoMatchCandidate[]>()
+  for (const p of probes) out.set(p.id, [])
 
   // Widest window any probe's candidate can use (a combined candidate may
   // reach back to its AGI period start); per-row windows are applied below.
@@ -971,11 +1033,13 @@ export async function findLedgerTwinCandidates(
     const periodEntryIds = pKey ? agiIndex.get(pKey)?.entryIds ?? null : null
 
     // Open same-day, same-sign rows that may settle a verifikat together
-    // with this one: the first MAX_COMBINED_POOL other open rows of the day.
+    // with this one: the first MAX_COMBINED_POOL other open same-sign rows of
+    // the day (an opposite-sign row can never be part of the group, so it
+    // must not take a slot).
     const companions = (openByDate.get(p.transaktionsdatum) ?? [])
       .filter(c => c.id !== p.id)
-      .slice(0, MAX_COMBINED_POOL)
       .filter(c => Math.sign(Number(c.belopp_skatteverket)) === Math.sign(belopp) && belopp !== 0)
+      .slice(0, MAX_COMBINED_POOL)
     const companionSubsets = subsets(companions, 1, MAX_COMBINED_EVENTS - 1)
 
     const candidates: SkattekontoMatchCandidate[] = []
