@@ -6,8 +6,8 @@ import {
   decodeBuffer,
   calculateFileHash,
 } from '@/lib/import/sie-parser'
-import { suggestMappings, getMappingStats } from '@/lib/import/account-mapper'
-import { prepareSIEPreviewMappings } from '@/lib/import/sie-preview-mappings'
+import { getMappingStats } from '@/lib/import/account-mapper'
+import { suggestSIEMappings } from '@/lib/import/sie-preview-mappings'
 import { planChartChanges } from '@/lib/import/chart-plan'
 import { scanSieForCp1252Artifacts, formatSieArtifactWarning } from '@/lib/import/sie-artifact-scan'
 import {
@@ -113,12 +113,11 @@ export const POST = withRouteContext(
         .select('*')
         .eq('company_id', companyId)
 
-      const suggested = suggestMappings(
-        parsed.accounts,
+      const { mappings, archivedOnlyAccounts, excludedSystemAccounts } = suggestSIEMappings(
+        parsed,
         BAS_REFERENCE,
         (storedMappings as SIEAccountMappingRecord[]) || undefined,
       )
-      const { mappings, archivedOnlyAccounts, excludedSystemAccounts } = prepareSIEPreviewMappings(parsed, suggested)
 
       const preview = generateImportPreview(parsed, mappings)
       preview.excludedSystemAccounts = excludedSystemAccounts
