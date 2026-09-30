@@ -6,7 +6,8 @@ import type { FactRow } from '@/lib/arkiv/facts/store'
 import { predicateDef } from '@/lib/arkiv/facts/predicates'
 import type { Payload } from '@/lib/documents/extract/fields'
 import { schemaForType } from '@/lib/documents/extract/schemas'
-import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { dbError } from '@/lib/errors/db-error'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { needsReadOnDemand, readLaneFor, type ReadLane } from '@/lib/documents/read/lanes'
 import { hasStoredPages, isBookedRow } from '@/lib/documents/locked-period'
 import { canDeleteDocument, offersDocumentDelete, readDocumentDeletePins, type DocumentDeletePins } from '@/lib/documents/deletion'
@@ -51,7 +52,8 @@ export interface DocumentRecordView {
 }
 
 export const GET = withRouteContext('arkiv.document', async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
-  if (!isArkivEnabled(ctx.companyId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  const notFound = () => errorResponseFromCode('NOT_FOUND', ctx.log, { requestId: ctx.requestId })
+  if (!isArkivEnabled(ctx.companyId)) return notFound()
   const { id } = await params
   const { data: doc, error } = await ctx.supabase
     .from('document_attachments')
@@ -59,8 +61,9 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
     .eq('id', id)
     .eq('company_id', ctx.companyId)
     .maybeSingle()
-  if (error) return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 })
-  if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // A failed read is thrown with its SQLSTATE: withRouteContext answers it in the canonical envelope.
+  if (error) throw dbError(error)
+  if (!doc) return notFound()
   const d = doc as {
     id: string
     file_name: string
@@ -99,7 +102,7 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
     brain ? ctx.supabase.from('agreements').select('id, title').eq('source_document_id', id).maybeSingle() : none,
     d.journal_entry_id ? ctx.supabase.from('journal_entries').select('id, voucher_series, voucher_number').eq('id', d.journal_entry_id).maybeSingle() : none,
   ])
-  for (const r of [classification, extraction, facts, links, agreement, entry]) if (r.error) return NextResponse.json({ error: getErrorMessage(r.error) }, { status: 500 })
+  for (const r of [classification, extraction, facts, links, agreement, entry]) if (r.error) throw dbError(r.error)
 
   const ext = extraction.data as { id: string; schema_type: string; pass: string; payload: Payload; review_fields: string[] } | null
   const labels = new Map(schemaForType(ext?.schema_type).fields.map((f) => [f.name, f.name]))
@@ -115,7 +118,7 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   }>
   const partyIds = linkRows.filter((l) => l.party_id).map((l) => l.party_id as string)
   const parties = partyIds.length ? await ctx.supabase.from('parties').select('id, display_name').in('id', partyIds) : { data: [], error: null }
-  if (parties.error) return NextResponse.json({ error: getErrorMessage(parties.error) }, { status: 500 })
+  if (parties.error) throw dbError(parties.error)
   const partyName = new Map(((parties.data ?? []) as Array<{ id: string; display_name: string }>).map((p) => [p.id, p.display_name]))
   const factRows = (facts.data ?? []) as FactRow[]
   const e = entry.data as { id: string; voucher_series: string | null; voucher_number: number | null } | null
@@ -124,14 +127,8 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   const docType = d.doc_type ?? (isBookedRow(d) ? ((classification.data as { doc_type?: string | null } | null)?.doc_type ?? null) : null)
   const storedPages = !d.pages_read_at && (await hasStoredPages(ctx.supabase, id))
   // The same pins deleteDocument() reads, only for a document the verifikat half of the rule lets go.
-  let pins: DocumentDeletePins | null = null
-  if (canDeleteDocument(d)) {
-    try {
-      pins = await readDocumentDeletePins(ctx.supabase, ctx.companyId, d.id)
-    } catch (pinError) {
-      return NextResponse.json({ error: getErrorMessage(pinError) }, { status: 500 })
-    }
-  }
+  // A failed pin read throws with its SQLSTATE (dbError) and is left to withRouteContext's envelope.
+  const pins: DocumentDeletePins | null = canDeleteDocument(d) ? await readDocumentDeletePins(ctx.supabase, ctx.companyId, d.id) : null
 
   const view: DocumentRecordView = {
     document_id: d.id,
