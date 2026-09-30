@@ -212,6 +212,16 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
       expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
     })
 
+    function writerKey(extra: Record<string, unknown> = {}) {
+      mockValidate.mockResolvedValue({
+        userId: 'user-1',
+        apiKeyId: 'key-1',
+        scopes: ['payroll:read', 'payroll:write'],
+        mode: 'live',
+        ...extra,
+      })
+    }
+
     it('renders the employee copy with the company section switches for audience=employee', async () => {
       mockServiceClient.mockReturnValue(makeTableStub(rows))
 
@@ -230,7 +240,91 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
         }),
       )
     })
-      it('renders the employee copy from the sections the run was issued with', async () => {
+    it('never issues the run for a payroll:read key: the copy follows the live switches', async () => {
+      const stub = makeTableStub(rows)
+      mockServiceClient.mockReturnValue(stub)
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      // A read must never cause a permanent write.
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
+      expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          run: rows.salary_runs,
+          audience: { kind: 'employee', settings: rows.company_settings },
+        }),
+      )
+    })
+
+    it('renders a payroll:read key the sections an issued run was issued with, writing nothing', async () => {
+      const issuedRun = {
+        ...rows.salary_runs,
+        status: 'booked',
+        payslip_sections_issued_at: '2026-06-24T08:00:00.000Z',
+        payslip_show_employer_cost: true,
+        payslip_show_breakdown: true,
+      }
+      mockServiceClient.mockReturnValue(makeTableStub({ ...rows, salary_runs: issuedRun }))
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
+      // The stored snapshot travels on the run; payslipSectionsFor prints it
+      // whatever the switches (both hidden-ish here) say now.
+      expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(expect.objectContaining({ run: issuedRun }))
+    })
+
+    it('never issues the run for a viewer membership, even with payroll:write', async () => {
+      writerKey()
+      mockServiceClient.mockReturnValue(
+        makeTableStub({ ...rows, company_members: { company_id: COMPANY_A, role: 'viewer' } }),
+      )
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
+    })
+
+    it('never issues the run over a read-only connection, even with payroll:write', async () => {
+      writerKey({ allowedCompanyIds: [COMPANY_A], readOnlyCompanyIds: [COMPANY_A] })
+      mockServiceClient.mockReturnValue(makeTableStub(rows))
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
+    })
+
+    it('never issues the run for a test-mode key (simulation only)', async () => {
+      writerKey({ mode: 'test' })
+      mockServiceClient.mockReturnValue(makeTableStub(rows))
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
+    })
+
+    it('issues the run for a payroll:write key and renders what was issued', async () => {
+      writerKey()
       const stub = makeTableStub(rows)
       mockServiceClient.mockReturnValue(stub)
       const issuedShown = {
@@ -257,6 +351,7 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
     })
 
     it('answers an error and renders nothing when the issued sections cannot be fixed', async () => {
+      writerKey()
       mockServiceClient.mockReturnValue(makeTableStub(rows))
       vi.mocked(issuePayslipSections).mockResolvedValue({ ok: false, error: { message: 'timeout' } })
 

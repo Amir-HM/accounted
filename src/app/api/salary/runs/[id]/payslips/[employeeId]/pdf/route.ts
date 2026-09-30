@@ -11,7 +11,7 @@ import {
   type PayslipAudience,
 } from '@/lib/salary/payslips/build-payslip-data'
 import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
-import { createServiceClient } from '@/lib/supabase/server'
+import { requireWritePermission } from '@/lib/auth/require-write'
 import { contentDisposition } from '@/lib/api/content-disposition'
 
 ensureInitialized()
@@ -28,10 +28,14 @@ ensureInitialized()
  * Without a query this is the employer's own view: every section printed.
  * `?audience=employee` renders the copy the employer hands out (the bulk ZIP
  * on the run page), which follows the company's payslip section switches
- * exactly like the emailed link does. Handing that copy out issues the run:
- * the first employee copy of an approved run fixes its sections on the run
- * (section-snapshot), and every later employee copy prints those, whatever
- * the switches say by then.
+ * exactly like the emailed link does. When a member who may write the run
+ * (requireWritePermission) downloads it, that hands the copy out and issues
+ * the run: the first employee copy of an approved run fixes its sections on
+ * the run (section-snapshot), and every later employee copy prints those,
+ * whatever the switches say by then. A read-only member (viewer) only reads:
+ * the copy renders from the run's stored snapshot when it has one, else from
+ * the switches, and nothing is written, because the database keeps a
+ * snapshot forever and a read must never cause a permanent write.
  */
 export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: string }> }>(
   'salary.run.payslip.pdf',
@@ -103,15 +107,17 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
         return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
       }
       audience = { kind: 'employee', settings: sectionSettings }
-      // Service role for this one write: the RLS-scoped reads above proved
-      // the caller may see the run, and a read-only member downloading the
-      // copy is handing it out, not editing the run. Scoped by id and
-      // company; the snapshot is written once and never changed.
-      const issued = await issuePayslipSections(createServiceClient(), { companyId, run, settings: sectionSettings })
-      if (!issued.ok) {
-        return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+      // Only a member who may write the run issues it, through the caller's
+      // own RLS-scoped client (the same write gate and client as the payslip
+      // send). A viewer renders from the run as stored and writes nothing.
+      const writeCheck = await requireWritePermission(supabase, ctx.user.id, { companyId })
+      if (writeCheck.ok) {
+        const issued = await issuePayslipSections(supabase, { companyId, run, settings: sectionSettings })
+        if (!issued.ok) {
+          return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+        }
+        renderRun = { ...run, ...issued.snapshot }
       }
-      renderRun = { ...run, ...issued.snapshot }
     }
 
     const data = buildPayslipData({

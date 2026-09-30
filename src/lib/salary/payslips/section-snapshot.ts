@@ -13,6 +13,12 @@
  * every later employee copy of that run renders from them
  * (payslipSectionsFor in build-payslip-data).
  *
+ * Only a caller who may WRITE the run issues it: the snapshot is permanent,
+ * and a read must never cause a permanent write. A read-only caller (a viewer
+ * member, a key without payroll:write or with read-only access to the
+ * company) renders the employee copy from the run as stored, its snapshot
+ * when issued, else the live switches, and never calls this.
+ *
  * Only a run in an issuable status is fixed: a draft or a run in review is
  * still being calculated and will be recalculated, so a copy of it is not
  * the payslip the employee is paid by. Those copies follow the live switches.
@@ -79,9 +85,12 @@ export function payslipSectionSnapshotRow(
  *   - otherwise: writes the sections from `settings` (the caller's
  *     fail-closed read of the company's switches) and returns them.
  *
- * `client` must be able to update the run: the caller has already proved the
- * user may read it, and fixing the snapshot is part of handing the payslip
- * out, not an edit of the run.
+ * The caller must already have established that the requester may write the
+ * run (requireWritePermission, or payroll:write on a writable company for the
+ * v1 API; the token link exists only because a writer sent it), and `client`
+ * is that requester's own client wherever it has one. Never call this on
+ * behalf of a read-only caller, and never reach for the service role to get
+ * past a read-only caller's RLS.
  */
 export async function issuePayslipSections(
   client: SupabaseClient,

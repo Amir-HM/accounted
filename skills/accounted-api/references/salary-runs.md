@@ -1671,7 +1671,7 @@ Returns the rendered payslip (lönespecifikation) as application/pdf, byte-equiv
 - The PDF renders whatever the run currently holds: for a draft run that has not been calculated, amounts are 0.
 - PDF rendering takes a few hundred milliseconds; cache on the client if requesting repeatedly.
 - Without audience the PDF is the employer view and always prints Arbetsgivarkostnad and Beräkningsunderlag. A PDF you forward to the employee should use audience=employee, so it matches the emailed payslip link and honours the company's section switches.
-- audience=employee on an approved, paid or booked run issues the payslip: the first employee copy of the run (or the payslip email, whichever comes first) fixes which sections it prints, and every later employee copy of that run prints the same sections even after the company changes its switches. On a draft or review run the employee copy follows the current switches and fixes nothing.
+- audience=employee on an approved, paid or booked run, from a key that also holds payroll:write on a company it may write, issues the payslip: the first employee copy of the run (or the payslip email, whichever comes first) fixes which sections it prints, and every later employee copy of that run prints the same sections even after the company changes its switches. A key with only payroll:read (or a read-only membership or connection) never fixes anything: it gets the sections the run was issued with, or the current switches while the run is not issued yet. On a draft or review run the employee copy follows the current switches and fixes nothing.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|

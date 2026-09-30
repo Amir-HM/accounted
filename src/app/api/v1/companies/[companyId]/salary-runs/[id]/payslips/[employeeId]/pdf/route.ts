@@ -10,6 +10,15 @@
  *
  * Per BFL: payslips are räkenskapsinformation linked to posted journal
  * entries (7-year retention). Read-only: no Idempotency-Key, no dry-run.
+ *
+ * The one write this read can cause is issuing the run's payslip sections
+ * (section-snapshot), which the database then keeps forever. A read must
+ * never cause a permanent write, so only a caller that may write the payroll
+ * issues: a key holding payroll:write, on a company it may write (not a
+ * viewer membership, not a read-only connection), outside dry run and test
+ * mode. Any other caller gets the employee copy from the run's stored
+ * snapshot when it has one, else from the live switches, and nothing is
+ * written.
  */
 
 import { z } from 'zod'
@@ -25,6 +34,7 @@ import { contentDisposition } from '@/lib/api/content-disposition'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { registerEndpoint } from '@/lib/api/v1/registry'
 import { withApiV1 } from '@/lib/api/v1/with-api-v1'
+import { hasScope } from '@/lib/auth/api-keys'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 
 const PayslipPdfQuery = z.object({
@@ -51,7 +61,7 @@ registerEndpoint({
     'The PDF renders whatever the run currently holds: for a draft run that has not been calculated, amounts are 0.',
     'PDF rendering takes a few hundred milliseconds; cache on the client if requesting repeatedly.',
     'Without audience the PDF is the employer view and always prints Arbetsgivarkostnad and Beräkningsunderlag. A PDF you forward to the employee should use audience=employee, so it matches the emailed payslip link and honours the company\'s section switches.',
-    'audience=employee on an approved, paid or booked run issues the payslip: the first employee copy of the run (or the payslip email, whichever comes first) fixes which sections it prints, and every later employee copy of that run prints the same sections even after the company changes its switches. On a draft or review run the employee copy follows the current switches and fixes nothing.',
+    'audience=employee on an approved, paid or booked run, from a key that also holds payroll:write on a company it may write, issues the payslip: the first employee copy of the run (or the payslip email, whichever comes first) fixes which sections it prints, and every later employee copy of that run prints the same sections even after the company changes its switches. A key with only payroll:read (or a read-only membership or connection) never fixes anything: it gets the sections the run was issued with, or the current switches while the run is not issued yet. On a draft or review run the employee copy follows the current switches and fixes nothing.',
   ],
   example: {
     response: {
@@ -156,17 +166,23 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string; 
         return v1ErrorResponse(settingsErr, ctx.log, { requestId: ctx.requestId })
       }
       audience = { kind: 'employee', settings: sectionSettings }
-      // The employee copy is handed out: the first one of an approved run
-      // fixes its sections on the run, later ones print what was fixed.
-      const issued = await issuePayslipSections(ctx.supabase, {
-        companyId: ctx.companyId!,
-        run,
-        settings: sectionSettings,
-      })
-      if (!issued.ok) {
-        return v1ErrorResponse(issued.error, ctx.log, { requestId: ctx.requestId })
+      // Only a payroll writer hands the copy out and fixes its sections on
+      // the run; a read-only caller renders from the run as stored (its
+      // snapshot when issued, else the switches) and writes nothing.
+      // A test key is simulation-only and a dry run persists nothing.
+      const mayIssue =
+        hasScope(ctx.scopes, 'payroll:write') && ctx.companyWritable && ctx.mode === 'live' && !ctx.dryRun
+      if (mayIssue) {
+        const issued = await issuePayslipSections(ctx.supabase, {
+          companyId: ctx.companyId!,
+          run,
+          settings: sectionSettings,
+        })
+        if (!issued.ok) {
+          return v1ErrorResponse(issued.error, ctx.log, { requestId: ctx.requestId })
+        }
+        renderRun = { ...run, ...issued.snapshot }
       }
-      renderRun = { ...run, ...issued.snapshot }
     }
 
     let pdfBuffer: Buffer
