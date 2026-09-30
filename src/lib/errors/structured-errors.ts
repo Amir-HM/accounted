@@ -4804,6 +4804,21 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     retryable: false,
     thrown_message_sv: true,
   },
+  // lib/salary/book-run.ts (accounted#3251): another call holds the run's
+  // booking claim (claim_salary_run_booking), so this one posted nothing.
+  // The claim ends when that call finishes, or after 15 minutes if it died.
+  SALARY_RUN_BOOKING_IN_PROGRESS: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen håller redan på att bokföras (i en annan flik eller av en agent), så inget bokfördes nu. Vänta en stund och kontrollera sedan lönekörningens status.',
+    message_en:
+      'The salary run is already being booked by another request. Nothing was posted by this one.',
+    remediation: {
+      description:
+        'Wait a moment, then fetch the run. Status booked means the other booking went through; status paid means it did not finish, so book the run again (vouchers an interrupted booking already posted are reused, never posted twice). A staged book_salary_run operation stays pending and can be approved again.',
+    },
+    retryable: true,
+  },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,
     message_sv: 'Lönespecifikationer kan bara skickas efter godkännande.',
