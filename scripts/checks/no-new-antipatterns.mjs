@@ -162,7 +162,7 @@ import { findLiteralLegalForms } from './literal-legal-form.mjs'
 import { findClientNodeBuiltins } from './client-node-builtin.mjs'
 import { findAmbiguousEmbeds } from './ambiguous-embed.mjs'
 import { findUiUniformityFindings, UI_UNIFORMITY_HINTS } from './ui-uniformity.mjs'
-import { findTablesWithoutGrant, grantHint } from './table-without-grant.mjs'
+import { findTablesWithoutGrant, grandfatheredFiles, grantHint } from './table-without-grant.mjs'
 import {
   findExtensionRouteFindings,
   UNGATED_EXTENSION_ROUTES,
@@ -1145,13 +1145,11 @@ const isUpdate = process.argv.includes('--update')
 if (isUpdate) {
   // table-without-grant is a frozen set, not a ratchet: --update is run to lock
   // in some other count going down, and must never grandfather a migration
-  // added since. Only the first write (no entry yet) takes the scan as is.
+  // added since (see grandfatheredFiles).
   const frozenGrantFiles = fs.existsSync(BASELINE_PATH)
     ? JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8')).tableWithoutGrant?.files
     : undefined
-  const grandfatheredGrantFiles = frozenGrantFiles
-    ? tableWithoutGrantFiles.filter((f) => frozenGrantFiles.includes(f))
-    : tableWithoutGrantFiles
+  const grandfatheredGrantFiles = grandfatheredFiles(frozenGrantFiles, tableWithoutGrantFiles)
   const baseline = {
     _comment:
       'Ratchet baseline for scripts/checks/no-new-antipatterns.mjs. These counts may only decrease. Re-run with --update after a migration lowers them. Goal: both reach 0 (A1 route-auth campaign, D1 rounding codemod).',
@@ -1580,7 +1578,7 @@ if (newTableWithoutGrant.length) {
       f.kind === 'bulk-grant'
         ? f.detail
         : f.kind === 'serial-without-grant'
-          ? `public.${f.relation} has a serial column (${f.sequence})`
+          ? `public.${f.relation} has a serial column (${f.sequence}; no grant to ${f.roles.join(', ')})`
           : `public.${f.relation} (${f.relationKind}; no grant to ${f.roles.join(', ')})`
     console.error(`    ${f.file}:${f.line}  ${what}`)
     grantHint(f).forEach((l) => console.error(`        ${l}`))

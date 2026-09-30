@@ -12,6 +12,7 @@ import path from 'node:path'
 import {
   analyzeMigration,
   findTablesWithoutGrant,
+  grandfatheredFiles,
   grantHint,
   sanitizeSql,
 } from '../table-without-grant.mjs'
@@ -48,6 +49,7 @@ describe('table-without-grant: the shape Supabase stops granting on 2026-10-30',
         relation: 'widget_notes',
         relationKind: 'table',
         roles: ['service_role', 'authenticated'],
+        rowSecurity: true,
       },
     ])
   })
@@ -69,6 +71,78 @@ describe('table-without-grant: the shape Supabase stops granting on 2026-10-30',
     expect(findings.map((f) => f.relation)).toEqual(['old_thing'])
   })
 
+  it.each([
+    ['a table', 'DROP TABLE IF EXISTS public.email_links; CREATE TABLE IF NOT EXISTS public.email_links (id uuid PRIMARY KEY);', 'email_links'],
+    ['a view', 'DROP VIEW IF EXISTS public.v_summary CASCADE; CREATE OR REPLACE VIEW public.v_summary AS SELECT 1 AS x;', 'v_summary'],
+    ['a materialized view', 'DROP MATERIALIZED VIEW public.mv_totals; CREATE MATERIALIZED VIEW IF NOT EXISTS public.mv_totals AS SELECT 1 AS x;', 'mv_totals'],
+    ['a sequence', 'DROP SEQUENCE IF EXISTS public.counter; CREATE SEQUENCE IF NOT EXISTS public.counter;', 'counter'],
+  ])('flags %s that is dropped, then re-created with IF NOT EXISTS / OR REPLACE', (_label, sql, relation) => {
+    // The re-created relation starts from the empty default ACL: its old
+    // grants went with the DROP.
+    const existing = new Set(['email_links', 'v_summary', 'mv_totals', 'counter'])
+    expect(analyze(sql, existing).map((f) => f.relation)).toEqual([relation])
+  })
+
+  it('forgets grants made before a DROP in the same file', () => {
+    const findings = analyze(`
+      CREATE TABLE public.t (id uuid PRIMARY KEY);
+      GRANT ALL ON public.t TO service_role, authenticated;
+      DROP TABLE public.t;
+      CREATE TABLE public.t (id uuid PRIMARY KEY, note text);
+    `)
+    expect(findings.map((f) => [f.relation, f.line])).toEqual([['t', 5]])
+  })
+
+  it('does not flag a scratch table the same migration creates and drops', () => {
+    expect(analyze('CREATE TABLE public.scratch (id int); INSERT INTO public.scratch VALUES (1); DROP TABLE public.scratch;')).toEqual([])
+  })
+
+  it('remembers a DROP from an earlier migration', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'twg-'))
+    tempDirs.push(root)
+    const dir = path.join(root, 'supabase', 'migrations')
+    fs.mkdirSync(dir, { recursive: true })
+    const granted = 'GRANT ALL ON public.a TO service_role, authenticated;'
+    fs.writeFileSync(path.join(dir, '20260101000000_a.sql'), `CREATE TABLE public.a (id int); ${granted}`)
+    fs.writeFileSync(path.join(dir, '20260102000000_b.sql'), 'DROP TABLE public.a;')
+    fs.writeFileSync(path.join(dir, '20260103000000_c.sql'), 'CREATE TABLE IF NOT EXISTS public.a (id int);')
+    expect(findTablesWithoutGrant(root).map((f: Finding) => [f.file, f.relation])).toEqual([
+      ['supabase/migrations/20260103000000_c.sql', 'a'],
+    ])
+  })
+
+  it('reads the DDL inside a DO block, which runs with the migration', () => {
+    const findings = analyze(`
+      DO $$
+      BEGIN
+        IF to_regclass('public.brand_new') IS NULL THEN
+          CREATE TABLE public.brand_new (id uuid PRIMARY KEY);
+        END IF;
+      END
+      $$;
+      DO LANGUAGE plpgsql $body$ BEGIN CREATE TABLE public.second (id int); END $body$;
+    `)
+    expect(findings.map((f) => [f.relation, f.line])).toEqual([
+      ['brand_new', 5],
+      ['second', 9],
+    ])
+  })
+
+  it('accepts grants and waivers made inside a DO block', () => {
+    expect(
+      analyze(`
+        DO $$
+        BEGIN
+          -- no-grant: authenticated on public.brand_new (service-role only: the cron writes it)
+          CREATE TABLE IF NOT EXISTS public.brand_new (id uuid PRIMARY KEY);
+          GRANT SELECT, INSERT ON public.brand_new TO service_role;
+        EXCEPTION WHEN duplicate_table THEN NULL;
+        END
+        $$;
+      `),
+    ).toEqual([])
+  })
+
   it('flags a new view and a new sequence', () => {
     const findings = analyze(`
       CREATE VIEW public.widget_totals AS SELECT 1 AS n;
@@ -78,7 +152,54 @@ describe('table-without-grant: the shape Supabase stops granting on 2026-10-30',
       ['widget_totals', 'view'],
       ['widget_counter', 'sequence'],
     ])
-    expect(grantHint(findings[0])[0]).toBe('GRANT SELECT ON public.widget_totals TO service_role;')
+    expect(grantHint(findings[0])).toContain('GRANT SELECT ON public.widget_totals TO service_role;')
+  })
+
+  it('requires a new sequence to be granted to both roles', () => {
+    const [finding] = analyze(`
+      CREATE SEQUENCE public.widget_counter;
+      GRANT USAGE, SELECT ON SEQUENCE public.widget_counter TO service_role;
+    `)
+    expect(finding.roles).toEqual(['authenticated'])
+    expect(grantHint(finding)[0]).toBe('GRANT USAGE, SELECT ON SEQUENCE public.widget_counter TO authenticated;')
+  })
+})
+
+describe('table-without-grant: the hint never hands authenticated rows RLS does not guard', () => {
+  it('asks for RLS before the authenticated grant on a table that has none', () => {
+    const [finding] = analyze('CREATE TABLE public.t (id uuid PRIMARY KEY); GRANT ALL ON public.t TO service_role;')
+    expect(finding.rowSecurity).toBe(false)
+    expect(grantHint(finding)).toEqual([
+      'ALTER TABLE public.t ENABLE ROW LEVEL SECURITY;  -- first, with policies: without RLS the authenticated grant hands every signed-in user every row',
+      'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.t TO authenticated;  -- keep only what its RLS policies allow',
+      'or, if a role must not reach it: -- no-grant: authenticated on public.t (<reason>)',
+    ])
+  })
+
+  it('asks for security_invoker before the authenticated grant on a view', () => {
+    const [plain] = analyze('CREATE VIEW public.v AS SELECT 1 AS n;')
+    expect(grantHint(plain)).toEqual([
+      'ALTER VIEW public.v SET (security_invoker = true);  -- first: otherwise the view reads its tables as its owner and skips their RLS',
+      'GRANT SELECT ON public.v TO service_role;',
+      'GRANT SELECT ON public.v TO authenticated;',
+      'or, if a role must not reach it: -- no-grant: service_role, authenticated on public.v (<reason>)',
+    ])
+    for (const sql of [
+      'CREATE VIEW public.v WITH (security_invoker = true) AS SELECT 1 AS n;',
+      'CREATE VIEW public.v AS SELECT 1 AS n; ALTER VIEW public.v SET (security_invoker = on);',
+    ]) {
+      const [finding] = analyze(`${sql} GRANT SELECT ON public.v TO service_role;`)
+      expect(finding.rowSecurity).toBe(true)
+      expect(grantHint(finding)[0]).toBe('GRANT SELECT ON public.v TO authenticated;')
+    }
+  })
+
+  it('warns that a materialized view has no RLS at all', () => {
+    const [finding] = analyze('CREATE MATERIALIZED VIEW public.mv AS SELECT 1 AS n;')
+    expect(finding.relationKind).toBe('materialized view')
+    expect(grantHint(finding)[1]).toBe(
+      'GRANT SELECT ON public.mv TO authenticated;  -- only if every signed-in user may read every row: RLS does not apply to a materialized view',
+    )
   })
 })
 
@@ -125,8 +246,52 @@ describe('table-without-grant: serial keys need their sequence granted', () => {
       GRANT SELECT, INSERT ON public.log TO authenticated, service_role;
     `)
     expect(findings).toEqual([
-      { file: 'fixture.sql', line: 2, kind: 'serial-without-grant', relation: 'log', sequence: 'log_seq_seq' },
+      {
+        file: 'fixture.sql',
+        line: 2,
+        kind: 'serial-without-grant',
+        relation: 'log',
+        sequence: 'log_seq_seq',
+        roles: ['service_role', 'authenticated'],
+      },
     ])
+  })
+
+  it('flags a serial column added to an existing table, the table that works today', () => {
+    const findings = analyze(`
+      ALTER TABLE public.invoices ADD COLUMN seq_no bigserial;
+      ALTER TABLE ONLY public.invoices ADD COLUMN IF NOT EXISTS n2 serial2, ADD n8 serial8;
+    `)
+    expect(findings.map((f) => [f.kind, f.sequence, f.line])).toEqual([
+      ['serial-without-grant', 'invoices_seq_no_seq', 2],
+      ['serial-without-grant', 'invoices_n2_seq', 3],
+      ['serial-without-grant', 'invoices_n8_seq', 3],
+    ])
+  })
+
+  it('accepts the serial2/4/8 spellings only with their sequence granted', () => {
+    const table = 'CREATE TABLE public.s8 (id serial8 PRIMARY KEY); GRANT ALL ON public.s8 TO service_role, authenticated;'
+    expect(analyze(table).map((f) => f.sequence)).toEqual(['s8_id_seq'])
+    expect(analyze(`${table} GRANT USAGE, SELECT ON SEQUENCE public.s8_id_seq TO service_role, authenticated;`)).toEqual([])
+  })
+
+  it('requires the sequence grant per role, and honours the table waiver for a role', () => {
+    const [finding] = analyze(`
+      CREATE TABLE public.t2 (id bigserial PRIMARY KEY);
+      GRANT ALL ON public.t2 TO service_role, authenticated;
+      GRANT USAGE ON SEQUENCE public.t2_id_seq TO service_role;
+    `)
+    expect(finding.roles).toEqual(['authenticated'])
+    expect(grantHint(finding)[0]).toBe('GRANT USAGE, SELECT ON SEQUENCE public.t2_id_seq TO authenticated;')
+
+    expect(
+      analyze(`
+        -- no-grant: authenticated on public.t3 (service-role only: the cron writes it)
+        CREATE TABLE public.t3 (id bigserial PRIMARY KEY);
+        GRANT ALL ON public.t3 TO service_role;
+        GRANT USAGE, SELECT ON SEQUENCE public.t3_id_seq TO service_role;
+      `),
+    ).toEqual([])
   })
 
   it('accepts the sequence grant, and an identity key that needs none', () => {
@@ -237,6 +402,22 @@ describe('table-without-grant: across the migration history', () => {
     expect(findings.map((f: Finding) => [f.file, f.relation])).toEqual([
       ['supabase/migrations/20260101000000_a.sql', 'a'],
     ])
+  })
+
+  it('never grandfathers a file that is not already in the frozen set, whatever its timestamp', () => {
+    const frozen = ['supabase/migrations/20240101000001_a.sql', 'supabase/migrations/20260925000000_b.sql']
+    const scanned = [
+      'supabase/migrations/20240101000001_a.sql',
+      // An older-dated branch that merged after 20260929220000: must fail, not be grandfathered.
+      'supabase/migrations/20260920000000_late_branch.sql',
+      'supabase/migrations/20260925000000_b.sql',
+      'supabase/migrations/20261001000000_new.sql',
+    ]
+    expect(grandfatheredFiles(frozen, scanned)).toEqual(frozen)
+    // A file whose findings went away (a sharper scanner) drops out.
+    expect(grandfatheredFiles(frozen, [frozen[1]])).toEqual([frozen[1]])
+    // Only the first write, with no set yet, takes the scan as is.
+    expect(grandfatheredFiles(undefined, scanned)).toEqual(scanned)
   })
 
   it('grandfathers exactly the files that have findings today, and 20260929220000 is not one of them', () => {
