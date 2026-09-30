@@ -192,6 +192,52 @@ describe('GET /api/mcp-oauth/authorize: CSP', () => {
     expect(csp).toContain("form-action 'self'")
   })
 
+  it("binds the consent script to the proxy's nonce so it runs under either CSP header", async () => {
+    // The proxy (src/proxy.ts) sets its own nonce policy on this response
+    // too, and a self-hosted `next start` delivers only that one: the page's
+    // script must carry the proxy's nonce, and so must the route's own policy.
+    const proxyNonce = 'cHJveHktbm9uY2UtMTIzNDU2Nzg='
+    const request = new Request(
+      buildAuthorizeUrl({
+        response_type: 'code',
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_challenge: 'abc',
+        code_challenge_method: 'S256',
+        scope: 'mcp',
+      }),
+      { headers: { 'x-nonce': proxyNonce } },
+    )
+    const response = await GET(request)
+    expect(response.status).toBe(200)
+
+    const csp = response.headers.get('Content-Security-Policy') ?? ''
+    expect(csp).toContain(`script-src 'nonce-${proxyNonce}'`)
+    const html = await response.text()
+    expect(html).toContain(`<script nonce="${proxyNonce}">`)
+    expect(html).not.toMatch(/<script(?![^>]*nonce=)/)
+  })
+
+  it('mints its own nonce when the request did not come through the proxy', async () => {
+    const request = new Request(
+      buildAuthorizeUrl({
+        response_type: 'code',
+        redirect_uri: 'https://claude.ai/api/mcp/auth_callback',
+        code_challenge: 'abc',
+        code_challenge_method: 'S256',
+        scope: 'mcp',
+      }),
+      // Not something the proxy produces: ignored, never echoed.
+      { headers: { 'x-nonce': 'x" onload="alert(1)' } },
+    )
+    const response = await GET(request)
+    const csp = response.headers.get('Content-Security-Policy') ?? ''
+    const nonce = csp.match(/script-src 'nonce-([^']+)'/)?.[1]
+    expect(nonce).toMatch(/^[A-Za-z0-9+/]+={0,2}$/)
+    const html = await response.text()
+    expect(html).toContain(`<script nonce="${nonce}">`)
+    expect(html).not.toContain('onload="alert(1)')
+  })
+
   it('form-action uses the redirect origin only (no path/query leakage)', async () => {
     const request = new Request(
       buildAuthorizeUrl({

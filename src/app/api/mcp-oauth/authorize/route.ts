@@ -19,6 +19,7 @@ import {
   type RedirectUriResolution,
 } from '@/lib/auth/oauth-allowlist'
 import { resolveDiscoveryBaseUrl } from '@/lib/api/v1/base-url'
+import { requestCspNonce } from '@/lib/security/csp'
 import {
   ALL_SCOPES,
   API_KEY_SCOPES,
@@ -349,8 +350,10 @@ export async function GET(request: Request) {
   // makes the inline block executable while keeping the rest of the page
   // immune to script injection: without this the consent page is
   // incompatible with a strict CSP and counts as unsafe-inline (ASVS V3.3,
-  // SOC 2 CC6.1). The nonce is regenerated per response.
-  const cspNonce = crypto.randomBytes(16).toString('base64')
+  // SOC 2 CC6.1). Fresh per request: the proxy's own nonce for this request,
+  // so the script runs under the proxy's CSP header as well as under the one
+  // set below (a self-hosted `next start` delivers only the proxy's).
+  const cspNonce = requestCspNonce(request.headers)
 
   // Bind the requested scope to the consent display. The HMAC signature is
   // verified on POST so a tampered form submission cannot widen the grant
