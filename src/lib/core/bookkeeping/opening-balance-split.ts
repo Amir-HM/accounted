@@ -6,6 +6,7 @@ import {
   splitBalanceLines,
   type ObjectBalanceSplit,
 } from '@/lib/bookkeeping/dimension-carry'
+import { isValidRegistryCode } from '@/lib/import/sie-object-balances'
 
 /**
  * Year-end IB split per project (issue #3313).
@@ -47,14 +48,31 @@ export async function fetchObjectClosingBalances(
   for (const raw of (Array.isArray(data) ? data : []) as unknown[]) {
     const row = raw as { account_number?: unknown; dimensions?: unknown; net?: unknown }
     const account = typeof row.account_number === 'string' ? row.account_number : ''
-    const dimensions = row.dimensions && typeof row.dimensions === 'object' ? (row.dimensions as Record<string, string>) : null
+    const dimensions = wellFormedBag(row.dimensions)
     const amount = roundOre(Number(row.net) || 0)
-    if (!account || !dimensions || Object.keys(dimensions).length === 0 || amount === 0) continue
+    if (!account || !dimensions || amount === 0) continue
     const parts = out.get(account) ?? []
     parts.push({ dimensions, amount })
     out.set(account, parts)
   }
   return out
+}
+
+/**
+ * A projected bag the engine can post: string codes the registry could hold
+ * (jel_dimensions_well_formed). The CHECK was added NOT VALID, so legacy
+ * lines (self-hosted in particular) may carry anything; a malformed bag is
+ * left out of the split and its amount stays in the untagged remainder,
+ * rather than fail the IB post after the year was closed.
+ */
+function wellFormedBag(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length === 0) return null
+  for (const [dimNo, code] of entries) {
+    if (!/^[1-9][0-9]*$/.test(dimNo) || typeof code !== 'string' || !isValidRegistryCode(code)) return null
+  }
+  return Object.fromEntries(entries) as Record<string, string>
 }
 
 /**

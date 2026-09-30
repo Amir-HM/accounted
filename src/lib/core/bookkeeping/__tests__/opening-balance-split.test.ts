@@ -18,6 +18,7 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import { BookkeepingDatabaseError } from '@/lib/bookkeeping/errors'
 import { buildOpeningBalanceLines, fetchObjectClosingBalances } from '../opening-balance-split'
 import { generateOpeningBalances } from '../year-end-service'
 
@@ -147,6 +148,24 @@ describe('fetchObjectClosingBalances', () => {
     ])
   })
 
+  it('leaves malformed legacy bags out of the split (their amount stays in the remainder)', async () => {
+    const { client } = makeClient({
+      dimensions: [{ data: [{ sie_dim_no: 6 }] }],
+      'rpc:compute_object_closing_balances': [{
+        data: [
+          { account_number: '1470', dimensions: { '6': 42 }, net: 100 },
+          { account_number: '1470', dimensions: { '6': 'x'.repeat(41) }, net: 100 },
+          { account_number: '1470', dimensions: { '6': 'P"1' }, net: 100 },
+          { account_number: '1470', dimensions: { '06': 'P1' }, net: 100 },
+          { account_number: '1470', dimensions: ['P1'], net: 100 },
+          { account_number: '1470', dimensions: { '6': 'P2' }, net: 200 },
+        ],
+      }],
+    })
+    const result = await fetchObjectClosingBalances(client as never, 'co-1', 'fp')
+    expect([...result]).toEqual([['1470', [{ dimensions: { '6': 'P2' }, amount: 200 }]]])
+  })
+
   it('does not call the RPC when no dimension accumulates', async () => {
     const { client } = makeClient({ dimensions: [{ data: [] }] })
     expect((await fetchObjectClosingBalances(client as never, 'co-1', 'fp')).size).toBe(0)
@@ -205,5 +224,48 @@ describe('generateOpeningBalances: next year\'s IB split per project', () => {
     const input = vi.mocked(createJournalEntry).mock.calls[0][3]
     expect(input.lines.every((l) => l.dimensions === undefined)).toBe(true)
     expect(netByBag(input.lines)).toEqual({ '1470': 2100, '1510': 500, '2099': -2600 })
+  })
+
+  it('books the IB per account when the database refuses the split post (nothing was posted by that try)', async () => {
+    vi.mocked(generateTrialBalance).mockResolvedValue({ rows: TB_ROWS, totalDebit: 0, totalCredit: 0, isBalanced: true } as never)
+    vi.mocked(createJournalEntry)
+      .mockRejectedValueOnce(new BookkeepingDatabaseError('create_entry_lines', 'violates check constraint "jel_dimensions_well_formed"', '23514'))
+      .mockResolvedValueOnce({ id: 'ib-2027-flat' } as never)
+    const { client } = makeClient({
+      fiscal_periods: [{ data: NEXT }, { error: null }],
+      dimensions: [{ data: [{ sie_dim_no: 6 }] }],
+      'rpc:compute_object_closing_balances': [{ data: [{ account_number: '1470', dimensions: { '6': 'P1' }, net: 1300 }] }],
+    })
+
+    const entry = await generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')
+
+    expect(entry).toEqual({ id: 'ib-2027-flat' })
+    expect(createJournalEntry).toHaveBeenCalledTimes(2)
+    const retry = vi.mocked(createJournalEntry).mock.calls[1]
+    expect(netByBag(retry[3].lines)).toEqual({ '1470': 2100, '1510': 500, '2099': -2600 })
+    expect(retry[6]).toBeUndefined()
+  })
+
+  it('does not retry a failure that may have posted, or an IB without a split', async () => {
+    vi.mocked(generateTrialBalance).mockResolvedValue({ rows: TB_ROWS, totalDebit: 0, totalCredit: 0, isBalanced: true } as never)
+    // A failure after the commit (e.g. while emitting events) could mean the
+    // IB is posted: retrying would book a second IB.
+    vi.mocked(createJournalEntry).mockRejectedValueOnce(new Error('handler failed after commit'))
+    const split = makeClient({
+      fiscal_periods: [{ data: NEXT }, { error: null }],
+      dimensions: [{ data: [{ sie_dim_no: 6 }] }],
+      'rpc:compute_object_closing_balances': [{ data: [{ account_number: '1470', dimensions: { '6': 'P1' }, net: 1300 }] }],
+    })
+    await expect(generateOpeningBalances(split.client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/after commit/)
+    expect(createJournalEntry).toHaveBeenCalledTimes(1)
+
+    vi.mocked(createJournalEntry).mockClear()
+    vi.mocked(createJournalEntry).mockRejectedValueOnce(new BookkeepingDatabaseError('commit_entry', 'period locked'))
+    const flat = makeClient({
+      fiscal_periods: [{ data: NEXT }, { error: null }],
+      dimensions: [{ data: [] }],
+    })
+    await expect(generateOpeningBalances(flat.client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/period locked/)
+    expect(createJournalEntry).toHaveBeenCalledTimes(1)
   })
 })

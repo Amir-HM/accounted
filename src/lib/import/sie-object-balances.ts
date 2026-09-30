@@ -1,5 +1,6 @@
 import { roundOre } from '@/lib/money'
 import type { ObjectBalanceSplit } from '@/lib/bookkeeping/dimension-carry'
+import { makeNotice, type ImportNotice } from './notices'
 import type { SIEObjectBalance } from './types'
 
 export { splitBalanceLines, type ObjectBalanceSplit } from '@/lib/bookkeeping/dimension-carry'
@@ -180,4 +181,38 @@ export function describeObjectBalancePlan(
     })
   }
   return out
+}
+
+/**
+ * Why an import booked its IB per account instead of split per project. The
+ * per-account IB is what the file demands; the split is detail the import
+ * ignored until #3313, so it never fails an import that used to pass.
+ * - `registry`: the company's dimension registry refused an object (an
+ *   archived project or dimension, with dimensions switched on).
+ * - `line_limit`: the split IB is larger than one SIE job entry may be
+ *   (2 000 lines or 1 MB, chunkSIEEntries), e.g. hundreds of projects on
+ *   every balance-sheet account.
+ */
+export type OpeningBalanceSplitRefusal =
+  | { reason: 'registry'; detail: string }
+  | { reason: 'line_limit'; lines: number }
+
+/** The import result's warning text (Swedish, as every import warning) and its sv/en notice. */
+export function openingBalanceSplitRefusedNotice(
+  refusal: OpeningBalanceSplitRefusal
+): { text: string; notice: ImportNotice } {
+  if (refusal.reason === 'registry') {
+    return {
+      text:
+        'Ingående balans bokfördes utan fördelning per projekt: dimensionsregistret godtog inte alla objekt i filens objektbalanser ' +
+        `(${refusal.detail}). Kontonas saldon är oförändrade.`,
+      notice: makeNotice('sie_ib_project_split_refused', 'notice', { detail: refusal.detail }),
+    }
+  }
+  return {
+    text:
+      `Ingående balans bokfördes utan fördelning per projekt: uppdelningen gav ${refusal.lines} rader och överskrider gränsen för en verifikation ` +
+      '(2 000 rader eller 1 MB). Kontonas saldon är oförändrade.',
+    notice: makeNotice('sie_ib_project_split_too_large', 'notice', { lines: refusal.lines }),
+  }
 }

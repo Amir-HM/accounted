@@ -9,8 +9,11 @@ import { buildSIEMigrationAdjustmentEntry, buildSIEOpeningBalanceEntry, importVo
 import { getEffectiveObjectOpeningBalances, getEffectiveOpeningBalances, hasOpeningBalanceVoucherCandidate, parseSIEFile,
   selectObjectOpeningBalances, type ObjectOpeningBalanceSource } from './sie-parser'
 import { dimensionBagKey } from '@/lib/bookkeeping/dimension-carry'
+import { validateEntryDimensions } from '@/lib/bookkeeping/dimension-resolver'
+import { DimensionValidationError } from '@/lib/bookkeeping/dimension-errors'
 import { defaultOpeningBalanceSeries } from './opening-balance-defaults'
-import { chunkSIEEntries, hashSIEPayload, SIE_JOB_VERSION, SIE_LIMITS, type SIEJob, type SIEPreparedEntry } from './sie-job-contract'
+import { chunkSIEEntries, exceedsSIEEntryLimits, hashSIEPayload, SIE_JOB_VERSION, SIE_LIMITS, type SIEJob, type SIEPreparedEntry } from './sie-job-contract'
+import type { OpeningBalanceSplitRefusal } from './sie-object-balances'
 import { applySIEFiscalYear, assertSIEReportingAccounts, readSIEJobSource, SIEJobValidationError, validateSIEAccountingAmounts, validateSIEJobInput, validateSIEReportingMappings, type SIEJobInput } from './sie-jobs'
 import type { ParsedSIEFile, SIEVoucher } from './types'
 import { scanSieForCp1252Artifacts, formatSieArtifactWarning } from './sie-artifact-scan'
@@ -231,6 +234,44 @@ export function toPrepared(input: CreateJournalEntryInput, job: Pick<SIEJob,'id'
       currency:'SEK',line_description:input.description,sort_order:index,dimensions})) }
 }
 
+/**
+ * The job's IB entry, split per project when the file has object balances
+ * (issue #3313), else per account as always. The split is refused, and the
+ * IB booked per account with a notice, in the two cases where it would
+ * otherwise fail (or differ from) an import that ignored #OIB until now:
+ * - the dimension registry refuses a tag. The job writers insert bags
+ *   without the engine's registry check, so it is run here, app-side, and
+ *   the job books what the direct path books (createOpeningBalanceEntry);
+ * - the split IB exceeds one job entry's 2 000 lines / 1 MB, which
+ *   chunkSIEEntries would refuse and fail the whole job.
+ */
+export async function prepareSIEOpeningBalance(
+  supabase: SupabaseClient,
+  companyId: string,
+  build: (split: boolean) => CreateJournalEntryInput | null,
+  split: boolean,
+  prepare: (input: CreateJournalEntryInput) => SIEPreparedEntry,
+): Promise<{ prepared: SIEPreparedEntry; splitRefused?: OpeningBalanceSplitRefusal } | null> {
+  const input = build(split)
+  if (!input) return null
+  const prepared = prepare(input)
+  if (!split) return { prepared }
+  let refusal: OpeningBalanceSplitRefusal | undefined
+  if (exceedsSIEEntryLimits(prepared)) {
+    refusal = { reason: 'line_limit', lines: prepared.lines.length }
+  } else {
+    try {
+      await validateEntryDimensions(supabase, companyId, input.lines)
+    } catch (error) {
+      if (!(error instanceof DimensionValidationError)) throw error
+      refusal = { reason: 'registry', detail: error.message }
+    }
+  }
+  if (!refusal) return { prepared }
+  const untagged = build(false)
+  return untagged ? { prepared: prepare(untagged), splitRefused: refusal } : null
+}
+
 /** Returns false when the invocation budget is spent; the next lease resumes. */
 export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadline: number): Promise<boolean> {
   const input = jobInput(job)
@@ -315,6 +356,7 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
   const finalEntries: SIEPreparedEntry[] = []
   let rounding = 0
   let openingBalanceDifferenceAccount: string | undefined
+  let openingBalanceSplitRefused: OpeningBalanceSplitRefusal | undefined
   if (input.options.importOpeningBalances && !job.manifest.prior_activity && snapshot.hasCurrentYearIb) {
     const validation = validateIBBalance(parsed,accountMap)
     rounding = validation.roundingAdjustment
@@ -325,11 +367,17 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
     // snapshotted before object balances were parsed: booked untagged).
     const objectRows = selectObjectOpeningBalances(snapshot.parsed,
       (job.manifest.effectiveObjectOpeningSource as ObjectOpeningBalanceSource | undefined) ?? 'none')
-    const opening = buildSIEOpeningBalanceEntry(job.fiscal_period_id,parsed,accountMap,rounding,series,openingBalanceDifferenceAccount,
-      objectRows.length ? {rows:objectRows,accumulating:await resolveAccumulatingDimensions(supabase,job.company_id)} : {rows:[]})
+    const accumulating = objectRows.length ? await resolveAccumulatingDimensions(supabase,job.company_id) : undefined
+    const differenceAccountForIB = openingBalanceDifferenceAccount
+    const opening = await prepareSIEOpeningBalance(supabase,job.company_id,split => {
+      const entry = buildSIEOpeningBalanceEntry(job.fiscal_period_id,parsed,accountMap,rounding,series,differenceAccountForIB,
+        split && accumulating ? {rows:objectRows,accumulating} : {rows:[]})
+      if (entry && job.manifest.derivedFromPriorYearUB) entry.description += ' (härledda från föregående års utgående balans)'
+      return entry
+    },objectRows.length > 0,entry => toPrepared(entry,job,50_000,accountIds))
     if (opening) {
-      if (job.manifest.derivedFromPriorYearUB) opening.description += ' (härledda från föregående års utgående balans)'
-      finalEntries.push(toPrepared(opening,job,50_000,accountIds))
+      finalEntries.push(opening.prepared)
+      openingBalanceSplitRefused = opening.splitRefused
     }
   }
   const adjustment = adjustmentCount ? buildSIEMigrationAdjustmentEntry(job.fiscal_period_id,parsed,accountMap,movements,totals.skippedSample,adjustmentCount) : null
@@ -344,6 +392,7 @@ export async function prepareSIEJob(supabase: SupabaseClient, job: SIEJob, deadl
   const manifest = {...job.manifest,parserVersion:SIE_JOB_VERSION,mappingVersion:SIE_JOB_VERSION,
     openingBalanceRounding:rounding,
     ...(openingBalanceDifferenceAccount ? {openingBalanceDifferenceAccount} : {}),
+    ...(openingBalanceSplitRefused ? {openingBalanceSplitRefused} : {}),
     migrationAdjustmentAccounts:adjustment?.deltaAccounts ?? 0,
     preparationWarnings:[...(adjustment?.warnings ?? []),...(snapshot.artifactWarning ? [snapshot.artifactWarning] : [])],finalChunks:finalChunk,
     skippedCounts:totals.skippedCounts,

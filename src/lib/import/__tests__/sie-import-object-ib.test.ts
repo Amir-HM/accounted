@@ -190,5 +190,10 @@ describe('executeSIEImport: IB split per project from #OIB (issue #3313)', () =>
     const retry = vi.mocked(createJournalEntry).mock.calls[1][3]
     expect(netByBag(retry.lines)).toEqual({ '1470': 5000, '2081': -5000 })
     expect(result.warnings.join(' ')).toMatch(/utan fördelning per projekt/)
+    // A structured sv/en notice, not a legacy string.
+    expect(result.notices).toContainEqual(
+      expect.objectContaining({ code: 'sie_ib_project_split_refused', severity: 'notice' })
+    )
+    expect(result.notices?.some((n) => n.code === 'legacy' && /fördelning per projekt/.test(String(n.params?.text)))).toBe(false)
   })
 })

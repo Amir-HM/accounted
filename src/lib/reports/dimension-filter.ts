@@ -78,9 +78,15 @@ export interface DimensionFilterPartialView {
    * as well, i.e. the IB lines tagged with the object (issue #3313). The
    * year-end close and the SIE import put a project's opening balance on its
    * own tagged IB line; a dimension that resets annually (kostnadsställe)
-   * has none, so its IB is 0.
+   * opens at 0.
    */
   opening_balances?: 'dimension_scoped'
+  /**
+   * The pre-#3313 flag (was `false`: IB left out under a filter), kept next
+   * to `opening_balances` so a reader that tests it does not conclude the IB
+   * is still excluded. Always true where `opening_balances` is set.
+   */
+  opening_balances_included?: true
   /** On reports with a debit = credit check: it says nothing under a filter. */
   is_balanced_meaningful?: false
 }
@@ -103,7 +109,9 @@ export function dimensionFilterPartialView(
   return {
     complete: false,
     disclosure: dimensionFilterDisclosure(dimensions) ?? '',
-    ...(options.scopedOpeningBalances ? { opening_balances: 'dimension_scoped' as const } : {}),
+    ...(options.scopedOpeningBalances
+      ? { opening_balances: 'dimension_scoped' as const, opening_balances_included: true as const }
+      : {}),
     ...(options.balanceCheck ? { is_balanced_meaningful: false as const } : {}),
   }
 }

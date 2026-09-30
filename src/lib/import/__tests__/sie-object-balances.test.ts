@@ -23,11 +23,14 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 }))
 
 import { replaceOpeningBalanceEntry } from '@/lib/bookkeeping/engine'
+import { DimensionValidationError } from '@/lib/bookkeeping/dimension-errors'
 import { parseSIEFile, getEffectiveObjectOpeningBalances } from '../sie-parser'
 import { buildSIEOpeningBalanceEntry, resyncNextPeriodOpeningBalance, validateIBBalance } from '../sie-import'
-import { planObjectBalances, splitBalanceLines } from '../sie-object-balances'
+import { openingBalanceSplitRefusedNotice, planObjectBalances, splitBalanceLines } from '../sie-object-balances'
 import { collectSIEDimensionUsage } from '../sie-dimensions'
-import { toPrepared } from '../sie-job-preparation'
+import { prepareSIEOpeningBalance, toPrepared } from '../sie-job-preparation'
+import { SIE_LIMITS } from '../sie-job-contract'
+import type { CreateJournalEntryInput } from '@/types'
 import type { ParsedSIEFile, SIEObjectBalance } from '../types'
 
 const ACC6 = new Set(['6'])
@@ -352,5 +355,143 @@ describe('resyncNextPeriodOpeningBalance: splits on #OUB 0', () => {
     expect(supabase.from).toHaveBeenCalledTimes(2)
     const input = vi.mocked(replaceOpeningBalanceEntry).mock.calls[0][4] as { lines: CreateJournalEntryLineInput[] }
     expect(input.lines.every((l) => l.dimensions === undefined)).toBe(true)
+  })
+
+  it('resyncs per account, flagged, when the registry refuses a #OUB object (nothing posted by the refused try)', async () => {
+    enqueue({
+      data: {
+        id: 'fp-2026', name: '2026', period_start: '2026-01-01', period_end: '2026-12-31',
+        is_closed: false, locked_at: null, opening_balance_entry_id: 'ob-old', opening_balances_set: true,
+      },
+    })
+    enqueue({ data: { voucher_series: 'A' } })
+    enqueue({ data: [{ sie_dim_no: 6 }] })
+    vi.mocked(replaceOpeningBalanceEntry).mockRejectedValueOnce(
+      new DimensionValidationError([{ sie_dim_no: '6', code: 'P1', reason: 'archived_value', dimension_name: 'Projekt' }])
+    )
+
+    const parsed = {
+      closingBalances: [
+        { yearIndex: 0, account: '1470', amount: 1000 },
+        { yearIndex: 0, account: '2081', amount: -1000 },
+      ],
+      objectClosingBalances: [{ yearIndex: 0, account: '1470', dimNo: '6', code: 'P1', amount: 700 }],
+    } as unknown as ParsedSIEFile
+
+    const result = await resyncNextPeriodOpeningBalance(
+      supabase as unknown as SupabaseClient, 'co-1', 'user-1', '2025-12-31', parsed, new Map(), '2099',
+    )
+    expect(result).toMatchObject({ resynced: true, splitRefused: { reason: 'registry' } })
+    expect(replaceOpeningBalanceEntry).toHaveBeenCalledTimes(2)
+    const retry = vi.mocked(replaceOpeningBalanceEntry).mock.calls[1][4] as { lines: CreateJournalEntryLineInput[] }
+    expect(netByBag(retry.lines)).toEqual({ '1470': 1000, '2081': -1000 })
+    // Both tries replace the same old IB.
+    expect(vi.mocked(replaceOpeningBalanceEntry).mock.calls[1][3]).toBe('ob-old')
+  })
+
+  it('does not swallow other failures', async () => {
+    enqueue({
+      data: {
+        id: 'fp-2026', name: '2026', period_start: '2026-01-01', period_end: '2026-12-31',
+        is_closed: false, locked_at: null, opening_balance_entry_id: 'ob-old', opening_balances_set: true,
+      },
+    })
+    enqueue({ data: { voucher_series: 'A' } })
+    enqueue({ data: [{ sie_dim_no: 6 }] })
+    vi.mocked(replaceOpeningBalanceEntry).mockRejectedValueOnce(new Error('period locked'))
+    const parsed = {
+      closingBalances: [
+        { yearIndex: 0, account: '1470', amount: 1000 },
+        { yearIndex: 0, account: '2081', amount: -1000 },
+      ],
+      objectClosingBalances: [{ yearIndex: 0, account: '1470', dimNo: '6', code: 'P1', amount: 700 }],
+    } as unknown as ParsedSIEFile
+    await expect(
+      resyncNextPeriodOpeningBalance(supabase as unknown as SupabaseClient, 'co-1', 'user-1', '2025-12-31', parsed, new Map(), '2099'),
+    ).rejects.toThrow('period locked')
+    expect(replaceOpeningBalanceEntry).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('prepareSIEOpeningBalance (resumable job path): the split never fails an import', () => {
+  const { supabase, enqueue, reset } = createQueuedMockSupabase()
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+  })
+
+  /** An IB with one project line per object on 1470, plus the equity side. */
+  function ibInput(split: boolean, objects: number): CreateJournalEntryInput {
+    const tagged: CreateJournalEntryLineInput[] = split
+      ? Array.from({ length: objects }, (_, i) => ({
+          account_number: '1470', debit_amount: 1, credit_amount: 0, dimensions: { '6': `P${i + 1}` },
+        }))
+      : [{ account_number: '1470', debit_amount: objects, credit_amount: 0 }]
+    return {
+      fiscal_period_id: 'fp-1', entry_date: '2026-01-01', description: 'Ingående balanser från SIE-import',
+      source_type: 'opening_balance', voucher_series: 'M',
+      lines: [...tagged, { account_number: '2081', debit_amount: 0, credit_amount: objects }],
+    }
+  }
+  const prepare = (input: CreateJournalEntryInput) => toPrepared(input, { id: 'job-1' }, 50_000, new Map())
+
+  it('keeps the split when the registry accepts every object', async () => {
+    enqueue({ data: { dimensions_enabled: true } }) // company_settings
+    enqueue({ data: [{ id: 'd6', sie_dim_no: 6, name: 'Projekt', is_active: true }] }) // dimensions
+    enqueue({ data: [{ dimension_id: 'd6', code: 'P1', is_active: true }, { dimension_id: 'd6', code: 'P2', is_active: true }] })
+    const result = await prepareSIEOpeningBalance(
+      supabase as unknown as SupabaseClient, 'co-1', (split) => ibInput(split, 2), true, prepare,
+    )
+    expect(result?.splitRefused).toBeUndefined()
+    expect(result?.prepared.lines.filter((l) => Object.keys(l.dimensions).length > 0)).toHaveLength(2)
+  })
+
+  it('books the IB per account, flagged, when the split is over the 2 000-line entry limit', async () => {
+    const objects = SIE_LIMITS.chunkLines + 1
+    const result = await prepareSIEOpeningBalance(
+      supabase as unknown as SupabaseClient, 'co-1', (split) => ibInput(split, objects), true, prepare,
+    )
+    expect(result?.splitRefused).toEqual({ reason: 'line_limit', lines: objects + 1 })
+    expect(result?.prepared.lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount, l.dimensions])).toEqual([
+      ['1470', objects, 0, {}],
+      ['2081', 0, objects, {}],
+    ])
+    // Over the limit is decided before any registry read.
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it('books the IB per account, flagged, when the registry refuses an object (as the direct path does)', async () => {
+    enqueue({ data: { dimensions_enabled: true } })
+    enqueue({ data: [{ id: 'd6', sie_dim_no: 6, name: 'Projekt', is_active: true }] })
+    enqueue({ data: [{ dimension_id: 'd6', code: 'P1', is_active: false }] }) // P1 archived
+    const result = await prepareSIEOpeningBalance(
+      supabase as unknown as SupabaseClient, 'co-1', (split) => ibInput(split, 1), true, prepare,
+    )
+    expect(result?.splitRefused).toMatchObject({ reason: 'registry' })
+    expect(result?.prepared.lines.every((l) => Object.keys(l.dimensions).length === 0)).toBe(true)
+  })
+
+  it('reads nothing and flags nothing for a file without object balances', async () => {
+    const build = vi.fn((split: boolean) => ibInput(split, 3))
+    const result = await prepareSIEOpeningBalance(supabase as unknown as SupabaseClient, 'co-1', build, false, prepare)
+    expect(result?.splitRefused).toBeUndefined()
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(build).toHaveBeenCalledWith(false)
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it('returns null when there is no IB to book', async () => {
+    expect(await prepareSIEOpeningBalance(supabase as unknown as SupabaseClient, 'co-1', () => null, true, prepare)).toBeNull()
+  })
+})
+
+describe('openingBalanceSplitRefusedNotice', () => {
+  it('gives each refusal a structured sv/en notice next to the Swedish warning text', () => {
+    const registry = openingBalanceSplitRefusedNotice({ reason: 'registry', detail: 'Projekt P1 är arkiverat' })
+    expect(registry.notice).toEqual({ code: 'sie_ib_project_split_refused', severity: 'notice', params: { detail: 'Projekt P1 är arkiverat' } })
+    expect(registry.text).toMatch(/utan fördelning per projekt.*Projekt P1 är arkiverat/)
+    const large = openingBalanceSplitRefusedNotice({ reason: 'line_limit', lines: 2400 })
+    expect(large.notice).toEqual({ code: 'sie_ib_project_split_too_large', severity: 'notice', params: { lines: 2400 } })
+    expect(large.text).toMatch(/2400 rader/)
   })
 })

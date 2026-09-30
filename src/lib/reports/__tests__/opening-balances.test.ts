@@ -4,10 +4,17 @@ vi.mock('@/lib/supabase/fetch-all', () => ({
   fetchAllRows: vi.fn(),
 }))
 
+vi.mock('@/lib/bookkeeping/dimension-carry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/bookkeeping/dimension-carry')>()),
+  fetchAccumulatingDimensions: vi.fn(),
+}))
+
 import { getOpeningBalances } from '../opening-balances'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
 
 const mockFetchAllRows = vi.mocked(fetchAllRows)
+const mockAccumulating = vi.mocked(fetchAccumulatingDimensions)
 
 function createSupabaseWithRpc(
   rpcImpl: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>
@@ -19,6 +26,8 @@ function createSupabaseWithRpc(
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The seeded registry: projekt (6) accumulates, everything else resets.
+  mockAccumulating.mockResolvedValue(new Set(['6']))
 })
 
 describe('getOpeningBalances', () => {
@@ -264,6 +273,84 @@ describe('getOpeningBalances', () => {
         p_company_id: 'company-1',
         p_period_start: '2026-01-01',
       })
+      // The registry is read only under a filter.
+      expect(mockAccumulating).toHaveBeenCalledTimes(1)
+    })
+
+    it('opens a dimension that resets annually at 0 on the fallback path, whatever the history carries', async () => {
+      // Prior history holds kostnadsställe-tagged 1470 lines; the RPC would
+      // sum them. Kostnadsställe resets annually, so it is never asked.
+      const supabase = createSupabaseWithRpc(async () => ({
+        data: [{ account_number: '1470', debit: 300, credit: 0 }],
+        error: null,
+      }))
+      const { balances, obEntryId } = await getOpeningBalances(
+        supabase,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: null },
+        { dimensions: { '1': 'K1' } }
+      )
+      expect(balances.size).toBe(0)
+      expect(obEntryId).toBeNull()
+      expect(supabase.rpc).not.toHaveBeenCalled()
+      expect(mockAccumulating).toHaveBeenCalledWith(supabase, 'company-1')
+    })
+
+    it('opens a dimension that resets annually at 0 on the IB entry path too, and keeps obEntryId', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const supabase = {} as any
+      const { balances, obEntryId } = await getOpeningBalances(
+        supabase,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: 'ob-entry-123' },
+        { dimensions: { '1': 'K1' } }
+      )
+      expect(balances.size).toBe(0)
+      // Callers still exclude the IB entry from the period lines.
+      expect(obEntryId).toBe('ob-entry-123')
+      expect(mockFetchAllRows).not.toHaveBeenCalled()
+    })
+
+    it('opens at 0 when any filter key resets annually (a project within a kostnadsställe)', async () => {
+      const supabase = createSupabaseWithRpc(async () => ({ data: [], error: null }))
+      const { balances } = await getOpeningBalances(
+        supabase,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: null },
+        { dimensions: { '6': 'P1', '1': 'K1' } }
+      )
+      expect(balances.size).toBe(0)
+      expect(supabase.rpc).not.toHaveBeenCalled()
+    })
+
+    it('follows the company registry, not the SIE default', async () => {
+      // A company whose custom dimension 20 accumulates carries its IB.
+      mockAccumulating.mockResolvedValue(new Set(['6', '20']))
+      const supabase = createSupabaseWithRpc(async () => ({
+        data: [{ account_number: '1470', debit: 400, credit: 0 }],
+        error: null,
+      }))
+      const { balances } = await getOpeningBalances(
+        supabase,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: null },
+        { dimensions: { '20': 'X' } }
+      )
+      expect(balances.get('1470')).toEqual({ debit: 400, credit: 0 })
+    })
+
+    it('fails the read rather than guess when the registry cannot be read', async () => {
+      mockAccumulating.mockRejectedValue(new Error('Failed to read the dimension registry: boom'))
+      const supabase = createSupabaseWithRpc(async () => ({ data: [], error: null }))
+      await expect(
+        getOpeningBalances(
+          supabase,
+          'company-1',
+          { period_start: '2026-01-01', opening_balance_entry_id: null },
+          { dimensions: { '6': 'P1' } }
+        )
+      ).rejects.toThrow(/dimension registry/)
+      expect(supabase.rpc).not.toHaveBeenCalled()
     })
   })
 })

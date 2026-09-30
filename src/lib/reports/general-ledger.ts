@@ -60,7 +60,7 @@ export async function generateGeneralLedger(
     /** SIE dim → code filter ({"6":"P001"}). Opening balances are scoped
      *  to it too: the IB lines tagged with the object (issue #3313), so a
      *  project's ledger opens at the project's IB. A dimension that resets
-     *  annually has no tagged IB lines and opens at zero. */
+     *  annually (registry flag) opens at zero. */
     dimensions?: Record<string, string>
     /** Inclusive date sub-range within the fiscal period (kontoanalys).
      *  Lines before fromDate roll into each account's opening balance so

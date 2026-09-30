@@ -101,8 +101,12 @@ describe('compute_prior_opening_balances (issue #3313)', () => {
 
     expect(net(await byFilter({ '6': 'P1' }), '1470')).toBe(1300)
     expect(net(await byFilter({ '6': 'P2' }), '1470')).toBe(500)
-    // A kostnadsställe tag rides along on P1's 2025 line only.
+    // The RPC is plain containment: a kostnadsställe tag rides along on P1's
+    // 2025 line. It is never asked with a key that resets annually, though:
+    // getOpeningBalances opens such a filter at 0 on both IB paths before it
+    // reaches here (unit-tested in opening-balances.test.ts).
     expect(net(await byFilter({ '1': 'K1' }), '1470')).toBe(300)
+    expect(net(await byFilter({ '1': 'K1', '6': 'P1' }), '1470')).toBe(300)
     expect(await byFilter({ '6': 'P9' })).toEqual([])
   })
 

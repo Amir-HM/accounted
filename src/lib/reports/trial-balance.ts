@@ -464,8 +464,8 @@ export async function generateTrialBalance(
   // Under a dimension filter the IB is scoped to it as well (issue #3313):
   // the IB entry's lines tagged with the object, or the prior-history
   // fallback with the same containment. A project's balance-sheet accounts
-  // open at the project's IB; a dimension that resets annually has no tagged
-  // IB lines and opens at zero. Result accounts never carry IB, so the P&L
+  // open at the project's IB; a filter on a dimension that resets annually
+  // opens at zero (getOpeningBalances reads the registry flag). Result accounts never carry IB, so the P&L
   // reports built on this are unchanged. obEntryId still excludes the IB
   // entry from the activity lines.
   const openingBalances = obResult.balances

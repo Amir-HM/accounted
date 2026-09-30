@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { eventBus } from '@/lib/events'
 import { createJournalEntry, reverseEntry } from '@/lib/bookkeeping/engine'
+import { BookkeepingDatabaseError } from '@/lib/bookkeeping/errors'
 import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
 import { createLogger } from '@/lib/logger'
 
@@ -1053,14 +1054,12 @@ export async function generateOpeningBalances(
     })
   }
 
-  const openingLines: CreateJournalEntryLineInput[] = buildOpeningBalanceLines(
-    balanceSheetAccounts.map((account) => ({
-      account_number: account.account_number,
-      account_name: account.account_name,
-      net: account.closing_debit - account.closing_credit,
-    })),
-    objectBalances
-  )
+  const accountTotals = balanceSheetAccounts.map((account) => ({
+    account_number: account.account_number,
+    account_name: account.account_name,
+    net: account.closing_debit - account.closing_credit,
+  }))
+  const openingLines: CreateJournalEntryLineInput[] = buildOpeningBalanceLines(accountTotals, objectBalances)
 
   if (openingLines.length === 0) {
     throw new Error('No balance sheet accounts with non-zero closing balance')
@@ -1080,22 +1079,42 @@ export async function generateOpeningBalances(
   // from posted history, so the registry must not refuse them: a project
   // archived during the year can still hold a 1470 balance (replayDimensions,
   // scoped to this generator; see CreateEntryOptions).
-  const openingEntry = await createJournalEntry(
-    supabase,
-    companyId,
-    userId,
-    {
-      fiscal_period_id: nextPeriodId,
-      entry_date: nextPeriod.period_start,
-      description: `Ingående balans ${nextPeriod.name}`,
-      source_type: 'opening_balance',
-      voucher_series: 'A',
-      lines: openingLines,
-    },
-    undefined,
-    undefined,
-    { replayDimensions: true }
-  )
+  const openingEntryInput = (lines: CreateJournalEntryLineInput[]) => ({
+    fiscal_period_id: nextPeriodId,
+    entry_date: nextPeriod.period_start,
+    description: `Ingående balans ${nextPeriod.name}`,
+    source_type: 'opening_balance' as const,
+    voucher_series: 'A',
+    lines,
+  })
+  let openingEntry: JournalEntry
+  try {
+    openingEntry = await createJournalEntry(
+      supabase, companyId, userId, openingEntryInput(openingLines), undefined, undefined, { replayDimensions: true }
+    )
+  } catch (err) {
+    // The period is already closed, so a split that the database refuses
+    // (a line insert constraint, e.g. a legacy bag the NOT VALID
+    // jel_dimensions_well_formed CHECK never saw, or a commit trigger) must
+    // not leave the year without an IB. Both failures happen before a
+    // voucher is posted (the draft is cancelled), so retrying per account
+    // cannot double the IB. Anything else, or an IB that had no split,
+    // fails as before.
+    const unposted =
+      err instanceof BookkeepingDatabaseError &&
+      (err.operation === 'create_entry_lines' || err.operation === 'commit_entry')
+    if (objectBalances.size === 0 || !unposted) throw err
+    log.error('year-end: opening balance with project split refused, IB booked per account (non-fatal)', err as Error, {
+      operation: 'year_end.opening_balance_split',
+      alert: true,
+      companyId,
+      entityType: 'fiscal_period',
+      entityId: nextPeriodId,
+    })
+    openingEntry = await createJournalEntry(
+      supabase, companyId, userId, openingEntryInput(buildOpeningBalanceLines(accountTotals, new Map()))
+    )
+  }
 
   // Mark next period with opening balance entry
   const { error: updateError } = await supabase

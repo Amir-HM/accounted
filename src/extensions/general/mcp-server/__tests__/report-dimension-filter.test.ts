@@ -156,6 +156,7 @@ describe('gnubok_get_trial_balance: dimensions filter', () => {
       complete: false,
       disclosure: 'Filtrerad (dimension 6: P001), ej fullständig rapport',
       opening_balances: 'dimension_scoped',
+      opening_balances_included: true,
       is_balanced_meaningful: false,
     })
   })

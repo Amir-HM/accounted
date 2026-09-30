@@ -241,6 +241,8 @@ describe('generateTrialBalance via get_trial_balance_aggregates', () => {
       fiscal_periods: [
         { data: { period_start: '2024-01-01', period_end: '2024-12-31', opening_balance_entry_id: null }, error: null },
       ],
+      // The registry: projekt accumulates across years.
+      dimensions: [{ data: [{ sie_dim_no: 6 }], error: null }],
       // The derived IB, scoped by p_dimensions to the object's tagged lines.
       'rpc:compute_prior_opening_balances': [
         { data: [{ account_number: '1930', debit: 1200, credit: 0 }], error: null },

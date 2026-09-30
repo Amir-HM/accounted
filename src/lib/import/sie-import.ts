@@ -39,10 +39,12 @@ import {
   SHARE_CAPITAL_DESCRIPTION_RE,
 } from './sie-parser'
 import {
+  openingBalanceSplitRefusedNotice,
   planObjectBalances,
   SIE_DEFAULT_ACCUMULATING_DIMENSIONS,
   splitBalanceLines,
   type ObjectBalancePlan,
+  type OpeningBalanceSplitRefusal,
 } from './sie-object-balances'
 import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
 
@@ -1070,7 +1072,7 @@ async function createOpeningBalanceEntry(
   supabase: SupabaseClient, companyId: string, userId: string,
   fiscalPeriodId: string, parsed: ParsedSIEFile, accountMap: Map<string, string>,
   roundingAdjustment: number, voucherSeries: string, differenceAccount: string,
-): Promise<{ id: string | null; splitRefused?: string }> {
+): Promise<{ id: string | null; splitRefused?: OpeningBalanceSplitRefusal }> {
   // The registry is read only when the file has object balances to split:
   // an import without them issues exactly the queries it always did.
   const objects = getEffectiveObjectOpeningBalances(parsed).rows
@@ -1095,7 +1097,7 @@ async function createOpeningBalanceEntry(
     if (!untagged) return { id: null }
     return {
       id: (await createJournalEntry(supabase, companyId, userId, untagged)).id,
-      splitRefused: error.message,
+      splitRefused: { reason: 'registry', detail: error.message },
     }
   }
 }
@@ -1196,6 +1198,8 @@ export async function resyncNextPeriodOpeningBalance(
       nextPeriodName: string
       stornoEntryId: string
       newOpeningBalanceEntryId: string
+      /** The #OUB split was refused and the IB resynced per account (issue #3313). */
+      splitRefused?: OpeningBalanceSplitRefusal
     }
   | { resynced: false; reason: string; nextPeriodName?: string }
 > {
@@ -1280,55 +1284,76 @@ export async function resyncNextPeriodOpeningBalance(
       ? await resolveAccumulatingDimensions(supabase, companyId)
       : SIE_DEFAULT_ACCUMULATING_DIMENSIONS
   )
-  const newLines = buildSplitOpeningLines(
-    currentYearUB,
-    (account) => accountMap.get(account) ?? account,
-    objectPlan,
-    (account) => `IB ${account} (resynk efter import)`
-  )
+  const buildLines = (plan: ObjectBalancePlan): CreateJournalEntryLineInput[] => {
+    const lines = buildSplitOpeningLines(
+      currentYearUB,
+      (account) => accountMap.get(account) ?? account,
+      plan,
+      (account) => `IB ${account} (resynk efter import)`
+    )
+    if (lines.length === 0) return lines
 
+    // Balance check: if the new IB doesn't balance (excluded accounts, etc.),
+    // book the difference to the form's result-closing account the same way
+    // createOpeningBalanceEntry does.
+    const totalDebit = lines.reduce((s, l) => s + l.debit_amount, 0)
+    const totalCredit = lines.reduce((s, l) => s + l.credit_amount, 0)
+    const diff = Math.round((totalDebit - totalCredit) * 100) / 100
+    if (Math.abs(diff) > 0.01) {
+      if (diff > 0) {
+        lines.push({
+          account_number: differenceAccount,
+          debit_amount: 0,
+          credit_amount: diff,
+          line_description: 'Avrundningsdifferens vid IB-resynk',
+        })
+      } else {
+        lines.push({
+          account_number: differenceAccount,
+          debit_amount: Math.abs(diff),
+          credit_amount: 0,
+          line_description: 'Avrundningsdifferens vid IB-resynk',
+        })
+      }
+    }
+    return lines
+  }
+
+  const newLines = buildLines(objectPlan)
   if (newLines.length === 0) {
     return { resynced: false, reason: 'empty_new_ib', nextPeriodName: nextPeriod.name }
   }
 
-  // Balance check: if the new IB doesn't balance (excluded accounts, etc.),
-  // book the difference to the form's result-closing account the same way
-  // createOpeningBalanceEntry does.
-  const totalDebit = newLines.reduce((s, l) => s + l.debit_amount, 0)
-  const totalCredit = newLines.reduce((s, l) => s + l.credit_amount, 0)
-  const diff = Math.round((totalDebit - totalCredit) * 100) / 100
-  if (Math.abs(diff) > 0.01) {
-    if (diff > 0) {
-      newLines.push({
-        account_number: differenceAccount,
-        debit_amount: 0,
-        credit_amount: diff,
-        line_description: 'Avrundningsdifferens vid IB-resynk',
-      })
-    } else {
-      newLines.push({
-        account_number: differenceAccount,
-        debit_amount: Math.abs(diff),
-        credit_amount: 0,
-        line_description: 'Avrundningsdifferens vid IB-resynk',
-      })
-    }
-  }
+  const oldOpeningBalanceEntryId: string = nextPeriod.opening_balance_entry_id
+  const replace = (lines: CreateJournalEntryLineInput[]) =>
+    replaceOpeningBalanceEntry(
+      supabase,
+      companyId,
+      userId,
+      oldOpeningBalanceEntryId,
+      {
+        fiscal_period_id: nextPeriod.id,
+        entry_date: nextPeriod.period_start as string,
+        description: 'Ingående balanser (resynk efter prior-year SIE-import)',
+        source_type: 'opening_balance',
+        voucher_series: replacementSeries,
+        lines,
+      },
+    )
 
-  const replacement = await replaceOpeningBalanceEntry(
-    supabase,
-    companyId,
-    userId,
-    nextPeriod.opening_balance_entry_id,
-    {
-      fiscal_period_id: nextPeriod.id,
-      entry_date: nextPeriod.period_start as string,
-      description: 'Ingående balanser (resynk efter prior-year SIE-import)',
-      source_type: 'opening_balance',
-      voucher_series: replacementSeries,
-      lines: newLines,
-    },
-  )
+  let replacement: Awaited<ReturnType<typeof replaceOpeningBalanceEntry>>
+  let splitRefused: OpeningBalanceSplitRefusal | undefined
+  try {
+    replacement = await replace(newLines)
+  } catch (error) {
+    // The registry refused a #OUB object (an archived project in this
+    // company). The engine validates before the storno RPC, so nothing was
+    // posted: resync per account, as it did before the split, and say so,
+    // exactly as the IB entry itself falls back (createOpeningBalanceEntry).
+    if (!(error instanceof DimensionValidationError) || objectPlan.byAccount.size === 0) throw error
+    splitRefused = { reason: 'registry', detail: error.message }
+    replacement = await replace(buildLines({ ...objectPlan, byAccount: new Map() }))
+  }
 
   return {
     resynced: true,
@@ -1336,6 +1361,7 @@ export async function resyncNextPeriodOpeningBalance(
     nextPeriodName: nextPeriod.name,
     stornoEntryId: replacement.stornoEntryId,
     newOpeningBalanceEntryId: replacement.newEntryId,
+    ...(splitRefused ? { splitRefused } : {}),
   }
 }
 
@@ -3099,10 +3125,8 @@ export async function executeSIEImport(
           )
           result.openingBalanceEntryId = openingBalance.id
           if (openingBalance.splitRefused) {
-            const text =
-              'Ingående balans bokfördes utan fördelning per projekt: dimensionsregistret godtog inte alla objekt i filens #OIB-rader ' +
-              `(${openingBalance.splitRefused}). Kontonas saldon är oförändrade.`
-            warn(text, makeNotice('legacy', 'notice', { text }))
+            const refused = openingBalanceSplitRefusedNotice(openingBalance.splitRefused)
+            warn(refused.text, refused.notice)
           }
 
           if (result.openingBalanceEntryId) {
@@ -3370,6 +3394,10 @@ export async function executeSIEImport(
             `Ingående balanser för ${resync.nextPeriodName} synkades om mot den just importerade utgående balansen.`,
             makeNotice('sie_next_ib_resynced', 'info', { period: resync.nextPeriodName })
           )
+          if (resync.splitRefused) {
+            const refused = openingBalanceSplitRefusedNotice(resync.splitRefused)
+            warn(refused.text, refused.notice)
+          }
         } else if (resync.reason === 'next_period_locked' && resync.nextPeriodName) {
           result.nextPeriodIBResyncSkipped = {
             reason: 'locked',

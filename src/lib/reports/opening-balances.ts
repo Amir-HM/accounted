@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchEntryLines, type EntryLinesQuery } from '@/lib/bookkeeping/entry-lines'
+import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
 
 /**
  * Get opening balances (ingående balans) for a fiscal period.
@@ -24,7 +25,10 @@ import { fetchEntryLines, type EntryLinesQuery } from '@/lib/bookkeeping/entry-l
  * `dimensions @>` containment the period lines use, or the fallback RPC's
  * p_dimensions. The year-end close and the SIE import put a project's
  * opening balance on its own tagged IB line, so this is that project's IB.
- * A dimension that resets annually has no tagged IB lines: empty, correctly.
+ * A filter on a dimension that resets annually (registry
+ * `resets_annually = true`: kostnadsställe, custom dimensions) opens at 0 on
+ * both paths: its balances start from zero every year, whatever tags the
+ * prior history (fallback) or a hand-edited IB line happens to carry.
  */
 export async function getOpeningBalances(
   supabase: SupabaseClient,
@@ -44,6 +48,16 @@ export async function getOpeningBalances(
   const obEntryId = period.opening_balance_entry_id
   const dimensionFilter =
     options.dimensions && Object.keys(options.dimensions).length > 0 ? options.dimensions : undefined
+
+  if (dimensionFilter) {
+    // Only dimensions that accumulate across years carry an IB. One key that
+    // resets annually makes the whole filter open at 0 (a project within a
+    // kostnadsställe starts the year at 0 in that kostnadsställe).
+    const accumulating = await fetchAccumulatingDimensions(supabase, companyId)
+    if (Object.keys(dimensionFilter).some((dimNo) => !accumulating.has(String(Number(dimNo))))) {
+      return { balances, obEntryId }
+    }
+  }
 
   if (obEntryId) {
     // Use the explicit opening balance entry (set by year-end closing).

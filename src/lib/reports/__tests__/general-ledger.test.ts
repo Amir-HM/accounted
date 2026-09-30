@@ -247,6 +247,8 @@ describe('generateGeneralLedger', () => {
       fiscal_periods: [
         { data: { period_start: '2026-01-01', period_end: '2026-12-31', opening_balance_entry_id: null }, error: null },
       ],
+      // The registry: projekt accumulates across years.
+      dimensions: [{ data: [{ sie_dim_no: 6 }], error: null }],
       // Continuation import: no IB entry, the derived IB is scoped to P1.
       'rpc:compute_prior_opening_balances': [
         { data: [{ account_number: '1470', debit: 1300, credit: 0 }], error: null },
@@ -283,6 +285,45 @@ describe('generateGeneralLedger', () => {
     expect(wip.opening_balance).toBe(1300)
     expect(wip.closing_balance).toBe(1500)
     expect(wip.lines[0].balance).toBe(1500)
+  })
+
+  it('opens a kostnadsställe-filtered ledger at 0: dimension 1 resets annually (#3313)', async () => {
+    mockResults = {
+      fiscal_periods: [
+        { data: { period_start: '2026-01-01', period_end: '2026-12-31', opening_balance_entry_id: null }, error: null },
+      ],
+      // Only projekt accumulates; the prior history's K1 tags never reach IB.
+      dimensions: [{ data: [{ sie_dim_no: 6 }], error: null }],
+      'rpc:compute_prior_opening_balances': [
+        { data: [{ account_number: '1470', debit: 300, credit: 0 }], error: null },
+      ],
+      journal_entries: [
+        {
+          data: [
+            { id: 'e1', entry_date: '2026-02-01', voucher_number: 1, voucher_series: 'A', description: 'Arbete', source_type: 'manual' },
+          ],
+          error: null,
+        },
+      ],
+      journal_entry_lines: [
+        {
+          data: [
+            { account_number: '1470', debit_amount: 200, credit_amount: 0, journal_entry_id: 'e1', dimensions: { '1': 'K1' } },
+          ],
+          error: null,
+        },
+      ],
+      chart_of_accounts: [{ data: [{ account_number: '1470', account_name: 'Pågående arbeten' }], error: null }],
+    }
+
+    const report = await generateGeneralLedger(supabase, 'company-1', 'period-1', undefined, undefined, {
+      dimensions: { '1': 'K1' },
+    })
+
+    expect(supabase.rpc).not.toHaveBeenCalledWith('compute_prior_opening_balances', expect.anything())
+    const wip = report.accounts.find((a) => a.account_number === '1470')!
+    expect(wip.opening_balance).toBe(0)
+    expect(wip.closing_balance).toBe(200)
   })
 
   it('filters accounts by account_from and account_to', async () => {
