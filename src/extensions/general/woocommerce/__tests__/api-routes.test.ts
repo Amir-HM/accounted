@@ -74,6 +74,18 @@ function makeContext(supabase: unknown): ExtensionContext {
 
 const USER = { id: 'user-1', is_anonymous: false }
 
+/**
+ * The next service client the route creates, answering `results` in order.
+ * The sync and backfill look connections up there: the encrypted API keys
+ * are withheld from end-user roles (20260929173432).
+ */
+function serviceReturning(...results: Array<{ data?: unknown; error?: unknown }>) {
+  const service = createQueuedMockSupabase()
+  for (const result of results) service.enqueue(result)
+  vi.mocked(createServiceClientNoCookies).mockReturnValueOnce(service.supabase as never)
+  return service
+}
+
 describe('woocommerce extension routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -304,9 +316,9 @@ describe('woocommerce extension routes', () => {
 
   describe('POST /sync', () => {
     it('returns 404 without an active connection', async () => {
-      const { supabase, enqueue } = createQueuedMockSupabase()
+      const { supabase } = createQueuedMockSupabase()
       supabase.auth.getUser.mockResolvedValue({ data: { user: USER }, error: null })
-      enqueue({ data: [] })
+      serviceReturning({ data: [] })
       const res = await findRoute('POST', '/sync').handler(
         makeRequest('POST'),
         makeContext(supabase),
@@ -315,9 +327,9 @@ describe('woocommerce extension routes', () => {
     })
 
     it('runs the sync on the service client and returns the summary', async () => {
-      const { supabase, enqueue } = createQueuedMockSupabase()
+      const { supabase, findCall } = createQueuedMockSupabase()
       supabase.auth.getUser.mockResolvedValue({ data: { user: USER }, error: null })
-      enqueue({ data: [{ id: 'conn-1', status: 'active' }] })
+      const service = serviceReturning({ data: [{ id: 'conn-1', status: 'active' }] })
       vi.mocked(syncWooCommerceOrders).mockResolvedValue({
         fetched: 3,
         refundsFetched: 1,
@@ -336,7 +348,11 @@ describe('woocommerce extension routes', () => {
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.transactions.inserted).toBe(4)
-      expect(vi.mocked(syncWooCommerceOrders).mock.calls[0][0]).toEqual({ service: true })
+      expect(vi.mocked(syncWooCommerceOrders).mock.calls[0][0]).toBe(service.supabase)
+      // The credentialed rows come from the service role, scoped to the
+      // caller's company; the session client never selects them.
+      expect(service.findCall('woocommerce_connections', 'eq')).toEqual(['company_id', 'company-1'])
+      expect(findCall('woocommerce_connections', 'select')).toBeUndefined()
     })
   })
 
@@ -382,9 +398,9 @@ describe('woocommerce extension routes', () => {
     })
 
     it('returns 404 without an active connection', async () => {
-      const { supabase, enqueue } = createQueuedMockSupabase()
+      const { supabase } = createQueuedMockSupabase()
       supabase.auth.getUser.mockResolvedValue({ data: { user: USER }, error: null })
-      enqueue({ data: [] })
+      serviceReturning({ data: [] })
       const res = await findRoute('POST', '/backfill').handler(
         makeRequest('POST', { from: '2026-01-01' }),
         makeContext(supabase),
@@ -394,9 +410,9 @@ describe('woocommerce extension routes', () => {
     })
 
     it('refuses to guess the store when several are connected and none is named', async () => {
-      const { supabase, enqueue } = createQueuedMockSupabase()
+      const { supabase } = createQueuedMockSupabase()
       supabase.auth.getUser.mockResolvedValue({ data: { user: USER }, error: null })
-      enqueue({ data: [ACTIVE, { ...ACTIVE, id: 'conn-2', store_url: 'https://b.example.se' }] })
+      serviceReturning({ data: [ACTIVE, { ...ACTIVE, id: 'conn-2', store_url: 'https://b.example.se' }] })
       const res = await findRoute('POST', '/backfill').handler(
         makeRequest('POST', { from: '2026-01-01' }),
         makeContext(supabase),
@@ -406,10 +422,10 @@ describe('woocommerce extension routes', () => {
     })
 
     it('moves the named store cursor to the chosen date and syncs from there', async () => {
-      const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+      const { supabase, enqueue, findCall, findCalls } = createQueuedMockSupabase()
       supabase.auth.getUser.mockResolvedValue({ data: { user: USER }, error: null })
-      enqueue({ data: [ACTIVE] })
-      enqueue({ data: [] }) // cursor update
+      const service = serviceReturning({ data: [ACTIVE] })
+      enqueue({ data: [] }) // cursor update (session client)
       vi.mocked(syncWooCommerceOrders).mockResolvedValue(SUMMARY)
       const res = await findRoute('POST', '/backfill').handler(
         makeRequest('POST', { from: '2026-01-01', connection_id: 'conn-1' }),
@@ -424,7 +440,9 @@ describe('woocommerce extension routes', () => {
       expect(updates[0][0]).toMatchObject({ last_order_synced_at: '2026-01-01T00:00:00.000Z' })
       // The sync must see the moved cursor, not the stored one, and run on
       // the service client like the manual sync.
-      expect(vi.mocked(syncWooCommerceOrders).mock.calls[0][0]).toEqual({ service: true })
+      expect(vi.mocked(syncWooCommerceOrders).mock.calls[0][0]).toBe(service.supabase)
+      expect(service.findCalls('woocommerce_connections', 'eq')).toContainEqual(['id', 'conn-1'])
+      expect(findCall('woocommerce_connections', 'select')).toBeUndefined()
       expect(vi.mocked(syncWooCommerceOrders).mock.calls[0][1].last_order_synced_at).toBe(
         '2026-01-01T00:00:00.000Z',
       )
