@@ -33,7 +33,6 @@ export async function readBankConfiguration(
   return data as BankConfigurationSnapshot
 }
 
-/** The caller prepares a selection without writing chart, route or cash rows. */
 /** An unused row of an unchecked account that gave its ledger up and was deleted (crm#224). */
 export interface YieldedCashAccount {
   id: string
@@ -42,6 +41,7 @@ export interface YieldedCashAccount {
   is_primary: boolean
 }
 
+/** The caller prepares a selection without writing chart, route or cash rows. */
 export async function saveBankAccountSelection(
   supabase: SupabaseClient, companyId: string, userId: string, connectionId: string,
   expectedToken: string, selections: BankAccountSelection[],
