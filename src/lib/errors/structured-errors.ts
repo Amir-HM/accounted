@@ -5678,7 +5678,7 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
     retryable: false,
     remediation: {
       description:
-        'Link the row to the verifikat the message names with gnubok_reconcile_match (account_key "skattekonto", pairs [{ external_ids: [row id], journal_entry_ids: [verifikat id] }]). Book it anyway (allow_duplicate / allow_duplicate_ids) only when the user confirms the event really happened twice.',
+        'Link the row to the verifikat the message names with gnubok_reconcile_match (account_key "skattekonto", pairs [{ external_ids: [row id, plus any same-day rows the verifikat carries with it], journal_entry_ids: [verifikat id] }]). Book it anyway (allow_duplicate / allow_duplicate_ids) only when the user confirms the event really happened twice.',
       tool: 'gnubok_reconcile_match',
     },
     thrown_message_sv: true,

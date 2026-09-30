@@ -17,6 +17,18 @@ import type {
   SkattekontoTransactionWithSuggestion,
 } from '@/types/skatteverket'
 
+/** The twin fields of a match-candidates candidate (it carries more). */
+function toLedgerTwin(c: SkattekontoLedgerTwin): SkattekontoLedgerTwin {
+  return {
+    journal_entry_id: c.journal_entry_id,
+    voucher_series: c.voucher_series,
+    voucher_number: c.voucher_number,
+    entry_date: c.entry_date,
+    description: c.description,
+    status: c.status,
+  }
+}
+
 /**
  * Inline booking for one skattekonto row: confirm-and-post without leaving
  * the list (convention 10: confirm up front). The primary "Bokför" runs the
@@ -36,7 +48,10 @@ import type {
  * carries the event on 1630, e.g. one imported by SIE), the dialog switches
  * to that answer: the twins are listed, Koppla (the match flow) is the
  * primary action and "Bokför ändå" repeats the same booking with the
- * per-row override for an event that really happened twice.
+ * per-row override for an event that really happened twice. A row
+ * Skatteverket has not settled yet cannot be linked, so there the primary
+ * action is to wait. "Skapa manuellt" asks the same candidate search first
+ * (match-candidates) and shows the same answer.
  */
 export default function SkattekontoBookDialog({
   row,
@@ -59,12 +74,12 @@ export default function SkattekontoBookDialog({
   const router = useRouter()
   const [isBooking, setIsBooking] = useState(false)
   const [isOpeningDraft, setIsOpeningDraft] = useState(false)
-  // The ledger-twin refusal for the row it was given for, and which booking
-  // ("Bokför" or "Öppna som utkast") "Bokför ändå" repeats.
+  // The ledger-twin refusal for the row it was given for, and which action
+  // ("Bokför", "Öppna som utkast" or "Skapa manuellt") "Bokför ändå" repeats.
   const [twinRefusal, setTwinRefusal] = useState<{
     rowId: string
     twins: SkattekontoLedgerTwin[]
-    mode: 'book' | 'draft'
+    mode: 'book' | 'draft' | 'manual'
   } | null>(null)
 
   if (!row) return null
@@ -204,23 +219,39 @@ export default function SkattekontoBookDialog({
   function handleBookAnyway() {
     if (!twinState) return
     if (twinState.mode === 'book') void handleBook(true)
-    else void handleOpenDraft(true)
+    else if (twinState.mode === 'draft') void handleOpenDraft(true)
+    else void handleManualCreate(true)
   }
 
   if (twinState) {
+    // Koppla needs a settled row (linkSkattekontoRow refuses a kommande
+    // one): for an unsettled row the answer is to wait and link it once
+    // Skatteverket has settled it. "Bokför ändå" is never the primary action
+    // while another answer exists.
+    const unsettled = row.status === 'upcoming'
+    const primary: 'match' | 'wait' | 'anyway' = unsettled ? 'wait' : onMatch ? 'match' : 'anyway'
+    const anywayLabel = twinState.mode === 'manual' ? t('twin_manual_anyway') : t('twin_book_anyway')
     return (
       <ConfirmationDialog
         open={open}
         onOpenChange={handleOpenChange}
         title={t('twin_title')}
         isSubmitting={isBooking || isOpeningDraft}
-        confirmLabel={onMatch ? t('twin_match_cta') : t('twin_book_anyway')}
-        // Only the override commits a second verifikat: warn when it is the
-        // primary action.
-        warningText={onMatch ? '' : t('twin_warning')}
-        onConfirm={onMatch ? handleMatchInstead : handleBookAnyway}
+        confirmLabel={
+          primary === 'match' ? t('twin_match_cta') : primary === 'wait' ? t('twin_wait_cta') : anywayLabel
+        }
+        // The override records the event a second time: say so whichever
+        // button carries it.
+        warningText={t('twin_warning')}
+        onConfirm={
+          primary === 'match'
+            ? handleMatchInstead
+            : primary === 'wait'
+              ? () => handleOpenChange(false)
+              : handleBookAnyway
+        }
         extraActions={
-          onMatch ? (
+          primary !== 'anyway' ? (
             <Button
               variant="ghost"
               onClick={handleBookAnyway}
@@ -228,14 +259,14 @@ export default function SkattekontoBookDialog({
               loading={isBooking || isOpeningDraft}
               className="w-full sm:w-auto text-muted-foreground"
             >
-              {t('twin_book_anyway')}
+              {anywayLabel}
             </Button>
           ) : undefined
         }
       >
         <div className="space-y-3 py-2 text-sm">
           <p className="leading-6">
-            {t('twin_body', {
+            {t(unsettled ? 'twin_body_pending' : 'twin_body', {
               text: row.transaktionstext,
               amount: formatCurrency(Math.abs(amount)),
               date: formatDate(row.transaktionsdatum),
@@ -267,8 +298,33 @@ export default function SkattekontoBookDialog({
     )
   }
 
-  function handleManualCreate() {
+  async function handleManualCreate(skipTwinCheck: boolean) {
     if (!row) return
+    // A manual voucher is a booking door too, and it never reaches the
+    // server's ledger-twin guard. Ask the match flow's candidate search first
+    // (the guard's own definition) and answer a twin the same way: Koppla,
+    // with "Skapa manuellt ändå" as the override. A failed probe does not
+    // block this explicit manual path: it falls back to the old behaviour.
+    if (!skipTwinCheck) {
+      setIsOpeningDraft(true)
+      try {
+        const res = await fetch(
+          `/api/extensions/ext/skatteverket/skattekonto/transaktioner/${row.id}/match-candidates`,
+        )
+        const json = res.ok ? await res.json() : null
+        const candidates: SkattekontoLedgerTwin[] = Array.isArray(json?.data?.candidates)
+          ? json.data.candidates
+          : []
+        if (candidates.length > 0) {
+          setTwinRefusal({ rowId: row.id, twins: candidates.map(toLedgerTwin), mode: 'manual' })
+          return
+        }
+      } catch {
+        // Probe failed: fall through to the manual form.
+      } finally {
+        setIsOpeningDraft(false)
+      }
+    }
     // Deep-link into /bookkeeping's Nytt verifikat dialog: the row payload is
     // staged in sessionStorage (only the opaque id rides in the URL) so the
     // form opens prefilled (1630 + counter line) and the created verifikat is
@@ -303,7 +359,7 @@ export default function SkattekontoBookDialog({
           : noRuleMatched
             ? onMatch
               ? handleMatchInstead
-              : handleManualCreate
+              : () => void handleManualCreate(false)
             : () => void handleOpenDraft(false)
       }
       extraActions={
@@ -320,8 +376,9 @@ export default function SkattekontoBookDialog({
         ) : noRuleMatched && onMatch ? (
           <Button
             variant="ghost"
-            onClick={handleManualCreate}
+            onClick={() => void handleManualCreate(false)}
             disabled={isBooking || isOpeningDraft}
+            loading={isOpeningDraft}
             className="w-full sm:w-auto text-muted-foreground"
           >
             {t('manual_create_cta')}

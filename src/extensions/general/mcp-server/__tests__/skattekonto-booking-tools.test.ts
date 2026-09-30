@@ -312,6 +312,29 @@ describe('book skattekonto tools: ledger twin guard', () => {
     expect(mockBokforSingle).not.toHaveBeenCalled()
   })
 
+  it('row: a combined twin links the row together with its same-day companions, not alone', async () => {
+    const companion = { id: 'row-agavg', transaktionsdatum: '2026-03-12', transaktionstext: 'Arbetsgivaravgift', belopp_skatteverket: -4000 }
+    mockTwins.mockImplementation(async (_supabase, _companyId, rows: Array<{ id: string }>) =>
+      new Map(rows.map((r) => [r.id, [{ ...TWIN, combined_with: [companion] }]])),
+    )
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { ...ROW } })
+
+    const err = (await single
+      .execute({ skattekonto_transaction_id: ROW.id }, 'company-1', 'user-1', supabase as never)
+      .catch((e: unknown) => e)) as Error & {
+      code?: string
+      remediation?: { tool?: string; description?: string; args?: { pairs?: Array<{ external_ids: string[]; journal_entry_ids: string[] }> } }
+    }
+
+    expect(err.code).toBe('SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS')
+    expect(err.message).toContain('tillsammans med en annan rad från samma dag')
+    expect(err.remediation?.args?.pairs).toEqual([
+      { external_ids: [ROW.id, 'row-agavg'], journal_entry_ids: ['je-imported-185'] },
+    ])
+    expect(err.remediation?.description).toContain('together with the 1 other open row(s)')
+  })
+
   it('row: allow_duplicate stages the override with the twin in the preview and a reviewer warning', async () => {
     twinsFor(ROW.id)
     const { supabase, enqueue, findCall } = createQueuedMockSupabase()

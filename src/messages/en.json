@@ -4220,7 +4220,10 @@
     "twin_body": "{text} of {amount} ({date}) is already on account 1630 in an existing voucher. Link the row to it instead of posting the event a second time.",
     "twin_match_cta": "Link to voucher",
     "twin_book_anyway": "Post anyway",
-    "twin_warning": "Post anyway creates a second voucher for the same amount on 1630.",
+    "twin_body_pending": "{text} of {amount} ({date}) is already on account 1630 in an existing voucher. Skatteverket has not settled the event yet: wait until it has, then link the row to that voucher instead of posting the event a second time.",
+    "twin_wait_cta": "Wait and link later",
+    "twin_manual_anyway": "Create manually anyway",
+    "twin_warning": "Posting anyway records the same event on account 1630 a second time.",
     "twin_draft": "Draft",
     "twin_hint": "Common after an SIE import: the voucher came over from the previous system. Post anyway only if the event really happened twice."
   },

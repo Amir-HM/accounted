@@ -1572,16 +1572,21 @@ function skattekontoLedgerTwinRefusal(
   rowCount = 1,
 ): Error {
   const ids = twins.map((t) => t.journal_entry_id)
+  // A combined twin settles the verifikat only together with other open rows
+  // of the same day: the link must carry all of them, or it is refused.
+  const companionIds = (twins[0]?.combined_with ?? []).map((c) => c.id)
   const lead = rowCount > 1 ? `Alla ${rowCount} rader finns redan i bokföringen. Första raden: ` : ''
   return codedRefusal('SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS', `${lead}${ledgerTwinMessage(twins)}`, {
     description:
-      ids.length === 1
-        ? `Link the row to the named verifikat instead of booking it: gnubok_reconcile_match with account_key "skattekonto" and pairs [{ external_ids: [row id], journal_entry_ids: [verifikat id] }]. ${SKATTEKONTO_TWIN_TAIL}`
-        : `Ask the user which of the named verifikat is the ledger side of this event and link the row to it with gnubok_reconcile_match (account_key "skattekonto"). ${SKATTEKONTO_TWIN_TAIL}`,
+      ids.length > 1
+        ? `Ask the user which of the named verifikat is the ledger side of this event and link the row to it with gnubok_reconcile_match (account_key "skattekonto"). ${SKATTEKONTO_TWIN_TAIL}`
+        : companionIds.length > 0
+          ? `Link the row, together with the ${companionIds.length} other open row(s) of the same day that the verifikat also carries, to the named verifikat instead of booking it: gnubok_reconcile_match with account_key "skattekonto" and one pair { external_ids: [row id, ...companion ids], journal_entry_ids: [verifikat id] } (see args). ${SKATTEKONTO_TWIN_TAIL}`
+          : `Link the row to the named verifikat instead of booking it: gnubok_reconcile_match with account_key "skattekonto" and pairs [{ external_ids: [row id], journal_entry_ids: [verifikat id] }]. ${SKATTEKONTO_TWIN_TAIL}`,
     tool: 'gnubok_reconcile_match',
     args: {
       account_key: 'skattekonto',
-      pairs: [{ external_ids: [rowId], journal_entry_ids: ids.slice(0, 1) }],
+      pairs: [{ external_ids: [rowId, ...companionIds], journal_entry_ids: ids.slice(0, 1) }],
     },
   })
 }

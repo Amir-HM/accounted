@@ -4220,7 +4220,10 @@
     "twin_body": "{text} på {amount} ({date}) finns redan på konto 1630 i ett befintligt verifikat. Koppla raden till det i stället för att bokföra händelsen en gång till.",
     "twin_match_cta": "Koppla till verifikat",
     "twin_book_anyway": "Bokför ändå",
-    "twin_warning": "Bokför ändå skapar ett andra verifikat för samma belopp på 1630.",
+    "twin_body_pending": "{text} på {amount} ({date}) finns redan på konto 1630 i ett befintligt verifikat. Skatteverket har inte genomfört händelsen ännu: vänta tills den är genomförd och koppla då raden till verifikatet i stället för att bokföra händelsen en gång till.",
+    "twin_wait_cta": "Vänta och koppla senare",
+    "twin_manual_anyway": "Skapa manuellt ändå",
+    "twin_warning": "Att bokföra ändå ger ett andra verifikat för samma händelse på konto 1630.",
     "twin_draft": "Utkast",
     "twin_hint": "Vanligt efter en SIE-import: verifikatet kom med från det tidigare systemet. Bokför ändå bara om händelsen verkligen har inträffat två gånger."
   },

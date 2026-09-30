@@ -417,6 +417,7 @@ function toLedgerTwin(c: SkattekontoMatchCandidate): SkattekontoLedgerTwin {
     entry_date: c.entry_date,
     description: c.description,
     status: c.status,
+    ...(c.combined_with?.length ? { combined_with: c.combined_with } : {}),
   }
 }
 
@@ -440,8 +441,16 @@ export async function findSkattekontoLedgerTwins(
   return toLedgerTwinMap(await findLedgerTwinCandidates(supabase, companyId, rows))
 }
 
-/** Swedish refusal naming the twins (up to three) and the way out. */
-export function ledgerTwinMessage(twins: SkattekontoLedgerTwin[]): string {
+/**
+ * Swedish refusal naming the twins (up to three) and the way out. A row
+ * Skatteverket has not settled yet cannot be linked (linkSkattekontoRow
+ * refuses it), so for `settled: false` the way out is to wait and link then.
+ * A combined twin names how many other rows of the day it links together.
+ */
+export function ledgerTwinMessage(
+  twins: SkattekontoLedgerTwin[],
+  opts: { settled?: boolean } = {},
+): string {
   const ref = (t: SkattekontoLedgerTwin) =>
     t.voucher_number != null && t.voucher_number !== 0
       ? `verifikat ${formatVoucher(t)} (${t.entry_date})`
@@ -454,10 +463,22 @@ export function ledgerTwinMessage(twins: SkattekontoLedgerTwin[]): string {
       : shown.length > 1
         ? `${shown.slice(0, -1).join(', ')} och ${shown[shown.length - 1]}`
         : shown[0]
-  const target = twins.length === 1 ? 'det' : 'rätt verifikat'
+  const companions = twins.length === 1 ? twins[0].combined_with?.length ?? 0 : 0
+  const target =
+    twins.length > 1
+      ? 'rätt verifikat'
+      : companions === 1
+        ? 'det tillsammans med en annan rad från samma dag'
+        : companions > 1
+          ? `det tillsammans med ${companions} andra rader från samma dag`
+          : 'det'
+  const wayOut =
+    opts.settled === false
+      ? `Skatteverket har inte genomfört händelsen ännu: vänta tills den är genomförd och koppla då raden till ${target} i stället för att bokföra händelsen en gång till. `
+      : `Koppla raden till ${target} i stället för att bokföra händelsen en gång till. `
   return (
     `Händelsen finns redan i bokföringen: ${list} innehåller den redan på konto 1630. ` +
-    `Koppla raden till ${target} i stället för att bokföra händelsen en gång till. ` +
+    wayOut +
     'Bokför ändå bara om händelsen verkligen har inträffat två gånger.'
   )
 }
@@ -563,14 +584,21 @@ export async function bokforSkattekontoTransaction(
   // search (exact öre and side, inside the window, not already linked, not a
   // storno pair), so the refusal names exactly what "Koppla" can link. It
   // runs before the rule match on purpose: for a twin the answer is Koppla,
-  // never "create it manually", which would duplicate it by hand.
+  // never "create it manually", which would duplicate it by hand. A row
+  // Skatteverket has not settled yet (the single-row draft path opens
+  // kommande rows) cannot be linked either, so its refusal says to wait and
+  // link once it is settled.
   if (!options?.allowDuplicate) {
     const twins =
       options?.ledgerTwins ??
       (await findSkattekontoLedgerTwins(supabase, companyId, [tx])).get(tx.id) ??
       []
     if (twins.length > 0) {
-      throw new SkattekontoBookingError(ledgerTwinMessage(twins), 'LEDGER_TWIN_EXISTS', twins)
+      throw new SkattekontoBookingError(
+        ledgerTwinMessage(twins, { settled: tx.status === 'booked' }),
+        'LEDGER_TWIN_EXISTS',
+        twins,
+      )
     }
   }
 

@@ -103,6 +103,16 @@ export interface SkattekontoLedgerTwin {
   entry_date: string
   description: string
   status: 'draft' | 'posted' | 'reversed'
+  /**
+   * Present when the verifikat carries the event together with these other
+   * open same-day rows (a combined candidate): linking links all of them.
+   */
+  combined_with?: Array<{
+    id: string
+    transaktionsdatum: string
+    transaktionstext: string
+    belopp_skatteverket: number
+  }>
 }
 
 /**

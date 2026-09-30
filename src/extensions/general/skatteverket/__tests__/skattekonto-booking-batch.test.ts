@@ -754,6 +754,57 @@ describe('ledger twin guard (an SIE-imported or manual verifikat already carries
     expect(fromCount(supabase, 'skattekonto_rules')).toBe(0)
   })
 
+  it('tells an unsettled (kommande) row to wait and link later: Koppla refuses it until Skatteverket settles it', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    // The single-row draft path opens kommande rows (requireSettled off).
+    const row = makeSkvRow({ transaktionstext: 'Debiterad preliminärskatt', belopp_skatteverket: -4000, status: 'upcoming', transaktionsdatum: '2026-10-12' })
+    enqueue({ data: row })
+    vi.mocked(findLedgerTwinCandidates).mockResolvedValueOnce(
+      new Map([[row.id, [twinCandidate({ entry_date: '2026-10-01', matched_amount: 4000, matched_side: 'credit' })]]]),
+    )
+
+    const err = await bokforSkattekontoTransaction(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      row.id,
+    ).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(SkattekontoBookingError)
+    const refusal = err as SkattekontoBookingError
+    expect(refusal.code).toBe('LEDGER_TWIN_EXISTS')
+    expect(refusal.message).toContain('verifikat A185 (2026-10-01)')
+    expect(refusal.message).toContain('Skatteverket har inte genomfört händelsen ännu')
+    expect(refusal.message).toContain('vänta tills den är genomförd och koppla då raden till det')
+    expect(vi.mocked(createDraftEntry)).not.toHaveBeenCalled()
+  })
+
+  it('names the companion rows of a combined twin: the verifikat carries the event only together with them', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    const row = makeSkvRow({ transaktionstext: 'Avdragen skatt', belopp_skatteverket: -3000 })
+    enqueue({ data: row })
+    const combined = twinCandidate({
+      matched_amount: 3000,
+      matched_side: 'credit',
+      combined_with: [
+        { id: 'row-agavg', transaktionsdatum: '2026-01-15', transaktionstext: 'Arbetsgivaravgift', belopp_skatteverket: -4000 },
+      ],
+      combined_total: 7000,
+    })
+    vi.mocked(findLedgerTwinCandidates).mockResolvedValueOnce(new Map([[row.id, [combined]]]))
+
+    const err = (await bokforSkattekontoTransaction(
+      supabase as unknown as SupabaseClient,
+      'company-1',
+      'user-1',
+      row.id,
+    ).catch((e: unknown) => e)) as SkattekontoBookingError
+
+    expect(err.code).toBe('LEDGER_TWIN_EXISTS')
+    expect(err.message).toContain('Koppla raden till det tillsammans med en annan rad från samma dag')
+    expect(err.ledgerTwins?.[0].combined_with?.map((c) => c.id)).toEqual(['row-agavg'])
+  })
+
   it('books the row when allowDuplicate is set, without searching', async () => {
     const { supabase, enqueue } = makeSupabase()
     const row = makeSkvRow({ transaktionstext: 'Intäktsränta' })

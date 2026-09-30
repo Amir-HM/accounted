@@ -5,6 +5,7 @@ import {
   findLedgerTwinCandidatesForIds,
   findMatchSuggestionsBulk,
 } from '../lib/skattekonto-match'
+import { findSkattekontoLedgerTwins, ledgerTwinMessage } from '../lib/skattekonto-booking'
 
 /**
  * accounted#1300: a company migrates in by SIE (its 1630 events come along as
@@ -137,6 +138,56 @@ describe('findLedgerTwinCandidates', () => {
     await findLedgerTwinCandidates(supabase as never, COMPANY, [skv('interest', -1)])
     expect(findCalls('journal_entries', 'in')).toContainEqual(['status', ['draft', 'posted']])
     expect(findCalls('journal_entries', 'neq')).toEqual([])
+  })
+
+  it('keeps a batch window per row: rows two months apart each get only their own twin and same-day companions', async () => {
+    const jan: E = { id: 'imp-jan', voucher: 201, date: '2026-01-05', lines: [['1630', 0, 1], ['8423', 1, 0]] }
+    const mar: E = { id: 'imp-mar', voucher: 202, date: '2026-03-06', lines: [['1630', 0, 1], ['8423', 1, 0]] }
+    // Carries the March row together with a second open March row (1 + 2 kr).
+    const marBoth: E = { id: 'imp-mar-both', voucher: 203, date: '2026-03-06', lines: [['1630', 0, 3], ['8423', 3, 0]] }
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueueCandidateLines(enqueue, [jan, mar, marBoth])
+    enqueue({ data: [] }) // none linked
+    enqueue({
+      data: [
+        { ...skv('p-jan', -1, '2026-01-05'), status: 'booked' },
+        { ...skv('p-mar', -1, '2026-03-06'), status: 'booked' },
+        { ...skv('c-mar', -2, '2026-03-06', 'Förseningsavgift'), status: 'booked' },
+      ],
+    }) // open rows on the probes' dates
+    enqueueCancellationRead(enqueue, [jan, mar, marBoth])
+
+    const out = await findLedgerTwinCandidates(supabase as never, COMPANY, [
+      skv('p-jan', -1, '2026-01-05'),
+      skv('p-mar', -1, '2026-03-06'),
+    ])
+
+    // One read spans both months ...
+    expect(findCalls('journal_entries', 'gte')[0]).toEqual(['entry_date', '2025-12-22'])
+    // ... but January sees neither March verifikat nor the March companion.
+    expect(out.get('p-jan')?.map((c) => c.journal_entry_id)).toEqual(['imp-jan'])
+    expect(out.get('p-mar')?.map((c) => c.journal_entry_id).sort()).toEqual(['imp-mar', 'imp-mar-both'])
+    const combined = out.get('p-mar')?.find((c) => c.journal_entry_id === 'imp-mar-both')
+    expect(combined?.combined_with?.map((c) => c.id)).toEqual(['c-mar'])
+  })
+
+  it('returns both twins of one row with two imported verifikat on different dates, and the refusal names both', async () => {
+    // One 5 kr row; the previous system booked 5 kr on 1630 twice, four days
+    // apart. Too ambiguous to propose, so the booking guard must refuse it.
+    const first: E = { id: 'imp-5a', voucher: 185, date: '2026-02-01', lines: [['1630', 0, 5], ['8423', 5, 0]] }
+    const second: E = { id: 'imp-5b', voucher: 186, date: '2026-02-05', lines: [['1630', 0, 5], ['8423', 5, 0]] }
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueueCandidateLines(enqueue, [first, second])
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueueCancellationRead(enqueue, [first, second])
+
+    const twins = await findSkattekontoLedgerTwins(supabase as never, COMPANY, [skv('five', -5)])
+
+    expect(twins.get('five')?.map((t) => t.journal_entry_id)).toEqual(['imp-5a', 'imp-5b'])
+    const message = ledgerTwinMessage(twins.get('five') ?? [])
+    expect(message).toContain('verifikat A185 (2026-02-01) och verifikat A186 (2026-02-05)')
+    expect(message).toContain('Koppla raden till rätt verifikat')
   })
 
   it('returns an empty list per row, after one read, when the window has no 1630 entries', async () => {
