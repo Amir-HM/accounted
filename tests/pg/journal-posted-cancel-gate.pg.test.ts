@@ -285,6 +285,78 @@ describe('cancel_orphaned_entry: the sanctioned cleanup door', () => {
     })
   })
 
+  it('keeps an existing explanation for the number and reports gap_recorded false', async () => {
+    const s = await seed()
+    const paymentId = await postEntry(s, { voucherNumber: 5, sourceType: 'supplier_invoice_paid' })
+    await getPool().query(
+      `INSERT INTO public.voucher_gap_explanations
+         (company_id, user_id, fiscal_period_id, voucher_series, gap_start, gap_end, explanation)
+       VALUES ($1, $2, $3, 'A', 5, 5, 'Manuell förklaring')`,
+      [s.companyId, s.userId, s.fiscalPeriodId],
+    )
+
+    expect(
+      await cancelAsTrusted(s.companyId, paymentId, s.userId, 'Automatiskt makulerad: test'),
+    ).toMatchObject({ cancelled: true, previous_status: 'posted', gap_recorded: false })
+    const gaps = await getPool().query<{ explanation: string }>(
+      `SELECT explanation FROM public.voucher_gap_explanations WHERE company_id = $1`,
+      [s.companyId],
+    )
+    expect(gaps.rows).toEqual([{ explanation: 'Manuell förklaring' }])
+    expect(await entryState(paymentId)).toEqual({ status: 'cancelled', lines: 2 })
+  })
+
+  it('cancels a storno the user posted in the engine\'s own authenticated shape', async () => {
+    // reverseEntry and correctEntry post with a direct UPDATE under the
+    // user's JWT, not through commit_journal_entry. set_committed_at must
+    // stamp committed_at on that path, or the 15-minute check would strand
+    // every such orphan posted and double-counted.
+    const s = await seed()
+    // Outside the sequence range the user draws from below.
+    const originalId = await postEntry(s, { voucherNumber: 100 })
+
+    await withUserContext(s.userId, async (client) => {
+      const n = await client.query<{ n: number }>(
+        `SELECT public.next_voucher_number($1, $2, 'A') AS n`,
+        [s.companyId, s.fiscalPeriodId],
+      )
+      const header = await client.query<{ id: string }>(
+        `INSERT INTO public.journal_entries
+           (user_id, company_id, fiscal_period_id, voucher_number, voucher_series, entry_date,
+            description, source_type, reverses_id, status)
+         VALUES ($1, $2, $3, $4, 'A', '2026-06-01', 'Makulering: Testverifikat', 'storno', $5, 'draft')
+         RETURNING id`,
+        [s.userId, s.companyId, s.fiscalPeriodId, n.rows[0]!.n, originalId],
+      )
+      const stornoId = header.rows[0]!.id
+      await client.query(
+        `INSERT INTO public.journal_entry_lines (journal_entry_id, account_number, debit_amount, credit_amount)
+         VALUES ($1, '3001', 1000, 0), ($1, '1930', 0, 1000)`,
+        [stornoId],
+      )
+      const posted = await client.query<{ status: string; committed_at: Date | null }>(
+        `UPDATE public.journal_entries SET status = 'posted' WHERE id = $1 RETURNING status, committed_at`,
+        [stornoId],
+      )
+      expect(posted.rows[0]!.status).toBe('posted')
+      expect(posted.rows[0]!.committed_at).not.toBeNull()
+
+      // The CAS on the original was lost: clean up as the same user.
+      const { rows } = await client.query<{ r: RpcResult }>(
+        `SELECT public.cancel_orphaned_entry($1::uuid, $2::uuid) AS r`,
+        [s.companyId, stornoId],
+      )
+      expect(rows[0]!.r).toMatchObject({ cancelled: true, previous_status: 'posted' })
+      const state = await client.query<{ status: string; lines: string }>(
+        `SELECT je.status, (SELECT count(*) FROM public.journal_entry_lines l WHERE l.journal_entry_id = je.id) AS lines
+           FROM public.journal_entries je WHERE je.id = $1`,
+        [stornoId],
+      )
+      expect(state.rows[0]).toEqual({ status: 'cancelled', lines: '2' })
+    })
+    expect(await entryState(originalId)).toEqual({ status: 'posted', lines: 2 })
+  })
+
   it('works for service_role acting as p_user_id, and refuses service_role without an actor', async () => {
     const s = await seed()
     const entryId = await postEntry(s, { voucherNumber: 1 })

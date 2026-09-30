@@ -142,6 +142,7 @@ DECLARE
   v_series       text;
   v_explanation  text := nullif(btrim(coalesce(p_gap_explanation, '')), '');
   v_gap_recorded boolean := false;
+  v_gap_rows     integer;
 BEGIN
   -- Same trust split as commit_journal_entry, the door that posted the
   -- orphan, so cleanup is never stricter than the post it undoes:
@@ -245,7 +246,15 @@ BEGIN
 
   -- The stranded number as a closed single-voucher range: every reader keys
   -- explanations on series:gap_start:gap_end. An existing explanation for
-  -- the same number (possibly a human's) wins.
+  -- the same number (possibly a human's) wins, and gap_recorded then says
+  -- false: it reports whether this call wrote the row.
+  --
+  -- Being DEFINER, this insert passes the owner/admin RLS on
+  -- voucher_gap_explanations for any company writer, on purpose (see the
+  -- header). The row can only describe the acting user's own voucher number
+  -- that was cancelled just above, it carries that user's id, and it cannot
+  -- hide a real gap: the cancelled header still occupies the number, which
+  -- detect_voucher_gaps counts as used.
   IF v_explanation IS NOT NULL THEN
     v_series := coalesce(nullif(v_entry.voucher_series, ''), 'A');
     INSERT INTO public.voucher_gap_explanations
@@ -254,7 +263,8 @@ BEGIN
       (p_company_id, v_actor, v_entry.fiscal_period_id, v_series,
        v_entry.voucher_number, v_entry.voucher_number, left(v_explanation, 500))
     ON CONFLICT (company_id, fiscal_period_id, voucher_series, gap_start, gap_end) DO NOTHING;
-    v_gap_recorded := true;
+    GET DIAGNOSTICS v_gap_rows = ROW_COUNT;
+    v_gap_recorded := v_gap_rows > 0;
   END IF;
 
   RETURN jsonb_build_object(
