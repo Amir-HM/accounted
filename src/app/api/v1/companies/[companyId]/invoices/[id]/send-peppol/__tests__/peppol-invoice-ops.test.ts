@@ -13,6 +13,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { makeCompanySettings, makeCustomer, makeInvoice } from '@/tests/helpers'
 import { registerPeppolTransport, type PeppolTransport } from '@/lib/invoices/peppol-transport'
+import { createConnectorPeppolTransport } from '@/lib/invoices/transports/connector'
 
 beforeAll(() => {
   if (process.env.NODE_ENV !== 'test') throw new Error('NODE_ENV=test required')
@@ -101,6 +102,11 @@ const wrote = (client: ReturnType<typeof makeClient>) =>
   client.calls.some((c) => (!DOOR_TABLES.has(c.table) && WRITES.has(c.method)) || c.table === 'rpc')
 const rpcNames = (client: ReturnType<typeof makeClient>) =>
   client.calls.filter((c) => c.table === 'rpc').map((c) => c.method)
+/** The arguments of every lifecycle event the send recorded, in order. */
+const eventArgs = (client: ReturnType<typeof makeClient>) =>
+  client.calls
+    .filter((c) => c.table === 'rpc' && c.method === 'record_peppol_delivery_event')
+    .map((c) => c.args[0] as Record<string, unknown>)
 
 const COMPANY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const INV_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -169,6 +175,7 @@ const delivery = {
 function makeTransport(overrides: Partial<PeppolTransport> = {}): PeppolTransport {
   return {
     provider: 'test-ap',
+    tenantId: 'test-ap-account',
     lookupRecipient: vi.fn().mockResolvedValue({
       reachable: true,
       participant: { scheme: '0007', identifier: '5566778899' },
@@ -407,7 +414,44 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send-peppol', () => {
     expect(transport.lookupRecipient).toHaveBeenCalledWith({ scheme: '0007', identifier: '5566778899' })
     expect(transport.submit).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: IDEMPOTENCY_KEY, tenantReference: COMPANY_ID }))
     expect(rpcNames(client).filter((n) => n === 'record_peppol_delivery_event')).toHaveLength(3)
+    // Every event carries the transport's own tenant label.
+    expect(eventArgs(client).map((a) => a.p_provider_tenant_id)).toEqual(['test-ap-account', 'test-ap-account', 'test-ap-account'])
     expect(markSentMock).not.toHaveBeenCalled()
+  })
+
+  it('records a send through the connector under the connector label', async () => {
+    unregister?.()
+    process.env.PEPPOL_TRANSPORT_PROVIDER = 'connector'
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({
+        reachable: true,
+        participant: { scheme: '0007', identifier: '5566778899' },
+        capabilities: [],
+        checkedAt: '2026-09-29T10:00:01.000Z',
+      }))
+      .mockResolvedValueOnce(json({
+        provider: 'qvalia',
+        providerSubmissionId: 'int-1',
+        idempotencyKey: IDEMPOTENCY_KEY,
+        tenantReference: COMPANY_ID,
+        acceptedAt: '2026-09-29T10:00:02.000Z',
+      }))
+    unregister = registerPeppolTransport(createConnectorPeppolTransport(
+      { baseUrl: 'https://connect.example.test/api/connect/peppol', key: 'gnubok_ck_test' },
+      { fetch: fetchMock as unknown as typeof fetch },
+    ))
+    const client = sendClient()
+    mockServiceClient.mockReturnValue(client)
+
+    const res = await send()
+
+    expect(res.status).toBe(201)
+    const events = eventArgs(client)
+    expect(events.map((a) => a.p_normalized_status)).toEqual(['recipient_verified', 'submitting', 'submission_accepted'])
+    for (const event of events) {
+      expect(event).toMatchObject({ p_provider: 'connector', p_provider_tenant_id: 'connector' })
+    }
   })
 
   it('numbers a draft before building the document and issues it before the network gets it', async () => {
