@@ -96,11 +96,14 @@ export function DocumentRecord({ documentId, initialPage = null }: { documentId:
 
   // Offered only where the server would take it (view.deletable, canDeleteDocument): a document tied to a verifikat
   // is räkenskapsinformation and stays. The server still has the last word, so a refusal shows its own message.
-  const handleDelete = async (fileName: string) => {
+  // An agreement read from the document goes with it (agreements.source_document_id cascades), so the confirm says so.
+  const handleDelete = async (fileName: string, agreementTitle: string | null) => {
     const ok = await confirmDelete(
       {
         title: t('record_delete_title', { name: fileName }),
-        description: t('record_delete_description'),
+        description: agreementTitle
+          ? `${t('record_delete_description')} ${t('record_delete_agreement', { title: agreementTitle })}`
+          : t('record_delete_description'),
         confirmLabel: t('record_delete_confirm'),
         cancelLabel: tCommon('cancel'),
       },
@@ -162,7 +165,7 @@ export function DocumentRecord({ documentId, initialPage = null }: { documentId:
           // with a quiet delete beside it for a document nothing is booked on (crm#230).
           <div className="flex items-center gap-2">
             {view.deletable ? (
-              <Button size="sm" variant="ghost" onClick={() => void handleDelete(view.file_name)}>
+              <Button size="sm" variant="ghost" onClick={() => void handleDelete(view.file_name, view.agreement?.title ?? null)}>
                 {t('record_delete')}
               </Button>
             ) : null}

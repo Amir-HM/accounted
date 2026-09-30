@@ -18,3 +18,31 @@
 export function canDeleteDocument(doc: { journal_entry_id?: string | null; journal_entry_line_id?: string | null }): boolean {
   return !doc.journal_entry_id && !doc.journal_entry_line_id
 }
+
+/** The records that hold a document without a verifikat link, as the Arkiv record reads them. */
+export interface DocumentRecordPins {
+  /** A supplier invoice has it as its underlag (supplier_invoices.document_id, ON DELETE SET NULL). */
+  supplierInvoice: boolean
+  /** An expense claim (utlägg) has it as its underlag (expense_claims.document_id, ON DELETE SET NULL). */
+  expenseClaim: boolean
+  /** Inbox items that carry it, as their file or as the received Peppol XML (channel_context.peppol_xml_document_id). */
+  inboxItems: Array<{ created_journal_entry_id: string | null; created_supplier_invoice_id: string | null }>
+}
+
+/**
+ * Whether the Arkiv record offers "Ta bort": canDeleteDocument(), and no
+ * registered record holds the document. The received Peppol XML of a booked
+ * e-invoice, and the underlag of a supplier invoice or an utlägg that has no
+ * verifikat link yet (kontantmetoden, unpaid), carry no journal_entry_id, so
+ * the server rule lets them go; whether it should is a founder question
+ * (crm#230). Until it is answered the one-click delete in Arkiv does not
+ * offer them. This narrows only what the UI offers, never the server rule.
+ */
+export function offersDocumentDelete(
+  doc: { journal_entry_id?: string | null; journal_entry_line_id?: string | null },
+  pins: DocumentRecordPins,
+): boolean {
+  if (!canDeleteDocument(doc)) return false
+  if (pins.supplierInvoice || pins.expenseClaim) return false
+  return !pins.inboxItems.some((i) => i.created_journal_entry_id != null || i.created_supplier_invoice_id != null)
+}

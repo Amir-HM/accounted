@@ -222,7 +222,7 @@ export async function removeDocument(
     if (error || !data) return NOT_FOUND
     const row = data as { id: string; file_name: string; journal_entry_id: string | null; journal_entry_line_id: string | null }
     if (!canDeleteDocument(row)) {
-      return { ok: false, code: 'DOC_DELETE_LINKED', details: { journal_entry_id: row.journal_entry_id } }
+      return { ok: false, code: 'DOC_DELETE_LINKED', details: { journal_entry_id: row.journal_entry_id, journal_entry_line_id: row.journal_entry_line_id } }
     }
     return {
       ok: true,

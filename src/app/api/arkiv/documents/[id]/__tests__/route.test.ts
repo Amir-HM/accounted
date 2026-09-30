@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { parseJsonResponse, createQueuedMockSupabase } from '@/tests/helpers'
 
-const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
+const { supabase: mockSupabase, enqueue, reset, findCalls } = createQueuedMockSupabase()
 
 vi.mock('@/lib/auth/require-auth', () => ({ requireAuth: vi.fn() }))
 vi.mock('@/lib/company/context', () => ({ getActiveCompanyId: vi.fn() }))
@@ -74,5 +74,71 @@ describe('GET /api/arkiv/documents/[id]', () => {
     const { status, body } = await parseJsonResponse(await call())
     expect(status).toBe(200)
     expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+  })
+
+  // crm#230 founder question: a document a registered record holds without a verifikat link is not offered for delete.
+  const unlinkedReceipt = { id: DOC, file_name: 'kvitto.pdf', created_at: '2026-09-15', page_count: 1, doc_type: 'receipt', admission_state: 'admitted', journal_entry_id: null, journal_entry_line_id: null, pages_read_at: '2026-09-15', read_error: null, extracted_data: null }
+
+  it('does not offer the delete for the underlag of a supplier invoice', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ data: [{ id: 'si-1' }] })
+    const { status, body } = await parseJsonResponse(await call())
+    expect(status).toBe(200)
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+    expect(findCalls('supplier_invoices', 'eq')).toEqual([['company_id', 'company-1'], ['document_id', DOC]])
+  })
+
+  it('does not offer the delete for the underlag of an utlagg', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ data: [] })
+    enqueue({ data: [{ id: 'ec-1' }] })
+    const { body } = await parseJsonResponse(await call())
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+  })
+
+  it('does not offer the delete for the received Peppol XML of a booked e-invoice', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: { ...unlinkedReceipt, file_name: 'peppol-faktura-1.xml', doc_type: 'invoice.supplier' } })
+    enqueue({ data: null })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [{ created_journal_entry_id: 'je-1', created_supplier_invoice_id: null }] })
+    const { body } = await parseJsonResponse(await call())
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: false })
+    expect(findCalls('invoice_inbox_items', 'eq')).toContainEqual(['channel_context->>peppol_xml_document_id', DOC])
+  })
+
+  it('offers the delete for a document whose inbox item was never booked', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ data: [] })
+    enqueue({ data: [] })
+    enqueue({ data: [{ created_journal_entry_id: null, created_supplier_invoice_id: null }] })
+    enqueue({ data: [] })
+    const { body } = await parseJsonResponse(await call())
+    expect((body as { data: Record<string, unknown> }).data).toMatchObject({ deletable: true })
+  })
+
+  it('is 500 when a pin lookup fails', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: unlinkedReceipt })
+    enqueue({ data: null })
+    enqueue({ error: { message: 'boom' } })
+    expect((await parseJsonResponse(await call())).status).toBe(500)
+  })
+
+  it('reads no pins for a document linked to a verifikat', async () => {
+    delete process.env.ARKIV_BRAIN_COMPANY_IDS
+    enqueue({ data: { ...unlinkedReceipt, journal_entry_id: 'je-1' } })
+    enqueue({ data: null })
+    enqueue({ data: { id: 'je-1', voucher_series: 'A', voucher_number: 7 } })
+    await call()
+    expect(findCalls('supplier_invoices', 'select')).toEqual([])
   })
 })

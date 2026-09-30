@@ -11648,6 +11648,7 @@
     "record_delete": "Delete",
     "record_delete_title": "Delete {name}?",
     "record_delete_description": "The document and its file are removed permanently and cannot be restored. It is not linked to any journal entry.",
+    "record_delete_agreement": "The agreement {title} read from the document is removed as well.",
     "record_delete_confirm": "Delete permanently",
     "record_deleted": "The document was deleted",
     "record_delete_failed": "Could not delete the document",
