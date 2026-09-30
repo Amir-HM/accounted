@@ -58,8 +58,9 @@ import {
   payeeAccountProblem,
 } from './bank-account'
 
-export const SALARY_PAYMENT_FILE_FORMATS = ['pain001', 'bg_lb'] as const
-export type SalaryPaymentFileFormat = (typeof SALARY_PAYMENT_FILE_FORMATS)[number]
+import { SALARY_PAYMENT_FILE_FORMATS, type SalaryPaymentFileFormat } from './payment-format'
+
+export { SALARY_PAYMENT_FILE_FORMATS, type SalaryPaymentFileFormat }
 
 /** Run statuses a payment file may be generated from. */
 export const SALARY_PAYMENT_FILE_ALLOWED_STATUSES = ['approved', 'paid', 'booked'] as const

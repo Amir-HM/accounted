@@ -15,8 +15,9 @@ import { downloadFile } from '@/lib/browser/download-file'
 import { failureDescription } from '@/lib/browser/action-failure'
 import { cn, formatDateTime } from '@/lib/utils'
 import type { ErrorLocale } from '@/lib/errors/get-error-message'
+import { parseSalaryPaymentFormat, type SalaryPaymentFileFormat } from '@/lib/salary/payment/payment-format'
 
-type PaymentFormat = 'bg_lb' | 'pain001'
+type PaymentFormat = SalaryPaymentFileFormat
 
 interface PaymentFilePanelProps {
   salaryRunId: string
@@ -183,7 +184,12 @@ export function PaymentFilePanel({
             <SettingsSelect
               aria-label={t('format_label')}
               value={format}
-              onChange={(e) => setFormat(e.target.value as PaymentFormat)}
+              onChange={(e) => {
+                // The select value is DOM text: narrow it to a known format
+                // before it drives any URL, and ignore anything else.
+                const next = parseSalaryPaymentFormat(e.target.value)
+                if (next) setFormat(next)
+              }}
               wrapperClassName="-my-1"
             >
               <option value="pain001">{FORMAT_LABEL.pain001}</option>

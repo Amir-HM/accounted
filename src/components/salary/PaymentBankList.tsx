@@ -9,13 +9,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { QUIET_LINK_CLASS, VTD_CLASS, VTH_CLASS } from '@/components/ui/dry-table'
 import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import type { SalaryBankList } from '@/lib/salary/payment/bank-list'
+import { salaryBankListUrl, type SalaryPaymentFileFormat } from '@/lib/salary/payment/payment-format'
 import { cn, formatCurrency } from '@/lib/utils'
-
-type PaymentFormat = SalaryBankList['format']
 
 interface PaymentBankListProps {
   salaryRunId: string
-  format: PaymentFormat
+  format: SalaryPaymentFileFormat
 }
 
 /**
@@ -28,9 +27,12 @@ export function PaymentBankList({ salaryRunId, format }: PaymentBankListProps) {
   const locale = useLocale() as ErrorLocale
   const [open, setOpen] = useState(false)
 
-  const base = `/api/salary/runs/${salaryRunId}/payment/bank-list`
-  const { data, error, isLoading } = useSWR<SalaryBankList, Error>([base, format], async ([url, f]: [string, string]) => {
-    const res = await fetch(`${url}?format=${f}`)
+  // Both URLs come from the allow-listed format with an encoded query, so no
+  // DOM text reaches the fetch or the link attribute as is.
+  const listUrl = salaryBankListUrl(salaryRunId, format)
+  const pdfUrl = salaryBankListUrl(salaryRunId, format, 'pdf')
+  const { data, error, isLoading } = useSWR<SalaryBankList, Error>(listUrl, async (url: string) => {
+    const res = await fetch(url)
     const json = await res.json().catch(() => null)
     if (!res.ok) throw new Error(getErrorMessage(json, { context: 'salary', statusCode: res.status, locale }))
     return (json as { data: SalaryBankList }).data
@@ -71,7 +73,7 @@ export function PaymentBankList({ salaryRunId, format }: PaymentBankListProps) {
             {open ? t('bank_list_hide') : t('bank_list_show')}
           </button>
           <a
-            href={`${base}/pdf?format=${format}`}
+            href={pdfUrl}
             target="_blank"
             rel="noopener noreferrer"
             className={QUIET_LINK_CLASS}
