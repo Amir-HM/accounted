@@ -87,13 +87,15 @@ export function isVaxaStodRefundMonth(vaxaWindow: VaxaStodWindow, paymentDate: s
  * Run-level reminder naming every employee whose payment falls in a
  * växa-stöd month: the AGI now carries the avgifter without växa-stöd, and
  * the refund only reaches the company when someone applies for it. Null when
- * no employee has such a month.
+ * no employee has such a month. The engine's per-payment amount caps each
+ * payment on its own, so the warning says the cap is per calendar month.
  */
 export function vaxaStodRefundWarning(employeeNames: string[]): string | null {
   if (employeeNames.length === 0) return null
   return (
     `Växa-stöd dras inte av i arbetsgivardeklarationen: avgifterna för ${employeeNames.join(', ')} redovisas utan växa-stöd. ` +
     'Ansök om återbetalning hos Skatteverket när månadens arbetsgivardeklaration är lämnad, senast ett år efter kalendermånaden. ' +
-    'Förväntat belopp står i beräkningsdetaljerna där det kan beräknas.'
+    'Förväntat belopp står i beräkningsdetaljerna där det kan beräknas. ' +
+    'Taket gäller per kalendermånad: har någon fått flera utbetalningar samma månad, räkna taket på summan av dem.'
   )
 }

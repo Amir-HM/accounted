@@ -67,4 +67,8 @@ describe('vaxaStodRefundWarning', () => {
     expect(warning).toContain('Ansök om återbetalning hos Skatteverket')
     expect(warning).toContain('senast ett år efter kalendermånaden')
   })
+
+  it('says the cap is per calendar month, since each payment is capped on its own', () => {
+    expect(vaxaStodRefundWarning(['Anna Andersson'])).toContain('Taket gäller per kalendermånad')
+  })
 })
