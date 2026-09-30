@@ -383,11 +383,10 @@ async function submitStagedDocument(args: {
   const { supabase, companyId, userId, log } = ctx
   const invoiceId = invoice.id
   const provider = transport.provider
-  // Consolidated Qvalia setup: one provider account for every company. The
-  // adapter resolves the account; the lifecycle only needs a stable label.
-  const tenantId = process.env.QVALIA_ACCOUNT_REG_NO?.trim()
-    || process.env.QVALIA_PARTNER_REG_NO?.trim()
-    || provider
+  // The transport's own label: the first event writes it on the row for
+  // good, and the lifecycle RPC refuses a later event (a poll, a webhook)
+  // that carries another one.
+  const tenantId = transport.tenantId
   const result = (
     delivery: PeppolDeliverySummary,
     rest: Partial<PeppolSendResult> = {},

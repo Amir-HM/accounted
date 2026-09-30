@@ -9,6 +9,7 @@ import { useAccounts, useCashAccounts, useFiscalPeriods } from '@/lib/reference-
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { notifyBankSyncUpdated } from '@/lib/transactions/bank-sync-signal'
 import { classifyInitialSyncError } from '@/lib/bank-sync/initial-sync-error'
+import { bankMatchesQuery, searchAliasHint } from '@/lib/bank-sync/bank-search'
 import type { CashAccount } from '@/types'
 import { allocateLedgers, ledgerClaims, ledgerName, ledgerOptions } from '@/lib/onboarding-books/ledger'
 import { LOOKBACK_SAFE_DAYS, resolveLookback, type LookbackMode } from '@/lib/onboarding-books/lookback'
@@ -126,9 +127,10 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
   }, [banks])
   const shownBanks = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (q) return orderedBanks.filter((b) => b.name.toLowerCase().includes(q))
+    if (q) return orderedBanks.filter((b) => bankMatchesQuery(b, q))
     return more ? orderedBanks : orderedBanks.slice(0, PICK_COUNT)
   }, [orderedBanks, more, query])
+  const aliasHint = searchAliasHint(shownBanks, query)
 
   // The bank's login runs in a popup, like the provider logins: the callback
   // page posts its outcome back and closes itself, so this page never
@@ -245,14 +247,19 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
       const row = data as { id: string; bank_name: string | null; status: string; accounts_data: StoredPickerAccount[] | null } | null
       // Nothing to choose from is the bank's answer, not a state to sit in:
       // back to the bank list with the reason. An account another company
-      // books is NOT that case: it is listed, named and left to the user.
-      if (!row || !row.accounts_data || row.accounts_data.length === 0) {
+      // books is NOT that case: it is listed, named and left to the user. A
+      // consent holding only a card account that mirrors the main account is:
+      // that account is never a choice.
+      const pickable = row?.accounts_data
+        ? toPickerAccounts(row.accounts_data, { account: t('bank_account'), otherCompany: t('bank_claimed_other_company') })
+        : []
+      if (!row || pickable.length === 0) {
         setAttn(t('bank_no_accounts'))
         dispatch({ type: 'BANK_PICK_FAILED' })
         return
       }
       if (row.bank_name && row.bank_name !== state.bankName) dispatch({ type: 'BANK_AUTHED', name: row.bank_name, connectionId: row.id })
-      setAccts(toPickerAccounts(row.accounts_data, { account: t('bank_account'), otherCompany: t('bank_claimed_other_company') }))
+      setAccts(pickable)
     })()
     return () => { cancelled = true }
   }, [phase, accts, state.bankConnectionId, state.bankName, supabase, dispatch, t])
@@ -437,6 +444,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
               ))}
             </div>
             {shownBanks.length === 0 ? <p className="jny-qsub">{t('bank_no_matches')}</p> : null}
+            {aliasHint ? <p className="jny-qsub">{t('bank_alias_hint', { product: aliasHint.product, bank: aliasHint.bank })}</p> : null}
             {/* The way out sits under the banks, quiet: connecting is the point of the step (founder direction 2026-09-14). */}
             <div className="bank-exit">
               <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>

@@ -14,6 +14,7 @@ import {
   registerPeppolTransport,
   type PeppolTransport,
 } from '@/lib/invoices/peppol-transport'
+import { createConnectorPeppolTransport } from '@/lib/invoices/transports/connector'
 
 const { supabase: mockSupabase, enqueue, reset } = createQueuedMockSupabase()
 const serviceTables = createQueuedMockSupabase()
@@ -144,6 +145,7 @@ const acceptedReceipt = {
 function makeTransport(overrides: Partial<PeppolTransport> = {}): PeppolTransport {
   return {
     provider: 'qvalia',
+    tenantId: 'SE5560000000',
     lookupRecipient: vi.fn().mockResolvedValue({
       reachable: true,
       participant: { scheme: '0007', identifier: '5566778899' },
@@ -211,7 +213,6 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
     serviceTables.reset()
     serviceRpcEcho()
     process.env.PEPPOL_TRANSPORT_PROVIDER = 'qvalia'
-    process.env.QVALIA_PARTNER_REG_NO = 'SE5560000000'
     requireAuthMock.mockResolvedValue({ user, supabase: mockSupabase, error: null })
     markSentMock.mockResolvedValue({ ok: true, journalEntryId: 'je-1', partialFailures: [] })
     restoreDraftMock.mockResolvedValue(true)
@@ -222,7 +223,7 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
     unregister?.()
     unregister = null
     delete process.env.PEPPOL_TRANSPORT_PROVIDER
-    delete process.env.QVALIA_PARTNER_REG_NO
+    delete process.env.QVALIA_ACCOUNT_REG_NO
   })
 
   function send() {
@@ -512,10 +513,49 @@ describe('POST /api/invoices/[id]/peppol/send', () => {
     expect(statuses).toEqual(['recipient_verified', 'submitting', 'submission_accepted'])
     for (const call of serviceRpcMock.mock.calls) {
       expect(call[0]).toBe('record_peppol_delivery_event')
-      expect((call[1] as Record<string, unknown>).p_provider_tenant_id).toBe('SE5560000000')
+      // The transport's own label, the one its later events carry.
+      expect((call[1] as Record<string, unknown>).p_provider_tenant_id).toBe(transport.tenantId)
     }
     expect(markSentMock).not.toHaveBeenCalled()
     expect(logMock.info).not.toHaveBeenCalledWith('peppol send refused', expect.anything())
+  })
+
+  it('records a send through the connector under the connector label, whatever account number the environment holds', async () => {
+    // Hosted in connector mode: no Qvalia keys, so the connector is the only
+    // transport. A leftover account number must not become the row's label:
+    // the status polls carry 'connector' and the lifecycle RPC would refuse them.
+    delete process.env.PEPPOL_TRANSPORT_PROVIDER
+    process.env.QVALIA_ACCOUNT_REG_NO = 'SE5595386219'
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({
+        reachable: true,
+        participant: { scheme: '0007', identifier: '5566778899' },
+        capabilities: [],
+        checkedAt: '2026-09-29T10:00:01.000Z',
+      }))
+      .mockResolvedValueOnce(json({ ...acceptedReceipt, acceptedAt: '2026-09-29T10:00:02.000Z' }))
+    unregister = registerPeppolTransport(createConnectorPeppolTransport(
+      { baseUrl: 'https://connect.example.test/api/connect/peppol', key: 'gnubok_ck_test' },
+      { fetch: fetchMock as unknown as typeof fetch },
+    ))
+    realCompany()
+    grantAccess()
+    stageInvoice()
+
+    const response = await send()
+
+    expect(response.status).toBe(201)
+    expect((await response.json()).data.delivery).toMatchObject({
+      provider: 'connector',
+      provider_submission_id: 'int-1',
+      status: 'submission_accepted',
+    })
+    const events = serviceRpcMock.mock.calls.map((call) => call[1] as Record<string, unknown>)
+    expect(events.map((event) => event.p_normalized_status)).toEqual(['recipient_verified', 'submitting', 'submission_accepted'])
+    for (const event of events) {
+      expect(event).toMatchObject({ p_provider: 'connector', p_provider_tenant_id: 'connector' })
+    }
   })
 
   it('issues and books a draft before the network gets it, then finishes it once accepted', async () => {
