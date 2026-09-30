@@ -46,12 +46,12 @@ function heldAgainst(holders: readonly SlotHolder[], ledger: string, account: { 
  * onto a slot a later account already holds. A pick wins when that slot is
  * free; otherwise the currency default, then the next overflow slot.
  * `used` are the company's existing cash-account ledgers (never handed out as
- * overflow). `connected` are the ledgers held by another bank connection: only
- * those block the currency default, see the header. Omitted, every used
- * ledger blocks it. `chart` are the company's chart account numbers, which
- * overflow reaches last, as on the server. `holders` are the rows outside
- * this connection (see {@link ledgerClaims}): one an account may not take
- * over also keeps it off that account's currency default.
+ * overflow). `connected` are the ledgers held by another bank connection:
+ * they block the currency default, see the header. Omitted, every used
+ * ledger blocks it. `holders` are the rows outside this connection (see
+ * {@link ledgerClaims}): one an account may not take over also keeps it off
+ * that account's currency default. `chart` are the company's chart account
+ * numbers, which overflow reaches last, as on the server.
  */
 export function allocateLedgers(
   ticked: LedgerPickInput[],
@@ -118,9 +118,9 @@ export function ledgerClaims(
 /**
  * The pick list for one account's Ändra row: its default first, then the
  * overflow slots. `connected` works as in {@link allocateLedgers}: when given,
- * only those ledgers keep the currency default off the list. `chart` orders
- * the overflow slots as there, and `holders` with the account's `iban` keep
- * the default off the list when its row is another bank account.
+ * those ledgers keep the currency default off the list, and so does a row in
+ * `holders` the account (by its `iban`) may not take over. `chart` orders the
+ * overflow slots as there.
  */
 export function ledgerOptions(
   currency: string,

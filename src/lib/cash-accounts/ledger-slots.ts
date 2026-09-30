@@ -1,11 +1,11 @@
 /**
  * Which 19xx account a bank account books on, which existing row it may take
  * over, and what a new chart row for it is called. One rule for the server
- * allocation (findFreeLedgerAccount and the
- * chart writers in lib/cash-accounts) and the onboarding preview
- * (lib/onboarding-books/ledger.ts), which sends its choice as an explicit
- * mapping. Pure, so the client bundle can import it: a separate client copy
- * drifted once and put SEK accounts on 1932 named "Bankkonto EUR".
+ * allocation (findFreeLedgerAccount and the chart writers in
+ * lib/cash-accounts) and the onboarding preview (lib/onboarding-books/ledger.ts),
+ * which sends its choice as an explicit mapping. Pure, so the client bundle
+ * can import it: a separate client copy drifted once and put SEK accounts on
+ * 1932 named "Bankkonto EUR".
  */
 
 /** Suggested BAS account per currency. */
