@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextResponse } from 'next/server'
-import { createQueuedMockSupabase, createMockRequest, createMockRouteParams } from '@/tests/helpers'
+import { createQueuedMockSupabase, createMockRequest, createMockRouteParams, parseJsonResponse } from '@/tests/helpers'
 
 // The route is wrapped in withRouteContext. Auth/company are injected via the
 // mocked requireAuth + getActiveCompanyId; the PDF pipeline is fully stubbed.
@@ -59,6 +59,22 @@ function authed() {
     error: null,
   })
   return { supabase, enqueue, enqueueMany }
+}
+
+// CodeRabbit on #3336: every failure is the canonical envelope withRouteContext
+// builds, never a hand-built { error: string }.
+async function expectEnvelope(response: Response, status: number, code: string) {
+  const { status: actual, body } = await parseJsonResponse(response)
+  expect(actual).toBe(status)
+  const envelope = (body as { error: Record<string, unknown> }).error
+  expect(envelope).toMatchObject({
+    code,
+    message: expect.any(String),
+    message_en: expect.any(String),
+    requestId: expect.stringMatching(/^req_/),
+  })
+  expect(response.headers.get('X-Request-Id')).toBe(envelope.requestId)
+  return envelope
 }
 
 describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
@@ -165,7 +181,7 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
     )
   })
 
-  it('returns 500 instead of printing hidden sections when the switches cannot be read', async () => {
+  it('returns 500 in the canonical envelope instead of printing hidden sections when the switches cannot be read', async () => {
     const { enqueueMany } = authed()
     enqueueMany([
       { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
@@ -179,7 +195,10 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
       createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
     )
 
-    expect(response.status).toBe(500)
+    const envelope = await expectEnvelope(response, 500, 'INTERNAL_ERROR')
+    expect(envelope.message).toBe('Kunde inte läsa lönespecifikationens inställningar')
+    // The driver's message stays in the log, never in the body.
+    expect(JSON.stringify(envelope)).not.toContain('timeout')
     expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
   })
 
@@ -278,7 +297,7 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
     expect(vi.mocked(buildPayslipData)).toHaveBeenCalledWith(expect.objectContaining({ run }))
   })
 
-  it('returns 500 when the issued sections cannot be fixed', async () => {
+  it('returns 500 in the canonical envelope when the issued sections cannot be fixed', async () => {
     const { enqueueMany } = authed()
     enqueueMany([
       { data: { id: 'run-1', status: 'approved', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
@@ -293,7 +312,9 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
       createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
     )
 
-    expect(response.status).toBe(500)
+    const envelope = await expectEnvelope(response, 500, 'INTERNAL_ERROR')
+    expect(envelope.message).toBe('Kunde inte läsa lönespecifikationens inställningar')
+    expect(JSON.stringify(envelope)).not.toContain('timeout')
     expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
   })
 
@@ -314,13 +335,14 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
     expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
   })
 
-  it('returns 400 for an unknown audience', async () => {
+  it('returns 400 in the canonical envelope for an unknown audience', async () => {
     authed()
     const response = await GET(
       createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'auditor' } }),
       createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
     )
-    expect(response.status).toBe(400)
+    const envelope = await expectEnvelope(response, 400, 'VALIDATION_ERROR')
+    expect(envelope).toMatchObject({ message: 'Ogiltig mottagare för lönespecifikationen', details: { field: 'audience' } })
     expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
   })
 
