@@ -185,6 +185,62 @@ describe('correctEntry', () => {
     ])
   })
 
+  it('treats an ambiguous CAS error that did land as a completed correction', async () => {
+    setupResults()
+    // 8: the CAS reports an error although the UPDATE committed; then the
+    // re-read of the original shows it pointing at our reversal.
+    results.splice(8, 1,
+      { data: null, error: { message: 'fetch failed' } },
+      { data: { status: 'reversed', reversed_by_id: 'reversal-1' }, error: null },
+    )
+    // The cleanup door refuses the reversal: the original references it.
+    vi.mocked(cancelOrphanedEntry).mockResolvedValue({
+      error: { message: 'is referenced by another verifikat', code: '55000' },
+    })
+
+    const supabase = makeClient()
+    const result = await correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
+
+    expect(result.reversal.id).toBe('reversal-1')
+    expect(result.corrected.id).toBe('corrected-1')
+    // Only the reversal cleanup was attempted; the replacement was never cancelled.
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
+  })
+
+  it('keeps the replacement posted when the reversal cleanup fails after a lost CAS', async () => {
+    const reversalEntry = makeJournalEntry({ id: 'reversal-1', reverses_id: 'orig-1' })
+    const correctedEntry = makeJournalEntry({ id: 'corrected-1', correction_of_id: 'orig-1' })
+    vi.mocked(cancelOrphanedEntry).mockResolvedValue({
+      error: { message: 'fetch failed' },
+    })
+
+    results = [
+      { data: originalEntry, error: null },         // 0: fetch original
+      { data: [{ id: 'acc-5420', account_number: '5420' }, { id: 'acc-1930', account_number: '1930' }], error: null }, // 1: accounts (Step 0)
+      { data: reversalEntry, error: null },          // 2: insert reversal
+      { data: null, error: null },                   // 3: insert reversal lines
+      { data: null, error: null },                   // 4: post reversal
+      { data: correctedEntry, error: null },         // 5: insert corrected
+      { data: null, error: null },                   // 6: insert corrected lines
+      { data: null, error: null },                   // 7: post corrected
+      { data: [], error: null },                     // 8: CAS fails: empty array
+      { data: { status: 'posted', reversed_by_id: null }, error: null }, // 9: re-read original
+    ]
+
+    const supabase = makeClient()
+    await expect(
+      correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
+    ).rejects.toThrow('already reversed')
+
+    // Cancelling the replacement while the reversal survives would net the
+    // original to zero with nothing in its place.
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
+  })
+
   it('keeps the original error when the rollback itself is refused', async () => {
     const reversalEntry = makeJournalEntry({ id: 'reversal-1', reverses_id: 'orig-1' })
     vi.mocked(cancelOrphanedEntry).mockResolvedValue({

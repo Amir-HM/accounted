@@ -30,11 +30,17 @@
 --      (enforce_journal_entry_insert_shape), and a never-posted draft keeps
 --      it NULL, so the cleanup of a cancelled draft is unaffected.
 --
---   3. cancel_orphaned_entry(): the one door that sets the GUC. It cancels a
+--   3. committed_by (journal_entries): the user who moved the entry from
+--      draft to posted, stamped by a new BEFORE trigger on that transition
+--      and frozen afterwards. user_id is only the creator: a writer can create
+--      or edit a draft that a colleague then posts, so the creator alone does
+--      not prove whose workflow posted it.
+--
+--   4. cancel_orphaned_entry(): the one door that sets the GUC. It cancels a
 --      posted entry only when it is provably the orphan of a workflow that
---      just failed: created by the acting user, posted within the last 15
---      minutes, referenced by no live verifikat, in an open and unlocked
---      period and not behind the company lock date. A draft is cancelled as
+--      just failed: created and posted by the acting user, posted within the
+--      last 15 minutes, referenced by no live verifikat, in an open and
+--      unlocked period and not behind the company lock date. A draft is cancelled as
 --      it is (anyone may cancel a draft), so a caller that does not know
 --      whether its own post landed gets the right outcome either way. An
 --      optional gap explanation is written in the same transaction, which
@@ -50,7 +56,12 @@
 --      RLS to team owners/admins, so under INVOKER an ordinary writer's gap
 --      row would abort the whole transaction, cancel included, and leave the
 --      orphan posted and double-counted, which is worse than the hole this
---      closes.
+--      closes. The definer does not widen who may author an explanation
+--      either: for a JWT caller the row is written only when the same RLS
+--      predicate (team owner/admin) would have let the caller insert it; for
+--      anyone else the cancel still happens and the note is skipped. No gap
+--      goes unexplained that way: the cancelled header keeps occupying its
+--      number, which detect_voucher_gaps counts as used.
 --
 -- The RPC never deletes lines: a cancelled header together with its lines is
 -- the retained record of how the voucher number was used (BFL 5 kap 5 § and
@@ -120,7 +131,54 @@ CREATE TRIGGER guard_posted_entry_line_delete
   FOR EACH ROW
   EXECUTE FUNCTION public.guard_posted_entry_line_delete();
 
--- 3. The sanctioned door
+-- 3. Posting actor
+
+ALTER TABLE public.journal_entries
+  ADD COLUMN IF NOT EXISTS committed_by uuid;
+
+COMMENT ON COLUMN public.journal_entries.committed_by IS
+  'User who moved the entry from draft to posted (auth.uid(), or user_id for a trusted backend caller). Stamped by stamp_journal_entry_committed_by, frozen once posted; NULL on drafts and on entries posted before 20260929220100.';
+
+CREATE OR REPLACE FUNCTION public.stamp_journal_entry_committed_by()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    -- Only a trusted writer can insert a non-draft (enforce_journal_entry_insert_shape).
+    IF NEW.status = 'draft' THEN
+      NEW.committed_by := NULL;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF OLD.status = 'draft' THEN
+    IF NEW.status = 'posted' THEN
+      -- Same trust split as commit_journal_entry: a JWT caller is auth.uid(),
+      -- a trusted backend posts on behalf of the entry's user.
+      IF public.jwt_caller_is_end_user() THEN
+        NEW.committed_by := auth.uid();
+      ELSE
+        NEW.committed_by := coalesce(auth.uid(), NEW.user_id);
+      END IF;
+    ELSE
+      NEW.committed_by := NULL;
+    END IF;
+  ELSE
+    NEW.committed_by := OLD.committed_by;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS stamp_journal_entry_committed_by ON public.journal_entries;
+CREATE TRIGGER stamp_journal_entry_committed_by
+  BEFORE INSERT OR UPDATE ON public.journal_entries
+  FOR EACH ROW
+  EXECUTE FUNCTION public.stamp_journal_entry_committed_by();
+
+-- 4. The sanctioned door
 
 CREATE OR REPLACE FUNCTION public.cancel_orphaned_entry(
   p_company_id      uuid,
@@ -162,7 +220,7 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
-  SELECT je.id, je.company_id, je.status, je.user_id, je.committed_at,
+  SELECT je.id, je.company_id, je.status, je.user_id, je.committed_at, je.committed_by,
          je.fiscal_period_id, je.voucher_series, je.voucher_number, je.entry_date
     INTO v_entry
     FROM public.journal_entries je
@@ -196,6 +254,11 @@ BEGIN
   -- Proof that this posted entry is the orphan of the caller's own workflow.
   IF v_entry.user_id IS DISTINCT FROM v_actor THEN
     RAISE EXCEPTION 'cancel_orphaned_entry: journal entry % was not created by the acting user; use a storno instead', p_entry_id
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF v_entry.committed_by IS DISTINCT FROM v_actor THEN
+    RAISE EXCEPTION 'cancel_orphaned_entry: journal entry % was not posted by the acting user; use a storno instead', p_entry_id
       USING ERRCODE = '42501';
   END IF;
 
@@ -249,13 +312,21 @@ BEGIN
   -- the same number (possibly a human's) wins, and gap_recorded then says
   -- false: it reports whether this call wrote the row.
   --
-  -- Being DEFINER, this insert passes the owner/admin RLS on
-  -- voucher_gap_explanations for any company writer, on purpose (see the
-  -- header). The row can only describe the acting user's own voucher number
-  -- that was cancelled just above, it carries that user's id, and it cannot
-  -- hide a real gap: the cancelled header still occupies the number, which
-  -- detect_voucher_gaps counts as used.
-  IF v_explanation IS NOT NULL THEN
+  -- Being DEFINER, this insert would bypass the owner/admin RLS on
+  -- voucher_gap_explanations, so a JWT caller gets the row only when that
+  -- same predicate would have let them insert it themselves. Otherwise the
+  -- note is skipped (gap_recorded false); no gap is left unexplained, since
+  -- the cancelled header still occupies the number, which detect_voucher_gaps
+  -- counts as used. A trusted backend caller keeps writing it.
+  IF v_explanation IS NOT NULL
+     AND (NOT public.jwt_caller_is_end_user()
+          OR EXISTS (
+            SELECT 1
+              FROM public.team_members tm
+              JOIN public.companies c ON c.team_id = tm.team_id
+             WHERE c.id = p_company_id
+               AND tm.user_id = v_actor
+               AND tm.role IN ('owner', 'admin'))) THEN
     v_series := coalesce(nullif(v_entry.voucher_series, ''), 'A');
     INSERT INTO public.voucher_gap_explanations
       (company_id, user_id, fiscal_period_id, voucher_series, gap_start, gap_end, explanation)

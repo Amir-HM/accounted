@@ -1371,10 +1371,12 @@ export function getSwedishLocalDate(now: Date = new Date()): string {
  * posted -> cancelled is gated in the database: a direct UPDATE is refused
  * for every role, and the cancel_orphaned_entry RPC is the one door. It locks
  * the row and cancels it in whatever state the workflow left it: a draft as
- * it is, a posted entry only when the acting user created it and it was
- * posted within the last 15 minutes, no live verifikat references it, and its
+ * it is, a posted entry only when the acting user both created and posted it
+ * within the last 15 minutes, no live verifikat references it, and its
  * period is open and not behind the lock date. `gapExplanation`, when given, is written to
- * voucher_gap_explanations in the same transaction.
+ * voucher_gap_explanations in the same transaction when the caller may author
+ * one (team owner/admin, or a trusted backend client); otherwise it is skipped,
+ * and the cancelled header still occupies its number, so no gap opens.
  *
  * The cancelled header keeps its lines: together they are the retained record
  * of how the voucher number was used, and every report excludes cancelled

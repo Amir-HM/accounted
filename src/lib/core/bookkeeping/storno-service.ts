@@ -102,17 +102,22 @@ function isIdenticalToOriginal(
  * cancels the entry whether it is still a draft or already posted, and keeps
  * its lines as the record of the used voucher number. Never throws, so the
  * error that triggered the rollback is the one the caller sees.
+ *
+ * @returns true when the entry is now cancelled, false when the cleanup was
+ * refused or failed (the entry is left as it was).
  */
 async function cancelEntry(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
   entryId: string,
-): Promise<void> {
+): Promise<boolean> {
   const { error } = await cancelOrphanedEntry(supabase, companyId, userId, entryId)
   if (error) {
     console.error(`[storno] cancelEntry: failed to cancel ${entryId}:`, error.message)
+    return false
   }
+  return true
 }
 
 /** Journal entry row fetched together with its lines (the embedded select). */
@@ -463,10 +468,34 @@ export async function correctEntry(
     .select('id')
 
   if (casError || !updatedOriginal || updatedOriginal.length === 0) {
-    // Concurrent reversal beat us: cancel both our entries
-    await cancelEntry(supabase, companyId, userId, reversalEntry.id)
-    await cancelEntry(supabase, companyId, userId, correctedEntry!.id)
-    throw new EntryAlreadyReversedError()
+    // Concurrent reversal beat us: cancel both our entries, the reversal
+    // first. The replacement is only cancelled once the reversal is gone:
+    // cancelling it while the reversal stays posted would leave the original
+    // netted to zero with no replacement, erasing the affärshändelse.
+    const reversalCancelled = await cancelEntry(supabase, companyId, userId, reversalEntry.id)
+    if (reversalCancelled) {
+      await cancelEntry(supabase, companyId, userId, correctedEntry!.id)
+      throw new EntryAlreadyReversedError()
+    }
+
+    // The cleanup door refuses a reversal the original points at, which is
+    // what an ambiguous CAS error that did land looks like. Then the chain is
+    // complete (original reversed, reversal and replacement posted) and this
+    // is a successful correction.
+    const { data: originalNow } = await supabase
+      .from('journal_entries')
+      .select('status, reversed_by_id')
+      .eq('id', originalEntryId)
+      .eq('company_id', companyId)
+      .single()
+    if (originalNow?.status !== 'reversed' || originalNow.reversed_by_id !== reversalEntry.id) {
+      // Anything else keeps the replacement posted beside the surviving
+      // reversal, so the amounts stay right; the links need a manual look.
+      console.error(
+        `[storno] correctEntry: reversal ${reversalEntry.id} could not be cancelled after a failed CAS on ${originalEntryId}; replacement ${correctedEntry!.id} kept posted`,
+      )
+      throw new EntryAlreadyReversedError()
+    }
   }
 
   // Re-point bank transactions and underlag from the original to the corrected

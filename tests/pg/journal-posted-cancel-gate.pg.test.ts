@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import type { PoolClient } from 'pg'
 import { getClient, getPool, runAsServiceRole, withUserContext } from './setup'
 import { insertAuthUser, insertCompanyMember, seedCompany } from './fixtures'
 
@@ -23,6 +24,25 @@ async function setActiveCompany(userId: string, companyId: string): Promise<void
      VALUES ($1, $2)
      ON CONFLICT (user_id) DO UPDATE SET active_company_id = EXCLUDED.active_company_id`,
     [userId, companyId],
+  )
+}
+
+// Attach the company to a team where the user holds `role`: the
+// voucher_gap_explanations INSERT policy admits team owners/admins only.
+async function joinCompanyTeam(s: Seeded, userId: string, role: 'owner' | 'admin' | 'member'): Promise<void> {
+  const { rows } = await getPool().query<{ team_id: string | null }>(
+    `SELECT team_id FROM public.companies WHERE id = $1`,
+    [s.companyId],
+  )
+  let teamId = rows[0]?.team_id ?? null
+  if (!teamId) {
+    teamId = randomUUID()
+    await getPool().query(`INSERT INTO public.teams (id, name, created_by) VALUES ($1, 'Team', $2)`, [teamId, s.userId])
+    await getPool().query(`UPDATE public.companies SET team_id = $1 WHERE id = $2`, [teamId, s.companyId])
+  }
+  await getPool().query(
+    `INSERT INTO public.team_members (team_id, user_id, role) VALUES ($1, $2, $3)`,
+    [teamId, userId, role],
   )
 }
 
@@ -260,6 +280,7 @@ describe('cancel_orphaned_entry: the sanctioned cleanup door', () => {
 
   it('cancels a payment orphan and writes its gap explanation in the same transaction', async () => {
     const s = await seed()
+    await joinCompanyTeam(s, s.userId, 'owner')
     const paymentId = await postEntry(s, { voucherNumber: 5, sourceType: 'supplier_invoice_paid' })
 
     await withUserContext(s.userId, async (client) => {
@@ -283,6 +304,33 @@ describe('cancel_orphaned_entry: the sanctioned cleanup door', () => {
         },
       ])
     })
+  })
+
+  it('cancels for a writer who may not author gap explanations, but skips the note', async () => {
+    // The definer insert must not widen voucher_gap_explanations authorship
+    // beyond its RLS (team owner/admin). The cancelled header still occupies
+    // the number, so no gap opens either way.
+    const s = await seed()
+    const colleague = await insertAuthUser()
+    await insertCompanyMember({ companyId: s.companyId, userId: colleague, role: 'member' })
+    await setActiveCompany(colleague, s.companyId)
+    await joinCompanyTeam(s, colleague, 'member')
+    const paymentId = await postEntry(s, { voucherNumber: 5, userId: colleague, sourceType: 'supplier_invoice_paid' })
+
+    await withUserContext(colleague, async (client) => {
+      const { rows } = await client.query<{ r: RpcResult }>(
+        `SELECT public.cancel_orphaned_entry($1::uuid, $2::uuid, NULL, $3) AS r`,
+        [s.companyId, paymentId, 'Fritext från en skribent'],
+      )
+      expect(rows[0].r).toMatchObject({ cancelled: true, previous_status: 'posted', gap_recorded: false })
+      // withUserContext rolls back, so read the outcome inside it.
+      const state = await client.query<{ status: string }>(`SELECT status FROM public.journal_entries WHERE id = $1`, [paymentId])
+      expect(state.rows[0]!.status).toBe('cancelled')
+      const gaps = await client.query(`SELECT 1 FROM public.voucher_gap_explanations WHERE company_id = $1`, [s.companyId])
+      expect(gaps.rowCount).toBe(0)
+    })
+    const gaps = await getPool().query(`SELECT 1 FROM public.voucher_gap_explanations WHERE company_id = $1`, [s.companyId])
+    expect(gaps.rowCount).toBe(0)
   })
 
   it('keeps an existing explanation for the number and reports gap_recorded false', async () => {
@@ -437,6 +485,137 @@ describe('cancel_orphaned_entry: the sanctioned cleanup door', () => {
 
     await expect(cancelAsTrusted(s.companyId, entryId, colleague)).rejects.toThrow(/not created by the acting user/)
     expect(await entryState(entryId)).toEqual({ status: 'posted', lines: 2 })
+  })
+
+  it('refuses the creator of a draft that a colleague posted', async () => {
+    // user_id is only the creator: the posting actor (committed_by) must be
+    // the acting user too, or a writer could void a colleague's fresh post.
+    const s = await seed()
+    const colleague = await insertAuthUser()
+    await insertCompanyMember({ companyId: s.companyId, userId: colleague, role: 'member' })
+    await setActiveCompany(colleague, s.companyId)
+
+    // One transaction that switches the JWT user in between (withUserContext
+    // rolls back on exit, so the post would not survive to a second context).
+    const actAs = async (client: PoolClient, userId: string) => {
+      await client.query('RESET ROLE')
+      await client.query(`SELECT set_config('request.jwt.claims', $1, true)`, [
+        JSON.stringify({ sub: userId, role: 'authenticated' }),
+      ])
+      await client.query(`SELECT set_config('request.jwt.claim.sub', $1, true)`, [userId])
+      await client.query('SET LOCAL ROLE authenticated')
+    }
+    const client = await getClient()
+    try {
+      await client.query('BEGIN')
+      await actAs(client, s.userId)
+      const n = await client.query<{ n: number }>(
+        `SELECT public.next_voucher_number($1, $2, 'A') AS n`,
+        [s.companyId, s.fiscalPeriodId],
+      )
+      const header = await client.query<{ id: string }>(
+        `INSERT INTO public.journal_entries
+           (user_id, company_id, fiscal_period_id, voucher_number, voucher_series, entry_date,
+            description, source_type, status)
+         VALUES ($1, $2, $3, $4, 'A', '2026-06-01', 'Testverifikat', 'manual', 'draft')
+         RETURNING id`,
+        [s.userId, s.companyId, s.fiscalPeriodId, n.rows[0]!.n],
+      )
+      const entryId = header.rows[0]!.id
+      await client.query(
+        `INSERT INTO public.journal_entry_lines (journal_entry_id, account_number, debit_amount, credit_amount)
+         VALUES ($1, '1930', 1000, 0), ($1, '3001', 0, 1000)`,
+        [entryId],
+      )
+
+      await actAs(client, colleague)
+      const posted = await client.query<{ committed_by: string }>(
+        `UPDATE public.journal_entries SET status = 'posted' WHERE id = $1 RETURNING committed_by`,
+        [entryId],
+      )
+      expect(posted.rows[0]!.committed_by).toBe(colleague)
+
+      await actAs(client, s.userId)
+      await client.query('SAVEPOINT refused')
+      await expect(
+        client.query(`SELECT public.cancel_orphaned_entry($1::uuid, $2::uuid) AS r`, [s.companyId, entryId]),
+      ).rejects.toMatchObject({ code: '42501', message: expect.stringMatching(/not posted by the acting user/) })
+      await client.query('ROLLBACK TO SAVEPOINT refused')
+
+      // A trusted backend acting for the creator is refused the same way.
+      await client.query('RESET ROLE')
+      await client.query(`SELECT set_config('request.jwt.claims', '', true)`)
+      await client.query(`SELECT set_config('request.jwt.claim.sub', '', true)`)
+      await client.query('SAVEPOINT trusted')
+      await expect(
+        client.query(`SELECT public.cancel_orphaned_entry($1::uuid, $2::uuid, $3::uuid) AS r`, [
+          s.companyId,
+          entryId,
+          s.userId,
+        ]),
+      ).rejects.toThrow(/not posted by the acting user/)
+      await client.query('ROLLBACK TO SAVEPOINT trusted')
+
+      const state = await client.query<{ status: string }>(`SELECT status FROM public.journal_entries WHERE id = $1`, [entryId])
+      expect(state.rows[0]!.status).toBe('posted')
+    } finally {
+      await client.query('ROLLBACK').catch(() => {})
+      client.release()
+    }
+  })
+
+  it('stamps committed_by only on draft -> posted and freezes it afterwards', async () => {
+    const s = await seed()
+    const colleague = await insertAuthUser()
+    await insertCompanyMember({ companyId: s.companyId, userId: colleague, role: 'member' })
+    await setActiveCompany(colleague, s.companyId)
+
+    // A preset on a draft insert is discarded.
+    const draftId = randomUUID()
+    await getPool().query(
+      `INSERT INTO public.journal_entries
+         (id, user_id, company_id, fiscal_period_id, voucher_number, voucher_series,
+          entry_date, description, source_type, status, committed_by)
+       VALUES ($1, $2, $3, $4, 0, 'A', '2026-06-01', 'Utkast', 'manual', 'draft', $5)`,
+      [draftId, s.userId, s.companyId, s.fiscalPeriodId, colleague],
+    )
+    const draft = await getPool().query<{ committed_by: string | null }>(
+      `SELECT committed_by FROM public.journal_entries WHERE id = $1`,
+      [draftId],
+    )
+    expect(draft.rows[0]!.committed_by).toBeNull()
+
+    // A trusted backend post acts for the entry's user.
+    const entryId = await postEntry(s, { voucherNumber: 1 })
+    const read = async () =>
+      (
+        await getPool().query<{ committed_by: string | null }>(
+          `SELECT committed_by FROM public.journal_entries WHERE id = $1`,
+          [entryId],
+        )
+      ).rows[0]!.committed_by
+    expect(await read()).toBe(s.userId)
+
+    // A committed entry's committed_by cannot be rewritten: the whole-row
+    // immutability lock refuses it next to a notes change...
+    await withUserContext(colleague, async (client) => {
+      await expect(
+        client.query(
+          `UPDATE public.journal_entries SET notes = 'anteckning', committed_by = $1 WHERE id = $2`,
+          [colleague, entryId],
+        ),
+      ).rejects.toThrow(/immutable/)
+    })
+    expect(await read()).toBe(s.userId)
+
+    // ...and the stamp trigger discards it on the column-enumerated
+    // posted -> reversed transition.
+    const stornoId = await postEntry(s, { voucherNumber: 2, sourceType: 'storno', reversesId: entryId })
+    await getPool().query(
+      `UPDATE public.journal_entries SET status = 'reversed', reversed_by_id = $1, committed_by = $2 WHERE id = $3`,
+      [stornoId, colleague, entryId],
+    )
+    expect(await read()).toBe(s.userId)
   })
 
   it('refuses an entry posted more than 15 minutes ago', async () => {
