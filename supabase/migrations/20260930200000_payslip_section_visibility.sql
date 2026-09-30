@@ -51,25 +51,55 @@ COMMENT ON COLUMN public.salary_runs.payslip_show_employer_cost IS
 COMMENT ON COLUMN public.salary_runs.payslip_show_breakdown IS
   'Whether the employee copy of this run prints Beräkningsunderlag, fixed at first issue. NULL = not yet issued. Never true while payslip_show_employer_cost is false.';
 
--- Runs whose payslips already went out before this migration were issued
--- with both sections: the payslip had no switches then. Evidence of issue is
--- a payslip link (created by the send) or a delivery logged as sent. Runs
--- only downloaded before this migration left no trace and stay unissued.
+-- Runs whose payslips may already have reached employees before this
+-- migration were issued with both sections: every employee copy printed them
+-- then, the payslip had no switches. Such a run is marked issued with both
+-- sections, so a later switch change cannot alter a payslip already handed
+-- out. A run counts as possibly handed out when:
+--   - it has a payslip link (created by the send) or a delivery logged as
+--     sent, in any status; or
+--   - it is paid, booked or corrected. Before this migration the employer
+--     could hand those out through "Ladda ner alla lönebesked" or its own
+--     view without leaving any trace, so the status is the only evidence.
+-- An approved run with neither link nor delivery stays unissued: it is not
+-- paid yet, so the company can still hide sections before handing it out.
+-- issued_at is the first link or delivery, else the run's last update (the
+-- latest moment it can have been handed out as it stands).
+-- Runs of an archived migration-reset source are skipped: their rows are
+-- immutable (block_migration_reset_source_mutation raises on any UPDATE) and
+-- nothing hands out their payslips any more.
+-- pg-test: tests/pg/salary-run-payslip-sections-snapshot.pg.test.ts re-runs
+-- the statement between the backfill markers.
+-- backfill:begin
 UPDATE public.salary_runs r
-   SET payslip_sections_issued_at = issued.first_issued_at,
+   SET payslip_sections_issued_at = coalesce(
+         (SELECT min(evidence.created_at)
+            FROM (
+              SELECT l.created_at
+                FROM public.salary_payslip_links l
+               WHERE l.salary_run_id = r.id
+              UNION ALL
+              SELECT d.created_at
+                FROM public.salary_payslip_deliveries d
+               WHERE d.salary_run_id = r.id AND d.status = 'sent'
+            ) evidence),
+         r.updated_at),
        payslip_show_employer_cost = true,
        payslip_show_breakdown = true
-  FROM (
-    SELECT salary_run_id, min(created_at) AS first_issued_at
-      FROM (
-        SELECT salary_run_id, created_at FROM public.salary_payslip_links
-        UNION ALL
-        SELECT salary_run_id, created_at FROM public.salary_payslip_deliveries WHERE status = 'sent'
-      ) evidence
-     GROUP BY salary_run_id
-  ) issued
- WHERE r.id = issued.salary_run_id
-   AND r.payslip_sections_issued_at IS NULL;
+ WHERE r.payslip_sections_issued_at IS NULL
+   AND (
+         r.status IN ('paid', 'booked', 'corrected')
+      OR EXISTS (SELECT 1 FROM public.salary_payslip_links l WHERE l.salary_run_id = r.id)
+      OR EXISTS (
+           SELECT 1 FROM public.salary_payslip_deliveries d
+            WHERE d.salary_run_id = r.id AND d.status = 'sent'
+         )
+   )
+   AND NOT EXISTS (
+         SELECT 1 FROM public.company_migration_resets m
+          WHERE m.source_company_id = r.company_id
+   );
+-- backfill:end
 
 -- All three set together, and the breakdown never without the employer cost
 -- (its steps carry the employer cost figures).
