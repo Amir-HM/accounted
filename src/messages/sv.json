@@ -4458,8 +4458,6 @@
     "chip_valid_until": "Giltig till {date}",
     "chip_received": "Mottagen {date}",
     "chip_delivery": "Leveransdatum {date}",
-    "chip_your_reference": "Er referens: {reference}",
-    "chip_invoice_marking": "Märkning: {marking}",
     "chip_stripe_auto": "Stripe-länk skapas vid utskick",
     "chip_payment_link": "Betalningslänk inlagd",
     "chip_ore_off": "Ingen öresavrundning",

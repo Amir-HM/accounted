@@ -4458,8 +4458,6 @@
     "chip_valid_until": "Valid until {date}",
     "chip_received": "Received {date}",
     "chip_delivery": "Delivery date {date}",
-    "chip_your_reference": "Your reference: {reference}",
-    "chip_invoice_marking": "Marking: {marking}",
     "chip_stripe_auto": "Stripe link created on send",
     "chip_payment_link": "Payment link added",
     "chip_ore_off": "No öre rounding",
