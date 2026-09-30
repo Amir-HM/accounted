@@ -46,12 +46,18 @@ export interface BookingDuplicateGuardOptions {
   /** Same-batch siblings to exclude (bulk drivers only; see BookingDuplicateExclusions). */
   exclude?: BookingDuplicateExclusions
   /**
-   * Whether an honoured `force` writes the dismissal record. False on a
-   * dry-run: the binding is still verified, but nothing is booked, so there
-   * is no dismissal to record.
+   * Whether an honoured `force` writes the dismissal record. Callers pass
+   * false on a dry-run: the binding is still verified, but a dry-run never
+   * books. On a live call the record is written here, before the booking, so
+   * a booking refused later (locked period, invalid template) still leaves
+   * it; every door that records a dismissal behaves this way today.
    */
   recordDismissal?: boolean
-  /** Door that honoured the override, stored in the dismissal record. */
+  /**
+   * Door that honoured the override, stored in the dismissal record. The v1
+   * REST doors pass 'api_force', as match-batch and bulk-book do; the
+   * dashboard omits it.
+   */
   via?: string
 }
 

@@ -1059,7 +1059,7 @@ describe('POST batch-categorize double-booking guards (parity with :categorize a
         aggregateId: TX_A,
         payload: expect.objectContaining({
           dismissed_journal_entry_id: EXISTING_JE,
-          via: 'api_v1_batch_force',
+          via: 'api_force',
         }),
       }),
     )

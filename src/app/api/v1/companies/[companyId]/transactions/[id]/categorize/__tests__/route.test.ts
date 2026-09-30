@@ -819,7 +819,7 @@ describe('POST /api/v1/.../transactions/{id}/categorize duplicate-payment guard 
           transaction_id: TX_ID,
           dismissed_journal_entry_id: EXISTING_JE,
           amount_ore: -34950,
-          via: 'api_v1_force',
+          via: 'api_force',
         }),
         actor: { type: 'user', id: 'user-1' },
       }),

@@ -144,7 +144,7 @@ function guardRefusal(
       code,
       message:
         getErrorEntry(code)?.message_sv ??
-        'Kategoriseringen stoppades: affärshändelsen ser redan ut att vara bokförd.',
+        'Transaktionen bokfördes inte: se felkoden och detaljerna.',
       details,
     },
   }
@@ -221,7 +221,7 @@ async function categorizeOne(
       },
       input,
       itemLog,
-      { exclude, recordDismissal: !dryRun, via: 'api_v1_batch_force' },
+      { exclude, recordDismissal: !dryRun, via: 'api_force' },
     )
     if (!duplicateVerdict.ok) {
       return guardRefusal(index, transactionId, duplicateVerdict.code, duplicateVerdict.details)

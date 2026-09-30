@@ -106,7 +106,7 @@ describe('runBookingDuplicateGuard', () => {
       target,
       { force: true, ...binding },
       log,
-      { via: 'api_v1_force' },
+      { via: 'api_force' },
     )
 
     expect(verdict).toEqual({ ok: true })
@@ -127,7 +127,7 @@ describe('runBookingDuplicateGuard', () => {
         entry_date: '2026-05-12',
         amount_verified: true,
         unverified_reason: null,
-        via: 'api_v1_force',
+        via: 'api_force',
       },
       actor: { type: 'user', id: 'user-1' },
       occurredAt: expect.any(Date),

@@ -215,7 +215,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
         },
         body,
         txLog,
-        { recordDismissal: !ctx.dryRun, via: 'api_v1_force' },
+        { recordDismissal: !ctx.dryRun, via: 'api_force' },
       )
       if (!duplicateVerdict.ok) {
         return v1ErrorResponseFromCode(duplicateVerdict.code, txLog, {
