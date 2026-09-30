@@ -4,7 +4,14 @@ import { withRouteContext } from '@/lib/api/with-route-context'
 import { getCompanyDisplayName } from '@/lib/company/context'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { PayslipPDF } from '@/lib/salary/pdf/payslip-template'
-import { buildPayslipData, payslipFileName } from '@/lib/salary/payslips/build-payslip-data'
+import {
+  buildPayslipData,
+  parsePayslipAudienceParam,
+  payslipFileName,
+  type PayslipAudience,
+} from '@/lib/salary/payslips/build-payslip-data'
+import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
+import { requireWritePermission } from '@/lib/auth/require-write'
 import { contentDisposition } from '@/lib/api/content-disposition'
 
 ensureInitialized()
@@ -17,12 +24,29 @@ ensureInitialized()
  *
  * Data assembly is shared with the public token surface via
  * lib/salary/payslips/build-payslip-data — both must render identical PDFs.
+ *
+ * Without a query this is the employer's own view: every section printed.
+ * `?audience=employee` renders the copy the employer hands out (the bulk ZIP
+ * on the run page), which follows the company's payslip section switches
+ * exactly like the emailed link does. When a member who may write the run
+ * (requireWritePermission) downloads it, that hands the copy out and issues
+ * the run: the first employee copy of an approved run fixes its sections on
+ * the run (section-snapshot), and every later employee copy prints those,
+ * whatever the switches say by then. A read-only member (viewer) only reads:
+ * the copy renders from the run's stored snapshot when it has one, else from
+ * the switches, and nothing is written, because the database keeps a
+ * snapshot forever and a read must never cause a permanent write.
  */
 export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: string }> }>(
   'salary.run.payslip.pdf',
-  async (_request, ctx, { params }) => {
+  async (request, ctx, { params }) => {
     const { id, employeeId } = await params
     const { supabase, companyId } = ctx
+
+    const audienceKind = parsePayslipAudienceParam(new URL(request.url).searchParams.get('audience'))
+    if (!audienceKind) {
+      return NextResponse.json({ error: 'Ogiltig mottagare för lönespecifikationen' }, { status: 400 })
+    }
 
     // Load salary run
     const { data: run } = await supabase
@@ -68,11 +92,40 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
     // Employer name on the payslip follows the current company name
     // (company_settings.company_name), not the frozen onboarding companies.name.
     const displayName = await getCompanyDisplayName(supabase, companyId)
+
+    let audience: PayslipAudience = { kind: 'employer' }
+    let renderRun = run
+    if (audienceKind === 'employee') {
+      const { data: sectionSettings, error: settingsError } = await supabase
+        .from('company_settings')
+        .select('salary_payslip_show_employer_cost, salary_payslip_show_breakdown')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      // Fail closed: a failed read must not fall back to the defaults and
+      // print sections the company has hidden from its employees.
+      if (settingsError) {
+        return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+      }
+      audience = { kind: 'employee', settings: sectionSettings }
+      // Only a member who may write the run issues it, through the caller's
+      // own RLS-scoped client (the same write gate and client as the payslip
+      // send). A viewer renders from the run as stored and writes nothing.
+      const writeCheck = await requireWritePermission(supabase, ctx.user.id, { companyId })
+      if (writeCheck.ok) {
+        const issued = await issuePayslipSections(supabase, { companyId, run, settings: sectionSettings })
+        if (!issued.ok) {
+          return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+        }
+        renderRun = { ...run, ...issued.snapshot }
+      }
+    }
+
     const data = buildPayslipData({
-      run,
+      run: renderRun,
       sre,
       employee: emp,
       company: { name: displayName ?? company.name, org_number: company.org_number },
+      audience,
     })
     const fileName = payslipFileName(run, emp)
 

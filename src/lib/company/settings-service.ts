@@ -183,6 +183,8 @@ function toUpdatePayload(c: CompanySettingsChanges) {
     salary_pay_day: c.salary_pay_day,
     salary_default_bank: c.salary_default_bank,
     salary_net_rounding: c.salary_net_rounding,
+    salary_payslip_show_employer_cost: c.salary_payslip_show_employer_cost,
+    salary_payslip_show_breakdown: c.salary_payslip_show_breakdown,
     salary_calculation_policy: c.salary_calculation_policy,
     salary_deviation_period: c.salary_deviation_period,
     salary_vacation_year_basis: c.salary_vacation_year_basis,
