@@ -14,7 +14,10 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createQueuedMockSupabase, makeSupplierInvoice } from '@/tests/helpers'
 import { buildSupplierInvoicePaymentLines } from '../supplier-invoice-entries'
+import { MAX_CHAIN_WALK } from '@/lib/core/bookkeeping/correction-chain'
 import {
+  CHAIN_HOP_BUDGET,
+  MAX_PAYMENT_ROWS,
   loadSupplierInvoiceRemainingSek,
   prorateSupplierPaymentSek,
   resolveSupplierPaymentSek,
@@ -349,3 +352,66 @@ describe('loadSupplierInvoiceRemainingSek: contradictions are refused, not guess
     ).toEqual({ ok: false, reason: 'no_liability_left' })
   })
 })
+
+describe('loadSupplierInvoiceRemainingSek: the work one resolution does is bounded', () => {
+  const invoice = { id: 'si-usd', paid_amount: 0, registration_journal_entry_id: 'je-reg' }
+
+  it('reads the payment rows in one query capped one past MAX_PAYMENT_ROWS', async () => {
+    enqueueFreshLedger(361.55)
+    await loadSupplierInvoiceRemainingSek(supabase as never, COMPANY, invoice)
+    expect(findCalls('supplier_invoice_payments', 'limit')).toContainEqual([MAX_PAYMENT_ROWS + 1])
+    expect(findCalls('supplier_invoice_payments', 'range')).toHaveLength(0)
+  })
+
+  it('more payment rows than the cap are refused before any voucher is read', async () => {
+    enqueue({ data: { id: 'je-reg', status: 'posted' } })
+    enqueue({ data: [] })
+    const rows = Array.from({ length: MAX_PAYMENT_ROWS + 1 }, (_, i) => ({
+      id: `p-${i}`,
+      amount: 0.01,
+      journal_entry_id: `je-pay-${i}`,
+    }))
+    enqueue({ data: rows })
+    expect(
+      await loadSupplierInvoiceRemainingSek(supabase as never, COMPANY, {
+        ...invoice,
+        paid_amount: roundTo2(0.01 * rows.length),
+      }),
+    ).toEqual({ ok: false, reason: 'ledger_history_too_long' })
+    // Only the registration lookup touched journal_entries; no line read.
+    expect(findCalls('journal_entries', 'select')).toHaveLength(1)
+    expect(findCalls('journal_entry_lines', 'select')).toHaveLength(0)
+  })
+
+  it('storno walks share one hop budget across the registration and every payment voucher', async () => {
+    // A registration corrected MAX_CHAIN_WALK times uses MAX_CHAIN_WALK + 1
+    // hops; a stornoed payment voucher then needs more than the budget left.
+    enqueue({ data: { id: 'je-reg', status: 'reversed' } })
+    for (let i = 1; i <= MAX_CHAIN_WALK; i++) {
+      enqueue({ data: [{ id: `je-reg-${i}` }] })
+      enqueue({ data: { id: `je-reg-${i}`, status: i === MAX_CHAIN_WALK ? 'posted' : 'reversed' } })
+    }
+    enqueue({ data: [] }) // no other invoice on the registration
+    const payments = Array.from({ length: 5 }, (_, i) => ({
+      id: `p-${i}`,
+      amount: 1,
+      journal_entry_id: `je-pay-${i}`,
+    }))
+    enqueue({ data: payments })
+    enqueue({ data: payments.map((p) => ({ id: p.journal_entry_id, status: 'reversed' })) })
+    for (let i = 0; i < 5; i++) {
+      enqueue({ data: { id: `je-pay-${i}`, status: 'reversed' } })
+      enqueue({ data: [{ id: `je-pay-${i}-corr` }] })
+      enqueue({ data: { id: `je-pay-${i}-corr`, status: 'posted' } })
+    }
+    expect(
+      await loadSupplierInvoiceRemainingSek(supabase as never, COMPANY, { ...invoice, paid_amount: 5 }),
+    ).toEqual({ ok: false, reason: 'ledger_history_too_long' })
+    expect(findCalls('journal_entry_lines', 'select')).toHaveLength(0)
+    expect(CHAIN_HOP_BUDGET).toBe(2 * MAX_CHAIN_WALK)
+  })
+})
+
+function roundTo2(x: number): number {
+  return Math.round(x * 100) / 100
+}

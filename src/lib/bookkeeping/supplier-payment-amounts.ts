@@ -66,6 +66,12 @@ export type SupplierPaymentSekUnresolvedReason =
   | 'no_liability_left'
   /** 244x is more than LEDGER_RATE_BAND away from remaining x exchange_rate. */
   | 'ledger_rate_mismatch'
+  /**
+   * More than MAX_PAYMENT_ROWS payment rows, or more storno hops than
+   * CHAIN_HOP_BUDGET across the registration and payment vouchers: past what
+   * one read (the preview runs on every keystroke) should resolve.
+   */
+  | 'ledger_history_too_long'
 
 type InvoiceForSek = Pick<
   SupplierInvoice,
@@ -79,6 +85,13 @@ const AP_ACCOUNT_PREFIX = '244'
 const LEDGER_RATE_BAND = 0.1
 // Keeps an `in (...)` list well inside PostgREST's URL limit.
 const ID_CHUNK = 100
+// Fail-closed bounds on the work one resolution does, so a read-only preview
+// cannot be made to walk an unbounded history. Far past any real invoice (a
+// handful of part payments, a storno or two); beyond them the payment is
+// refused with ledger_history_too_long and can still be booked with edited
+// SEK rows or linked to an existing verifikat.
+export const MAX_PAYMENT_ROWS = 50
+export const CHAIN_HOP_BUDGET = 2 * MAX_CHAIN_WALK
 
 function isSekInvoice(currency: string | null | undefined): boolean {
   return !currency || currency === 'SEK'
@@ -136,23 +149,30 @@ export type SupplierInvoiceRemainingSek =
   | { ok: true; remainingSek: number }
   | { ok: false; reason: SupplierPaymentSekUnresolvedReason }
 
+type LiveEntry = { id: string } | { none: true } | { exhausted: true }
+
 /**
  * Follow a verifikat through storno corrections (correctEntry links the
- * replacement by correction_of_id) to the one that is posted now. Returns
- * null when there is no single live one. Used for the registration and for
- * payment vouchers: correctEntry leaves supplier_invoice_payments pointing at
- * the reversed original, while its correction carries the 244x debit.
+ * replacement by correction_of_id) to the one that is posted now. `none` when
+ * there is no single live one; `exhausted` when the walk would take more hops
+ * than `budget` has left (shared by every walk of one resolution). Used for
+ * the registration and for payment vouchers: correctEntry leaves
+ * supplier_invoice_payments pointing at the reversed original, while its
+ * correction carries the 244x debit.
  */
 async function liveEntryId(
   supabase: SupabaseClient,
   companyId: string,
   entryId: string,
-): Promise<string | null> {
+  budget: { hops: number },
+): Promise<LiveEntry> {
   const seen = new Set<string>()
   let currentId = entryId
   for (let hop = 0; hop <= MAX_CHAIN_WALK; hop++) {
-    if (seen.has(currentId)) return null
+    if (seen.has(currentId)) return { none: true }
     seen.add(currentId)
+    if (budget.hops <= 0) return { exhausted: true }
+    budget.hops--
 
     const { data: entry, error } = await supabase
       .from('journal_entries')
@@ -162,9 +182,9 @@ async function liveEntryId(
       .maybeSingle()
     if (error) throw dbError(error, 'supplier payment SEK: live voucher')
     const row = entry as { id: string; status: string } | null
-    if (!row) return null
-    if (row.status === 'posted') return row.id
-    if (row.status !== 'reversed') return null
+    if (!row) return { none: true }
+    if (row.status === 'posted') return { id: row.id }
+    if (row.status !== 'reversed') return { none: true }
 
     const { data: corrections, error: correctionError } = await supabase
       .from('journal_entries')
@@ -175,17 +195,19 @@ async function liveEntryId(
       .limit(2)
     if (correctionError) throw dbError(correctionError, 'supplier payment SEK: voucher correction')
     const next = (corrections ?? []) as Array<{ id: string }>
-    if (next.length !== 1) return null
+    if (next.length !== 1) return { none: true }
     currentId = next[0].id
   }
-  return null
+  return { none: true }
 }
 
 /**
  * The SEK this invoice still carries on 244x, read off its linked vouchers:
  * the live registration's 244x credit minus the 244x debits of the invoice's
  * payment vouchers (each followed to its live correction when stornoed).
- * Company-scoped at every step; paginated. Throws only on a read error.
+ * Company-scoped at every step, and bounded: at most MAX_PAYMENT_ROWS payment
+ * rows and CHAIN_HOP_BUDGET storno hops, refused past either. Throws only on
+ * a read error.
  */
 export async function loadSupplierInvoiceRemainingSek(
   supabase: SupabaseClient,
@@ -193,9 +215,12 @@ export async function loadSupplierInvoiceRemainingSek(
   invoice: Pick<SupplierInvoice, 'id' | 'paid_amount'> & { registration_journal_entry_id: string },
 ): Promise<SupplierInvoiceRemainingSek> {
   const registrationId = invoice.registration_journal_entry_id
+  const budget = { hops: CHAIN_HOP_BUDGET }
 
-  const liveId = await liveEntryId(supabase, companyId, registrationId)
-  if (!liveId) return { ok: false, reason: 'registration_voucher_not_live' }
+  const liveRegistration = await liveEntryId(supabase, companyId, registrationId, budget)
+  if ('exhausted' in liveRegistration) return { ok: false, reason: 'ledger_history_too_long' }
+  if ('none' in liveRegistration) return { ok: false, reason: 'registration_voucher_not_live' }
+  const liveId = liveRegistration.id
 
   const { data: sharedRegistration, error: sharedRegistrationError } = await supabase
     .from('supplier_invoices')
@@ -207,16 +232,17 @@ export async function loadSupplierInvoiceRemainingSek(
   if (sharedRegistrationError) throw dbError(sharedRegistrationError, 'supplier payment SEK: shared registration')
   if ((sharedRegistration ?? []).length > 0) return { ok: false, reason: 'registration_voucher_shared' }
 
-  const payments = await fetchAllRows<{ id: string; amount: number; journal_entry_id: string | null }>(
-    ({ from, to }) =>
-      supabase
-        .from('supplier_invoice_payments')
-        .select('id, amount, journal_entry_id')
-        .eq('company_id', companyId)
-        .eq('supplier_invoice_id', invoice.id)
-        .order('id', { ascending: true })
-        .range(from, to),
-  )
+  // One bounded read: one row past the cap says the history is too long.
+  const { data: paymentRows, error: paymentsError } = await supabase
+    .from('supplier_invoice_payments')
+    .select('id, amount, journal_entry_id')
+    .eq('company_id', companyId)
+    .eq('supplier_invoice_id', invoice.id)
+    .order('id', { ascending: true })
+    .limit(MAX_PAYMENT_ROWS + 1)
+  if (paymentsError) throw dbError(paymentsError, 'supplier payment SEK: payment rows')
+  const payments = (paymentRows ?? []) as Array<{ id: string; amount: number; journal_entry_id: string | null }>
+  if (payments.length > MAX_PAYMENT_ROWS) return { ok: false, reason: 'ledger_history_too_long' }
   const paidPerRows = roundOre(payments.reduce((sum, p) => sum + Number(p.amount), 0))
   if (
     payments.some((p) => !p.journal_entry_id) ||
@@ -245,10 +271,11 @@ export async function loadSupplierInvoiceRemainingSek(
     )
     const posted = new Set(entries.filter((e) => e.status === 'posted').map((e) => e.id))
     for (const id of ids) {
-      const live = posted.has(id) ? id : await liveEntryId(supabase, companyId, id)
-      if (!live) return { ok: false, reason: 'payment_voucher_not_posted' }
-      if (live === liveId) return { ok: false, reason: 'payment_history_mismatch' }
-      livePaymentEntryIds.add(live)
+      const live: LiveEntry = posted.has(id) ? { id } : await liveEntryId(supabase, companyId, id, budget)
+      if ('exhausted' in live) return { ok: false, reason: 'ledger_history_too_long' }
+      if ('none' in live) return { ok: false, reason: 'payment_voucher_not_posted' }
+      if (live.id === liveId) return { ok: false, reason: 'payment_history_mismatch' }
+      livePaymentEntryIds.add(live.id)
     }
 
     // A batch voucher settles several invoices with no line-level link to
