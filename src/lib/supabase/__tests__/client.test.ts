@@ -35,6 +35,10 @@ beforeEach(() => {
   vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
   vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key')
   vi.stubGlobal('window', {})
+  // supabase-js builds its Realtime client eagerly, and that needs a
+  // WebSocket constructor. Browsers always have one; CI's Node 20 does not.
+  // No test here opens a socket, so an empty class is enough.
+  vi.stubGlobal('WebSocket', class FakeWebSocket {})
   fetchMock = vi.fn(async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }))
   vi.stubGlobal('fetch', fetchMock)
 })
