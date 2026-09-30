@@ -3284,6 +3284,14 @@ const BANK_SELECTION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Bankkontot har redan historik på sitt bokföringskonto och kan inte flyttas till ett annat automatiskt. Inget sparades.',
     message_en: 'The bank account already has history on its ledger account and cannot be moved to another one automatically. Nothing was saved.',
   },
+  // An unchecked account of another physical account holds the wanted ledger
+  // and has transactions or invoice or reconciliation ties, so it cannot just
+  // give the ledger up.
+  BANK_SELECTION_YIELD_HAS_HISTORY: {
+    httpStatus: 409,
+    message_sv: 'Bokföringskontot hör till ett annat bankkonto som inte synkas men har transaktioner eller används i fakturor eller avstämningar. Välj ett annat bokföringskonto, eller markera först det andra bankkontot, ge det ett annat bokföringskonto och spara. Inget sparades.',
+    message_en: 'The ledger account belongs to another bank account that is not synced but has transactions or is used on invoices or reconciliations. Choose another ledger account, or first select the other bank account, give it another ledger account and save. Nothing was saved.',
+  },
 }
 
 const BANK_SYNC: Record<string, StructuredErrorEntry> = {
