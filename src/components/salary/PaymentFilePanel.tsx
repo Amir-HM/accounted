@@ -8,6 +8,7 @@ import { DetailSection, DefRow } from '@/components/ui/detail-section'
 import { HelpPopover } from '@/components/ui/help-popover'
 import { AttnLine } from '@/components/ui/attn-line'
 import { SettingsSelect } from '@/components/settings/SettingsRows'
+import { PaymentBankList } from '@/components/salary/PaymentBankList'
 import { Download, ChevronDown } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
 import { downloadFile } from '@/lib/browser/download-file'
@@ -162,6 +163,7 @@ export function PaymentFilePanel({
           <p className="mt-2">
             <span className="font-medium">{FORMAT_LABEL.bg_lb}</span>: {t('format_description_bg_lb')}
           </p>
+          <p className="mt-2">{t('bank_list_help')}</p>
           <p className="mt-2 text-muted-foreground">{t('open_payments_note')}</p>
         </HelpPopover>
       }
@@ -189,6 +191,10 @@ export function PaymentFilePanel({
             </SettingsSelect>
           </DefRow>
         )}
+
+        {/* The banklista of the chosen format: the payment file builder's
+            own payee lines, so the list and the file cannot disagree. */}
+        <PaymentBankList salaryRunId={salaryRunId} format={format} />
       </div>
 
       {!readOnly && (

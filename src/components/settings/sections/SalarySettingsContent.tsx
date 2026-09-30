@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
@@ -11,11 +10,11 @@ import {
   SettingsInput,
   SettingsReveal,
   SettingsRow,
-  SettingsRowNote,
   SettingsSectionHeader,
   SettingsSelect,
 } from '@/components/settings/SettingsRows'
 import { TaxTableStatus } from '@/components/salary/TaxTableStatus'
+import { VacationYearSettings } from '@/components/settings/sections/VacationYearSettings'
 import { Switch } from '@/components/ui/switch'
 import { useSettings } from '@/components/settings/useSettings'
 import { resolveDefaultSeriesForSource } from '@/lib/bookkeeping/voucher-series-resolver'
@@ -26,8 +25,6 @@ import {
   type SalaryCalculationPolicy,
   type SalaryCalculationPolicyKey,
 } from '@/lib/salary/calculation-policy'
-import { getCurrentVacationYear, type VacationYearBasis } from '@/lib/salary/vacation-year'
-import { formatDate } from '@/lib/utils'
 import type { CompanySettings } from '@/types'
 
 const SERIES_OPTIONS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
@@ -91,9 +88,6 @@ export function SalarySettingsContent() {
     ...DEFAULT_SALARY_CALCULATION_POLICY,
     ...(settings.salary_calculation_policy ?? {}),
   }
-  const currentBasis: VacationYearBasis =
-    settings.salary_vacation_year_basis === 'statutory_apr_mar' ? 'statutory_apr_mar' : 'calendar'
-  const currentVacationYear = getCurrentVacationYear(formatDate(new Date()), currentBasis)
 
   function handleSave(formData: FormData) {
     const payDayRaw = parseInt((formData.get('salary_pay_day') as string) || '25', 10)
@@ -327,34 +321,11 @@ export function SalarySettingsContent() {
         </SettingsRow>
       </SettingsGroup>
 
-      {/* Vacation is configured per employee; the rule row only points there.
-          The semesterår is read-only: settings-service refuses a basis
-          change once open vacation-ledger rows exist, which the first
-          booked run creates, so a control would be locked for nearly
-          every company that runs payroll. */}
-      <SettingsGroup label={t('vacation_heading')}>
-        <SettingsRow label={t('vacation_year_label')} help={t('vacation_year_help')}>
-          <div className="flex flex-col gap-0.5 text-sm">
-            <span>
-              {currentBasis === 'statutory_apr_mar' ? t('vacation_year_statutory_apr_mar') : t('vacation_year_calendar')}
-            </span>
-            <SettingsRowNote className="tabular-nums">
-              {t('vacation_year_current', {
-                start: formatDate(currentVacationYear.start),
-                end: formatDate(currentVacationYear.end),
-              })}
-            </SettingsRowNote>
-          </div>
-        </SettingsRow>
-        <SettingsRow label={t('vacation_rule_label')} help={t('vacation_info')}>
-          <Link
-            href="/salary/employees"
-            className="text-sm text-muted-foreground underline underline-offset-2 transition-colors duration-150 hover:text-foreground"
-          >
-            {t('vacation_info_link')}
-          </Link>
-        </SettingsRow>
-      </SettingsGroup>
+      {/* Semesterår: a choice while the settings service accepts a basis
+          change, locked with its reason once open vacation-ledger rows
+          exist. Vacation itself is configured per employee; the rule row
+          only points there. */}
+      <VacationYearSettings settings={settings} onSaved={updateSettings} />
       </>
       ) : null}
     </div>
