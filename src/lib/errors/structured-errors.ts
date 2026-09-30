@@ -3603,6 +3603,18 @@ const PROVIDER_MIGRATION: Record<string, StructuredErrorEntry> = {
     message_en:
       'Bokio could not find the company. Check the company ID and that the integration token was created for the same company.',
   },
+  BOKIO_PLAN_NO_API: {
+    // 422, same reasoning as PROVIDER_TOKEN_INVALID. Bokio answered 403
+    // price_plan_feature_required: the company's plan has no API access for
+    // private integrations (Basic, or a plan that has expired). The token can
+    // be fine, so this must not tell the user to re-check it. Plan names per
+    // docs.bokio.se/docs/price-plan-requirements (read 2026-09-29).
+    httpStatus: 422,
+    message_sv:
+      'Bokio nekar API-åtkomst eftersom företagets abonnemang inte omfattar egna integrationer. De ingår i Bokios Plus, Premium och Business men inte i Basic, och stängs av när abonnemanget har gått ut. Byt eller förnya abonnemanget i Bokio och försök igen, eller importera bokföringen med SIE-fil och kunder, leverantörer och artiklar med CSV eller Excel under Importera/Exportera.',
+    message_en:
+      "Bokio refuses API access because the company's plan does not include private integrations. They are included in Bokio's Plus, Premium and Business plans but not in Basic, and they stop when the plan has expired. Change or renew the plan in Bokio and try again, or import the bookkeeping with a SIE file, and customers, suppliers and articles with CSV or Excel under Import/Export.",
+  },
   BL_INTEGRATION_NOT_ACTIVATED: {
     // 422, same reasoning as PROVIDER_TOKEN_INVALID. The User-Key opened a
     // real company, but that company has granted our service provider no

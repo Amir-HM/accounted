@@ -54,6 +54,21 @@ describe('structured-errors registry', () => {
     }
   })
 
+  it('registers BOKIO_PLAN_NO_API as a 422 that names the plans and never blames the token', () => {
+    const entry = getErrorEntry('BOKIO_PLAN_NO_API')
+    expect(entry).toBeDefined()
+    // 422, never 401: same reasoning as the Björn Lundén verdicts above.
+    expect(entry?.httpStatus).toBe(422)
+    // The token can be fine: the plan is what blocks, so the message says
+    // which plans include the API and must not send the user back to re-check
+    // what they pasted.
+    expect(entry?.message_sv).toContain('Plus, Premium och Business')
+    expect(entry?.message_sv).toContain('Basic')
+    expect(entry?.message_sv).not.toMatch(/kontrollera integrationsuppgifterna/i)
+    expect(entry?.message_en).toContain('Plus, Premium and Business')
+    expect(entry?.retryable).toBeFalsy()
+  })
+
   it('has an entry for every code the link-transaction service can emit', () => {
     for (const code of [
       'LINK_TX_JE_NOT_FOUND',
