@@ -99,6 +99,7 @@ const noNetwork = async (): Promise<never> => {
 }
 registerPeppolTransport({
   provider: PEPPOL_TEST_PROVIDER,
+  tenantId: PEPPOL_TEST_PROVIDER,
   lookupRecipient: noNetwork,
   submit: noNetwork,
   verifyWebhook: noNetwork,
