@@ -1,7 +1,8 @@
 /**
  * Proof that the uninitialized-event-route guard flags a route that can emit
- * without wiring the bus, and accepts each sanctioned way of wiring it. The
- * fixture tree lives in an OS temp directory created and deleted here.
+ * without wiring the bus at module scope, and accepts the sanctioned ways of
+ * wiring it. The fixture tree lives in an OS temp directory created and
+ * deleted here; the last block pins the real tree's lead case.
  */
 import { describe, it, expect, afterAll } from 'vitest'
 import fs from 'node:fs'
@@ -14,16 +15,19 @@ afterAll(() => {
   for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-const WRAPPER_WITH_INIT = `import { ensureInitialized } from '@/lib/init'
+// The production wrapper: it does not wire the bus.
+const WRAPPER = `export function withRouteContext(op: string, handler: () => Promise<Response>) {
+  return async () => handler()
+}
+`
+// A wrapper that wires the bus per request. The guard is route-level, so this
+// must not excuse a route that has no module-scope call of its own.
+const WRAPPER_WITH_REQUEST_INIT = `import { ensureInitialized } from '@/lib/init'
 export function withRouteContext(op: string, handler: () => Promise<Response>) {
   return async () => {
     ensureInitialized()
     return handler()
   }
-}
-`
-const WRAPPER_WITHOUT_INIT = `export function withRouteContext(op: string, handler: () => Promise<Response>) {
-  return async () => handler()
 }
 `
 
@@ -59,9 +63,22 @@ export function ensureInitialized() {}
 ensureInitialized()
 export function withApiV1(op: string, handler: () => Promise<Response>) { return handler }
 `,
+    // The period lock route as it was: wrapped, no module-scope call.
     'app/api/wrapped/route.ts': `import { withRouteContext } from '@/lib/api/with-route-context'
 import { lockPeriod } from '@/lib/core/lock'
 export const POST = withRouteContext<{ params: Promise<{ id: string }> }>('period.lock', async () => {
+  await lockPeriod()
+  return new Response()
+})
+`,
+    // The period lock route as it is now: wrapped, with the module-scope call.
+    'app/api/wrapped-init/route.ts': `import { withRouteContext } from '@/lib/api/with-route-context'
+import { lockPeriod } from '@/lib/core/lock'
+import { ensureInitialized } from '@/lib/init'
+
+ensureInitialized()
+
+export const POST = withRouteContext('period.lock', async () => {
   await lockPeriod()
   return new Response()
 })
@@ -73,6 +90,11 @@ export async function POST() { await lockPeriod(); return new Response() }
 import { lockPeriod } from '@/lib/core/lock'
 ensureInitialized()
 export async function POST() { await lockPeriod(); return new Response() }
+`,
+    // Wiring the bus inside the handler is not the pattern the guard accepts.
+    'app/api/handler-init/route.ts': `import { ensureInitialized } from '@/lib/init'
+import { lockPeriod } from '@/lib/core/lock'
+export async function POST() { ensureInitialized(); await lockPeriod(); return new Response() }
 `,
     'app/api/v1/route.ts': `import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { lockPeriod } from '@/lib/core/lock'
@@ -109,41 +131,53 @@ export async function POST() { await lockPeriod(); return new Response() }
   return root
 }
 
+const EMITTING = [
+  'app/api/bound/route.ts',
+  'app/api/dynamic/route.ts',
+  'app/api/handler-init/route.ts',
+  'app/api/module-init/route.ts',
+  'app/api/raw/route.ts',
+  'app/api/v1/route.ts',
+  'app/api/wrapped-init/route.ts',
+  'app/api/wrapped/route.ts',
+]
+const UNINITIALIZED = [
+  'app/api/bound/route.ts',
+  'app/api/dynamic/route.ts',
+  'app/api/handler-init/route.ts',
+  'app/api/raw/route.ts',
+  'app/api/wrapped/route.ts',
+]
+
 describe('uninitialized-event-route', () => {
-  it('flags only the routes that can emit and never wire the bus', () => {
-    const result = findUninitializedEmittingRoutes(fixture(WRAPPER_WITH_INIT))
+  it('flags every route that can emit without a module-scope ensureInitialized()', () => {
+    const result = findUninitializedEmittingRoutes(fixture(WRAPPER))
 
-    expect(result.wrapperInitializes).toBe(true)
-    expect(result.emittingRoutes).toEqual([
-      'app/api/bound/route.ts',
-      'app/api/dynamic/route.ts',
-      'app/api/module-init/route.ts',
-      'app/api/raw/route.ts',
-      'app/api/v1/route.ts',
-      'app/api/wrapped/route.ts',
-    ])
-    expect(result.uninitialized).toEqual([
-      'app/api/bound/route.ts',
-      'app/api/dynamic/route.ts',
-      'app/api/raw/route.ts',
-    ])
+    expect(result.emittingRoutes).toEqual(EMITTING)
+    expect(result.uninitialized).toEqual(UNINITIALIZED)
   })
 
-  it('measures the pre-fix exposure when the wrapper is not counted', () => {
-    const result = findUninitializedEmittingRoutes(fixture(WRAPPER_WITH_INIT), { countWrapper: false })
+  it('does not let a per-request call in withRouteContext excuse the route', () => {
+    const result = findUninitializedEmittingRoutes(fixture(WRAPPER_WITH_REQUEST_INIT))
 
-    expect(result.uninitialized).toEqual([
-      'app/api/bound/route.ts',
-      'app/api/dynamic/route.ts',
-      'app/api/raw/route.ts',
-      'app/api/wrapped/route.ts',
-    ])
+    expect(result.uninitialized).toEqual(UNINITIALIZED)
+  })
+})
+
+describe('uninitialized-event-route on the real tree', () => {
+  const SOURCE_ROOT = path.resolve(__dirname, '..', '..', '..', 'src')
+  const LOCK_ROUTE = 'app/api/bookkeeping/fiscal-periods/[id]/lock/route.ts'
+
+  it('wires the bus in the period lock route, whose period.locked events were dropped', () => {
+    const result = findUninitializedEmittingRoutes(SOURCE_ROOT)
+
+    expect(result.emittingRoutes).toContain(LOCK_ROUTE)
+    expect(result.uninitialized).not.toContain(LOCK_ROUTE)
   })
 
-  it('stops trusting withRouteContext the moment the wrapper stops initialising', () => {
-    const result = findUninitializedEmittingRoutes(fixture(WRAPPER_WITHOUT_INIT))
+  it('keeps lib/init out of withRouteContext, so non-emitting routes stay light on a cold start', () => {
+    const wrapper = fs.readFileSync(path.join(SOURCE_ROOT, 'lib/api/with-route-context.ts'), 'utf8')
 
-    expect(result.wrapperInitializes).toBe(false)
-    expect(result.uninitialized).toContain('app/api/wrapped/route.ts')
+    expect(wrapper).not.toMatch(/from '@\/lib\/init'/)
   })
 })

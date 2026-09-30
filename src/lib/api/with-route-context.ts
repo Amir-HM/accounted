@@ -1,9 +1,6 @@
 /**
  * Single wrapper that gives every API route the same shape:
  *
- *   - wires the event bus (ensureInitialized) before anything else runs, so
- *     every event the handler or a service it calls emits reaches the core
- *     handlers (event_log, webhooks) and the extension handlers
  *   - generates a request id (`req_<uuid>`) and threads it through the logger
  *   - resolves auth via requireAuth() and (by default) the active companyId
  *   - emits one structured `info` log on completion with duration
@@ -37,7 +34,6 @@ import {
 import { getActiveCompanyId } from '@/lib/company/context'
 import { createLogger, type Logger } from '@/lib/logger'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
-import { ensureInitialized } from '@/lib/init'
 import { withSIEPeriodRead } from '@/lib/import/sie-period-read'
 
 export interface RouteContext {
@@ -125,17 +121,6 @@ export function withRouteContext<P extends DynamicParams = { params: Promise<Rec
     let errLog = log
 
     try {
-      // The event bus drops an event that has no handler, and only
-      // ensureInitialized() registers handlers. Doing it here, per request,
-      // means no wrapped route can emit into a bare bus, whether or not its
-      // file remembered the module-level call (the period lock route did not:
-      // 636 of 758 locks left no period.locked row). Idempotent: after the
-      // first request it is one boolean check. Called per request, not at
-      // module level, so an import cycle through lib/init.ts (which imports
-      // every extension) can never run it before init.ts has finished
-      // evaluating.
-      ensureInitialized()
-
       const authStart = Date.now()
       const auth = await requireAuth()
       const authMs = Date.now() - authStart

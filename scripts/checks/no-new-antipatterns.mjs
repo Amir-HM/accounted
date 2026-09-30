@@ -139,11 +139,13 @@
  *      grandfathered as a file set that never grows. Implementation and
  *      rationale in table-without-grant.mjs.
  *   15. uninitialized-event-route: an app/api route whose runtime import
- *      closure reaches `eventBus.emit(` but never runs ensureInitialized(),
- *      so every event it emits is dropped by the bus (no handler registered).
- *      withRouteContext initialises per request; the guard also fails if the
- *      wrapper stops doing so. Implementation and rationale in
- *      event-route-init.mjs. Allowlisted file-set, may only shrink.
+ *      closure reaches `eventBus.emit` but that never calls
+ *      ensureInitialized() at module scope (in the route file or a module it
+ *      imports), so every event it emits is dropped by the bus (no handler
+ *      registered). withRouteContext does not wire the bus, by design: it
+ *      keeps lib/init out of the cold start of routes that never emit.
+ *      Implementation and rationale in event-route-init.mjs. Allowlisted
+ *      file-set, may only shrink.
  *
  * Usage:
  *   node scripts/checks/no-new-antipatterns.mjs            # check (CI)
@@ -1480,14 +1482,7 @@ if (newUngatedRoutes.length) {
 // 1h. uninitialized-event-route: allowlist lives in event-route-init.mjs
 // (UNINITIALIZED_EMITTING_ROUTES) and may only shrink. The bus drops an event
 // that has no handler, so a route that can emit must have run
-// ensureInitialized(); withRouteContext does it per request.
-if (!current.eventRouteInit.wrapperInitializes) {
-  failed = true
-  console.error(
-    '\n✗ uninitialized-event-route: lib/api/with-route-context.ts no longer calls ensureInitialized().\n' +
-      '  → every wrapped route that emits would drop its events again; restore the call before the handler runs.',
-  )
-}
+// ensureInitialized() at module scope; withRouteContext does not do it.
 const newUninitializedRoutes = current.eventRouteInit.uninitialized.filter(
   (f) => !UNINITIALIZED_EMITTING_ROUTES.has(f),
 )
@@ -1502,8 +1497,8 @@ if (newUninitializedRoutes.length) {
   )
   newUninitializedRoutes.forEach((f) => console.error(`    ${f}`))
   console.error(
-    '  → wrap the handler in withRouteContext (it initialises per request), or call\n' +
-      "    ensureInitialized() from '@/lib/init' at module level.",
+    "  → import { ensureInitialized } from '@/lib/init' and call ensureInitialized() at module\n" +
+      '    scope in the route file (withRouteContext does not wire the bus).',
   )
 }
 

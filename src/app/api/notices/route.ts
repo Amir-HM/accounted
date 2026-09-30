@@ -8,10 +8,7 @@ import { getCompanyNotices } from '@/lib/notices'
  *
  * Read-only; every predicate is one bounded query that soft-fails to null,
  * and per-user dismissals are already filtered out. No events are emitted,
- * so the route adds no module-level ensureInitialized(). withRouteContext
- * still wires the bus on every request (idempotent: one boolean check once
- * warm), so lib/init and the extension registry are in this polled route's
- * import graph and load on a cold start.
+ * so ensureInitialized() is deliberately absent.
  *
  * Response: { data: { notices: Notice[] } }
  */

@@ -12,31 +12,26 @@
  * initialised the bus, so the event only landed when an earlier request had
  * happened to warm the same process.
  *
- * Initialisation counts when any of these hold:
- *   - the route file itself calls ensureInitialized();
- *   - the route file calls withRouteContext(...) and the wrapper
- *     (lib/api/with-route-context.ts) calls ensureInitialized() before it runs
- *     the handler. This guard checks that the call exists, so removing it
- *     floods the guard; that it runs before the handler is proven at runtime
- *     by src/lib/api/__tests__/with-route-context-events.test.ts;
- *   - a module in the route's runtime import closure calls ensureInitialized()
- *     at top level (lib/api/v1/with-api-v1.ts, the ext/[...path] router).
+ * The contract is route-level: a route that can emit calls ensureInitialized()
+ * at module scope. withRouteContext deliberately does not wire the bus, so
+ * lib/init and the whole extension registry stay out of the cold-start import
+ * graph of the many wrapped routes that never emit. Initialisation counts when
+ * either holds:
+ *   - the route file calls ensureInitialized() as a top-level statement;
+ *   - a module in the route's runtime import closure does (lib/api/v1/
+ *     with-api-v1.ts for every withApiV1 route, the ext/[...path] router).
+ * A call inside a handler does not count: module scope is the one pattern, and
+ * it runs before any handler can emit.
  *
  * "Can emit" is static reachability: the route's runtime import closure
  * (type-only imports excluded, dynamic import() included) contains a module
  * that references `eventBus.emit`, as a call or as a bound reference. That
  * over-approximates: a route that imports a service for a function that never
- * emits still counts. Wiring the bus on such a route is harmless, so the guard
- * errs that way.
- *
- * Known gap: a route file counts as wrapped when it calls withRouteContext(...)
- * anywhere, so a file that also exports a raw emitting handler passes. No
- * emitting route mixes the two today (2026-09-30).
+ * emits still counts. Wiring the bus on such a route costs only its cold
+ * start, so the guard errs that way.
  *
  * Pre-existing offenders are allowlisted in UNINITIALIZED_EMITTING_ROUTES and
- * the set may only shrink. They are routes outside withRouteContext and
- * withApiV1 (crons on withCronContext, and two routes that call requireAuth()
- * directly), which the wrapper fix does not reach.
+ * the set may only shrink.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -44,11 +39,14 @@ import ts from 'typescript'
 
 /**
  * Routes that reach an emitting module without initialising the event bus,
- * as of the wrapper fix (2026-09-30). Remove an entry once its route calls
- * ensureInitialized() or moves under withRouteContext; never add one.
+ * as of the route-level fix (2026-09-30). Remove an entry once its route calls
+ * ensureInitialized() at module scope or no longer reaches an emitter; never
+ * add one.
  */
 export const UNINITIALIZED_EMITTING_ROUTES = new Set([
-  // withCronContext routes: the cron wrapper does not initialise the bus.
+  // withCronContext routes, unchanged by the route-level fix. The SIE worker
+  // initialises lazily inside its sweep (lib/import/sie-post-import-sweep.ts),
+  // which a module-scope check cannot see.
   'app/api/arkiv/derive/cron/route.ts',
   'app/api/documents/classify/cron/route.ts',
   'app/api/documents/read/cron/route.ts',
@@ -67,7 +65,9 @@ export const UNINITIALIZED_EMITTING_ROUTES = new Set([
   'app/api/extensions/zettle/orders/cron/route.ts',
   'app/api/import/sie/worker/cron/route.ts',
   'app/api/invoices/reminders/cron/route.ts',
-  // Session routes that call requireAuth() directly instead of the wrapper.
+  // Raw requireAuth() routes that reach an emitting module only through a
+  // helper that never emits (minimisePayload from lib/webhooks/handler,
+  // detectFileMagic from document-service): the over-approximation above.
   'app/api/byra/brand/logo/route.ts',
   'app/api/events/route.ts',
 ])
@@ -75,8 +75,7 @@ export const UNINITIALIZED_EMITTING_ROUTES = new Set([
 // `emit` as a whole word, called or not: `eventBus.emit.bind(eventBus)` hands
 // the emitter to a callback (enable-banking does this) and must still count.
 const EMIT_RE = /\beventBus\s*\.\s*emit\b/
-const DEEP_SCAN_HINT_RE = /\bimport\s*\(|\bensureInitialized\b|\bwithRouteContext\b/
-const WRAPPER_FILE = 'lib/api/with-route-context.ts'
+const DYNAMIC_IMPORT_RE = /\bimport\s*\(/
 const INIT_FILE = 'lib/init.ts'
 const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.mjs', '.js', '/index.ts', '/index.tsx']
 
@@ -123,15 +122,12 @@ function isEnsureInitializedCall(node) {
 }
 
 /**
- * Parse one module: its runtime import specifiers, whether it emits, whether
- * it calls withRouteContext(), and whether it calls ensureInitialized()
- * anywhere and at top level.
+ * Parse one module: its runtime import specifiers, whether it emits, and
+ * whether it calls ensureInitialized() as a top-level statement.
  */
 function analyseSource(fileName, text) {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false)
   const specifiers = []
-  let callsInit = false
-  let callsWrapper = false
   let topLevelInit = false
 
   for (const stmt of source.statements) {
@@ -150,37 +146,32 @@ function analyseSource(fileName, text) {
   }
 
   const visit = (node) => {
-    if (ts.isCallExpression(node)) {
-      if (isEnsureInitializedCall(node)) callsInit = true
-      if (ts.isIdentifier(node.expression) && node.expression.text === 'withRouteContext') {
-        callsWrapper = true
-      }
-      if (
-        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length > 0 &&
-        ts.isStringLiteral(node.arguments[0])
-      ) {
-        specifiers.push(node.arguments[0].text)
-      }
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      specifiers.push(node.arguments[0].text)
     }
     ts.forEachChild(node, visit)
   }
-  // The full walk is only needed for dynamic imports and the two calls; most
-  // modules have none, and skipping them halves the scan.
-  if (DEEP_SCAN_HINT_RE.test(text)) visit(source)
+  // The full walk is only needed for dynamic imports; most modules have none,
+  // and skipping them halves the scan.
+  if (DYNAMIC_IMPORT_RE.test(text)) visit(source)
 
-  return { specifiers, emits: EMIT_RE.test(text), callsInit, callsWrapper, topLevelInit }
+  return { specifiers, emits: EMIT_RE.test(text), topLevelInit }
 }
 
 /**
  * Scan every app/api route under SOURCE_ROOT.
  *
- * Returns { emittingRoutes, uninitialized, wrapperInitializes } where the two
- * lists hold SOURCE_ROOT-relative, forward-slash paths. With
- * `{ countWrapper: false }` the withRouteContext call is ignored, which is how
- * the pre-fix exposure is measured.
+ * Returns { emittingRoutes, uninitialized }: SOURCE_ROOT-relative,
+ * forward-slash paths of the routes that can reach an emitter, and of those
+ * that can do so with no module-scope ensureInitialized() in the route or its
+ * runtime import closure.
  */
-export function findUninitializedEmittingRoutes(SOURCE_ROOT, { countWrapper = true } = {}) {
+export function findUninitializedEmittingRoutes(SOURCE_ROOT) {
   const rel = (p) => path.relative(SOURCE_ROOT, p).split(path.sep).join('/')
   const modules = new Map()
 
@@ -262,22 +253,16 @@ export function findUninitializedEmittingRoutes(SOURCE_ROOT, { countWrapper = tr
     return out
   }
   const reachesEmitter = reaching((info) => info.emits)
+  // Includes the route itself when the route file makes the top-level call.
   const reachesInit = reaching((info) => info.topLevelInit)
-
-  const wrapperInitializes = Boolean(load(path.join(SOURCE_ROOT, WRAPPER_FILE))?.callsInit)
 
   const emittingRoutes = []
   const uninitialized = []
   for (const routeAbs of routes) {
-    const route = modules.get(routeAbs)
-    if (!route || !reachesEmitter.has(routeAbs)) continue
-    const initialised =
-      route.callsInit ||
-      reachesInit.has(routeAbs) ||
-      (countWrapper && wrapperInitializes && route.callsWrapper)
+    if (!modules.get(routeAbs) || !reachesEmitter.has(routeAbs)) continue
     emittingRoutes.push(rel(routeAbs))
-    if (!initialised) uninitialized.push(rel(routeAbs))
+    if (!reachesInit.has(routeAbs)) uninitialized.push(rel(routeAbs))
   }
 
-  return { emittingRoutes, uninitialized, wrapperInitializes }
+  return { emittingRoutes, uninitialized }
 }
