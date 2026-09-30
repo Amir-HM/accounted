@@ -212,7 +212,6 @@ describe('GET /api/reports/ar-ledger/customer/[customerId]/invoices', () => {
       exchange_rate: null,
       remaining_amount: 0,
       notes: null,
-      credited_invoice_id: null,
     }
     authWith(
       buildSupabase(

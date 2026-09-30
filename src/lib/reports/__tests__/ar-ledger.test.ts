@@ -819,11 +819,13 @@ describe('generateARLedger: migrated credit notes', () => {
     expect(report.total_outstanding).toBe(0)
   })
 
-  it('keeps a linked credit note while its original is open, so the pair nets to zero', async () => {
+  it('counts a partial credit once: the provider netted it into the original', async () => {
+    // Faktura 9 694, krediterad med 4 847 i källsystemet: the original arrives
+    // with paid_amount 4 847 carrying the credit, so 4 847 is still owed.
     results = [
       {
         data: [
-          { ...base, id: 'orig', invoice_number: '11', total: 4847, paid_amount: 0, status: 'sent' },
+          { ...base, id: 'orig', invoice_number: '5922', total: 9694, paid_amount: 4847, status: 'sent' },
           migratedCreditNote('cn', -4847, 'orig'),
         ],
         error: null,
@@ -832,8 +834,8 @@ describe('generateARLedger: migrated credit notes', () => {
 
     const report = await generateARLedger(supabase, 'company-1')
 
-    expect(report.total_outstanding).toBe(0)
-    expect(report.entries).toEqual([])
+    expect(report.total_outstanding).toBe(4847)
+    expect(report.entries[0].invoices.map((inv) => inv.invoice_id)).toEqual(['orig'])
   })
 
   it('keeps the open invoices of the same customer', async () => {

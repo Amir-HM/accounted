@@ -50,8 +50,7 @@ export const GET = withRouteContext<{ params: Promise<{ customerId: string }> }>
       exchange_rate,
       remaining_amount,
       notes,
-      status,
-      credited_invoice_id
+      status
     `)
     .eq('company_id', companyId)
     .eq('customer_id', customerId)
@@ -70,11 +69,8 @@ export const GET = withRouteContext<{ params: Promise<{ customerId: string }> }>
   // 'invoice_created', source_id = invoice.id). We batch them to keep this
   // a single DB roundtrip. Settled credit notes are dropped first, as in
   // generateARLedger.
-  const invoices = withoutSettledCreditNotes(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (data || []) as any[],
-    (inv) => Math.round(((Number(inv.total) || 0) - (Number(inv.paid_amount) || 0)) * 100) / 100,
-  )
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const invoices = withoutSettledCreditNotes((data || []) as any[])
   const ids = invoices.map((i) => i.id)
   const entryMap = new Map<
     string,

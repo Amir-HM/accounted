@@ -68,7 +68,7 @@ export interface ARLedgerReport {
  * 'sent' and 'overdue': the first partial payment moves an invoice there and
  * it stays until the rest is paid. 'credited' originals are kept so they net
  * against their credit notes; migrated credit notes that carry the same
- * status are dropped again by withoutSettledCreditNotes. The customer
+ * status are left out by withoutSettledCreditNotes. The customer
  * drill-down route reads this same list and filter, so the aggregate and its
  * detail rows cannot drift apart.
  */
@@ -80,31 +80,19 @@ export const AR_LEDGER_STATUSES = ['sent', 'overdue', 'partially_paid', 'credite
  * 'credited' for the invoice a credit note reverses, which is why
  * AR_LEDGER_STATUSES keeps that status. The migration gives every imported
  * credit note 'credited' instead, as a terminal state with nothing paid and
- * nothing remaining (arcim-migration entity-mapper), because the source system
- * had already applied it. Read like an original, total - paid_amount turned
- * each one into an open negative receivable that nothing offsets while 1510
- * stood at 0.
+ * nothing remaining (arcim-migration entity-mapper): the provider had already
+ * netted it into the balance of the invoice it credits, whose paid_amount
+ * carries it. Read like an original, total - paid_amount counted each credit a
+ * second time, as an open negative receivable, while 1510 stood at 0. Same
+ * rule as the kontantmetod cut-off (kontantmetod-cutoff.ts).
  */
 export function isSettledCreditNote(inv: { status?: string | null; total?: unknown }): boolean {
   return inv.status === 'credited' && (Number(inv.total) || 0) < 0
 }
 
-/**
- * The reskontra population without settled credit notes. One is kept while
- * the invoice it credits is open in the same population: the source left that
- * original unpaid, so the pair has to net here the way it nets on 1510.
- */
-export function withoutSettledCreditNotes<
-  T extends { id: string; status?: string | null; total?: unknown; credited_invoice_id?: string | null },
->(rows: T[], outstandingOf: (row: T) => number): T[] {
-  const openOriginals = new Set(
-    rows.filter((row) => !isSettledCreditNote(row) && outstandingOf(row) > 0).map((row) => row.id),
-  )
-  return rows.filter(
-    (row) =>
-      !isSettledCreditNote(row) ||
-      (!!row.credited_invoice_id && openOriginals.has(row.credited_invoice_id)),
-  )
+/** The reskontra population without settled credit notes. */
+export function withoutSettledCreditNotes<T extends { status?: string | null; total?: unknown }>(rows: T[]): T[] {
+  return rows.filter((row) => !isSettledCreditNote(row))
 }
 
 /**
@@ -175,18 +163,11 @@ export async function generateARLedger(
     // keep NO_INVOICE_REGISTER_COVERAGE
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const outstandingOf = (inv: any): number => {
-    const total = Number(inv.total) || 0
-    const liveOutstanding = roundOre(total - (Number(inv.paid_amount) || 0))
-    return payments ? outstandingAsOf(inv, total, liveOutstanding, payments, asOfDate!) : liveOutstanding
-  }
-
   // Group by customer and calculate aging
   const byCustomer = new Map<string, ARLedgerEntry>()
   let unconvertedFxCount = 0
 
-  for (const inv of withoutSettledCreditNotes(invoices, outstandingOf)) {
+  for (const inv of withoutSettledCreditNotes(invoices)) {
     const customerId = inv.customer_id
     const customerName = inv.customer?.name || 'Okänd kund'
 
@@ -208,7 +189,10 @@ export async function generateARLedger(
     const dueDate = new Date(inv.due_date)
     const daysOverdue = Math.floor((refDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
     const total = Number(inv.total) || 0
-    const outstanding = outstandingOf(inv)
+    const liveOutstanding = roundOre(total - (Number(inv.paid_amount) || 0))
+    const outstanding = payments
+      ? outstandingAsOf(inv, total, liveOutstanding, payments, asOfDate!)
+      : liveOutstanding
     const paidAmount = roundOre(total - outstanding)
 
     // Historical view: 'paid' invoices are only fetched to catch ones still
