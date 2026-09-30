@@ -1176,3 +1176,145 @@ describe('withApiV1: read-only company access (per-company access level)', () =>
     expect((await res.json()).error.details.code).toBe('ROLE_READ_ONLY')
   })
 })
+
+describe('withApiV1: ctx.checkCompanyAccess (company resolved from a resource row)', () => {
+  // Company-less routes (/operations/:id, /webhook-deliveries/:id/retry)
+  // resolve the company from a row and must get the exact gate a URL
+  // companyId gets. These pin that the context method IS that gate.
+  function idParams(id: string) {
+    return { params: Promise.resolve({ id }) }
+  }
+
+  function resourceRoute(method: 'GET' | 'POST', notFoundDetails?: Record<string, unknown>) {
+    const reached = vi.fn()
+    const handler = withApiV1<{ params: Promise<{ id: string }> }>(
+      method === 'GET' ? 'operations.get' : 'webhook_deliveries.retry',
+      async (_req, ctx) => {
+        const denied = await ctx.checkCompanyAccess(
+          'company-2',
+          notFoundDetails ? { notFoundDetails } : undefined,
+        )
+        if (denied) return denied
+        reached()
+        return ok({ reached: true }, { requestId: ctx.requestId })
+      },
+      { requireScope: method === 'GET' ? 'operations:read' : 'webhooks:manage' },
+    )
+    const call = () =>
+      handler(
+        makeRequest(
+          method === 'GET'
+            ? 'https://x.test/api/v1/operations/op-1'
+            : 'https://x.test/api/v1/webhook-deliveries/op-1/retry',
+          { method, headers: { Authorization: 'Bearer gnubok_sk_x' } },
+        ),
+        idParams('op-1'),
+      )
+    return { call, reached }
+  }
+
+  function key(extra: Record<string, unknown>) {
+    mockValidate.mockResolvedValue({
+      userId: 'user-1',
+      companyId: 'company-1',
+      scopes: ['operations:read', 'webhooks:manage'],
+      mode: 'live',
+      ...extra,
+    })
+  }
+
+  it('answers NOT_FOUND with only the route-given details for a member company outside the allowlist', async () => {
+    key({ allowedCompanyIds: ['company-1'], readOnlyCompanyIds: null })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'owner' }))
+    const { call, reached } = resourceRoute('GET', { resource: 'operation' })
+
+    const res = await call()
+
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('NOT_FOUND')
+    expect(body.error.details).toEqual({ resource: 'operation' })
+    expect(reached).not.toHaveBeenCalled()
+    expect(getMultiUserStateMock).not.toHaveBeenCalled()
+  })
+
+  it('answers a non-member exactly like a company outside the allowlist, without naming the company', async () => {
+    key({ allowedCompanyIds: null, readOnlyCompanyIds: null })
+    mockServiceClient.mockReturnValue(makeSupabaseStub(null))
+    const { call, reached } = resourceRoute('POST')
+
+    const res = await call()
+
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('NOT_FOUND')
+    expect(JSON.stringify(body)).not.toContain('company-2')
+    expect(reached).not.toHaveBeenCalled()
+  })
+
+  it('lets an allowlisted company and an unrestricted key through', async () => {
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'owner' }))
+
+    key({ allowedCompanyIds: ['company-1', 'Company-2'], readOnlyCompanyIds: null })
+    const allowlisted = resourceRoute('POST')
+    expect((await allowlisted.call()).status).toBe(200)
+    expect(allowlisted.reached).toHaveBeenCalledTimes(1)
+
+    key({ allowedCompanyIds: null, readOnlyCompanyIds: null })
+    const unrestricted = resourceRoute('POST')
+    expect((await unrestricted.call()).status).toBe(200)
+    expect(unrestricted.reached).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a write in a read-only company with CONNECTION_READ_ONLY but serves a read', async () => {
+    key({ allowedCompanyIds: ['company-2'], readOnlyCompanyIds: ['company-2'] })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'owner' }))
+
+    const write = resourceRoute('POST')
+    const writeRes = await write.call()
+    expect(writeRes.status).toBe(403)
+    expect((await writeRes.json()).error.details.code).toBe('CONNECTION_READ_ONLY')
+    expect(write.reached).not.toHaveBeenCalled()
+
+    const read = resourceRoute('GET', { resource: 'operation' })
+    expect((await read.call()).status).toBe(200)
+    expect(read.reached).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a viewer write with ROLE_READ_ONLY', async () => {
+    key({ allowedCompanyIds: null, readOnlyCompanyIds: null })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'viewer' }))
+    const { call, reached } = resourceRoute('POST')
+
+    const res = await call()
+
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.details.code).toBe('ROLE_READ_ONLY')
+    expect(reached).not.toHaveBeenCalled()
+  })
+
+  it('applies the multi-user seat gate to a non-owner', async () => {
+    key({ allowedCompanyIds: null, readOnlyCompanyIds: null })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'admin' }))
+    getMultiUserStateMock.mockResolvedValue({ state: 'frozen', graceEndsAt: null })
+    const { call, reached } = resourceRoute('GET', { resource: 'operation' })
+
+    const res = await call()
+
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.details.capability).toBe('multi_user')
+    expect(reached).not.toHaveBeenCalled()
+  })
+
+  it('fails closed on a public endpoint context', async () => {
+    const seen: { denied: Response | null } = { denied: null }
+    const handler = withApiV1('health.check', async (_req, ctx) => {
+      seen.denied = await ctx.checkCompanyAccess('company-2')
+      return ok({ status: 'ok' }, { requestId: ctx.requestId })
+    })
+
+    await handler(makeRequest('https://x.test/api/v1/health'), emptyParams())
+
+    expect(seen.denied?.status).toBe(404)
+  })
+})

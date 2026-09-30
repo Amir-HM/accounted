@@ -23,7 +23,11 @@
  *      `arsredovisning.*` operation) refuses a dimension filter its endpoint
  *      does not register (VALIDATION_ERROR) and names any other unregistered
  *      query parameter in `X-Ignored-Query-Params` (STRICT_REPORT_QUERY_PARAMS
- *      refuses those too).
+ *      refuses those too). A route with no `companyId` in the URL that
+ *      resolves a company from a resource row (`/operations/:id`,
+ *      `/webhook-deliveries/:id/retry`) runs the SAME gate through
+ *      `ctx.checkCompanyAccess(companyId)` before it reads or writes anything
+ *      of that company.
  *   5. Resolves the dry-run flag (`?dry_run=true` query OR `X-Dry-Run` header).
  *   6. Resolves `Idempotency-Key` (header) and replays cached responses. The
  *      dry-run flag is part of the cache identity and dry-run responses are
@@ -123,9 +127,24 @@ export interface ApiV1Context {
    * reaches every company its user belongs to, else the only company ids it
    * may reach. The wrapper already refuses a URL companyId outside it; the
    * company-less routes (`/companies`, `/portfolio/*`) must filter their
-   * own membership listings by it.
+   * own membership listings by it, and a company-less route that resolves a
+   * company from a resource row goes through `checkCompanyAccess`.
    */
   allowedCompanyIds: string[] | null
+  /**
+   * The company gate the wrapper runs for a URL `:companyId`, for a company
+   * the handler resolved itself (from an operation or webhook delivery row):
+   * membership, the key's company allowlist, the viewer role and per-company
+   * read-only access (both refuse a write), and the multi-user seat gate.
+   * Resolves to null when the caller may proceed, else to the error response
+   * the handler must return as-is. The not-found answer (non-member, or a
+   * company outside the allowlist) carries `notFoundDetails` only, never the
+   * company id, so a foreign resource looks exactly like an unknown one.
+   */
+  checkCompanyAccess: (
+    companyId: string,
+    options?: { notFoundDetails?: Record<string, unknown> },
+  ) => Promise<Response | null>
   /**
    * Largest amount in SEK this key may commit with no human approving it, or
    * null for no ceiling (the default, and what every key predating the column
@@ -144,7 +163,7 @@ export interface ApiV1Context {
   /**
    * Resolved company id from the URL `:companyId` segment. Undefined for
    * routes that don't include the segment (`/companies`, `/operations/:id`,
-   * `/health`).
+   * `/health`); those that act on one company call `checkCompanyAccess`.
    */
   companyId?: string
   /** Resolved dry-run flag. Routes that mutate state must honor this. */
@@ -292,6 +311,165 @@ async function readBodyForHash(request: Request): Promise<{ body: unknown; clone
   }
 }
 
+interface CompanyGateInput {
+  supabase: SupabaseClient
+  userId: string
+  allowedCompanyIds: string[] | null
+  readOnlyCompanyIds: string[] | null
+  method: string
+  requiredScope: ApiKeyScope
+  requestId: string
+  log: Logger
+  forensic: { ip: string | undefined; userAgent: string | undefined }
+}
+
+/**
+ * The company gate of the v1 surface: one function for a company named in
+ * the URL and for one a company-less route resolved from a resource row, so
+ * the two doors cannot drift apart. Resolves to null when the caller may
+ * proceed, else to the error response to return.
+ *
+ * `notFoundDetails` is the whole `details` of the NOT_FOUND answer. The URL
+ * door echoes the companyId the caller sent; a resource door passes what an
+ * unknown id of its own gets, so a resource of an unreachable company is
+ * indistinguishable from one that does not exist.
+ */
+async function checkCompanyAccessGate(
+  input: CompanyGateInput,
+  companyId: string,
+  notFoundDetails: Record<string, unknown> | undefined,
+): Promise<Response | null> {
+  const { supabase, log, requestId, forensic, method, requiredScope } = input
+
+  const { data: membership, error: membershipErr } = await supabase
+    .from('company_members')
+    .select('company_id, role')
+    .eq('user_id', input.userId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  if (membershipErr) {
+    log.error('failed to resolve company membership', membershipErr as Error)
+    return await v1ErrorResponseFromCode('INTERNAL_ERROR', log, { requestId })
+  }
+
+  if (!membership) {
+    log.warn('user is not a member of the requested company', { companyId, ...forensic })
+    // 404 (not 403) so we don't leak company existence to unauthorized callers.
+    return await v1ErrorResponseFromCode('NOT_FOUND', log, {
+      requestId,
+      ...(notFoundDetails ? { details: notFoundDetails } : {}),
+    })
+  }
+
+  // Per-key company allowlist (api_key_companies): a member company the
+  // key was not issued for is answered exactly like a non-member one, so
+  // the allowlist reveals nothing membership would not. Checked after
+  // the membership row so the two denials share one shape, and before
+  // the role and seat gates so a refused company costs no extra read.
+  if (
+    input.allowedCompanyIds &&
+    !input.allowedCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase())
+  ) {
+    log.warn('requested company is outside the key allowlist', { companyId, ...forensic })
+    return await v1ErrorResponseFromCode('NOT_FOUND', log, {
+      requestId,
+      ...(notFoundDetails ? { details: notFoundDetails } : {}),
+    })
+  }
+
+  const membershipRole = (membership as { role?: string }).role
+  const isWrite = !SAFE_METHODS.has(method) || scopeKind(requiredScope) === 'write'
+
+  // Read-only role gate. Cookie routes enforce the viewer role through
+  // withRouteContext({ requireWrite }) and the DB enforces it through
+  // RLS + triggers for cookie sessions, but this surface runs as the
+  // service role: nothing below this line would stop a viewer's key from
+  // posting. A request is a write when EITHER its method is unsafe
+  // (catches action verbs whatever their scope) OR its scope is an
+  // elevated grant (catches reads-by-method that still manage tenant
+  // state, e.g. GET /webhooks on webhooks:manage). Dry-run and test
+  // keys are refused too: a viewer has no write to simulate.
+  //
+  // Placed AFTER the membership 404 so a non-member sees exactly what it
+  // saw before (no new company-existence signal), and BEFORE the seat
+  // gate so a refused write costs no extra read.
+  if (membershipRole === READ_ONLY_ROLE && isWrite) {
+    log.warn('read-only membership refused write request', {
+      companyId,
+      method,
+      requiredScope,
+      ...forensic,
+    })
+    return await v1ErrorResponseFromCode('FORBIDDEN', log, {
+      requestId,
+      status: 403,
+      reason: 'role_read_only',
+      details: {
+        code: 'ROLE_READ_ONLY',
+        companyId,
+        role: READ_ONLY_ROLE,
+        required_scope: requiredScope,
+        message:
+          'This company membership is read-only (viewer): write requests are refused. Ask a company owner or admin to change the role.',
+      },
+    })
+  }
+
+  // Read-only connection gate: the key reaches this company but was
+  // given read-only access to it (api_key_companies.access = 'read',
+  // migration 20260928112724). Same write test as the role gate above,
+  // and after it, so a viewer keeps the answer that names the role.
+  if (
+    input.readOnlyCompanyIds &&
+    input.readOnlyCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase()) &&
+    isWrite
+  ) {
+    log.warn('read-only company access refused write request', {
+      companyId,
+      method,
+      requiredScope,
+      ...forensic,
+    })
+    return await v1ErrorResponseFromCode('FORBIDDEN', log, {
+      requestId,
+      status: 403,
+      reason: 'connection_read_only',
+      details: {
+        code: 'CONNECTION_READ_ONLY',
+        companyId,
+        required_scope: requiredScope,
+        message:
+          'This API key has read-only access to this company: write requests are refused. Give the key write access to the company under Settings > API & MCP.',
+      },
+    })
+  }
+
+  // Multi-user seat gate: the API-key surface is a chokepoint like the
+  // cookie routes and MCP. A non-owner membership in a frozen company
+  // (multi_user lapsed past its 20-day grace) is refused here so an old
+  // key cannot keep working the books after the freeze. Owners pass
+  // without the extra read; the service client sees team-scoped grants.
+  if (membershipRole !== 'owner') {
+    const access = await getMultiUserState(supabase, companyId)
+    if (isMembershipDormant(membershipRole as string, access.state)) {
+      log.warn('multi-user seat gate refused frozen membership', { companyId, ...forensic })
+      return await v1ErrorResponseFromCode('FORBIDDEN', log, {
+        requestId,
+        status: 403,
+        reason: 'multi_user_frozen',
+        details: {
+          companyId,
+          capability: 'multi_user',
+          message: 'Company is paused for this account: multiple users require a paid plan. Ask the company owner to upgrade.',
+        },
+      })
+    }
+  }
+
+  return null
+}
+
 /**
  * Wrap a v1 route handler with auth, scope, idempotency, dry-run, request-id,
  * logging, and v1 error envelope handling.
@@ -342,6 +520,12 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
           apiKeyName: undefined,
           scopes: [],
           allowedCompanyIds: null,
+          // A public endpoint has no company to open: fail closed.
+          checkCompanyAccess: (_companyId, options) =>
+            v1ErrorResponseFromCode('NOT_FOUND', log, {
+              requestId,
+              ...(options?.notFoundDetails ? { details: options.notFoundDetails } : {}),
+            }),
           unattendedCommitLimit: null,
           mode: 'live',
           supabase: createAnonClient(),
@@ -428,134 +612,21 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
 
       const supabase = createServiceClientNoCookies()
 
+      const companyGate: CompanyGateInput = {
+        supabase,
+        userId: auth.userId,
+        allowedCompanyIds: auth.allowedCompanyIds,
+        readOnlyCompanyIds: auth.readOnlyCompanyIds,
+        method: request.method,
+        requiredScope,
+        requestId,
+        log: userLog,
+        forensic,
+      }
+
       if (companyId !== undefined) {
-        const { data: membership, error: membershipErr } = await supabase
-          .from('company_members')
-          .select('company_id, role')
-          .eq('user_id', auth.userId)
-          .eq('company_id', companyId)
-          .maybeSingle()
-
-        if (membershipErr) {
-          userLog.error('failed to resolve company membership', membershipErr as Error)
-          return await v1ErrorResponseFromCode('INTERNAL_ERROR', userLog, { requestId })
-        }
-
-        if (!membership) {
-          userLog.warn('user is not a member of company in URL', { companyId, ...forensic })
-          // 404 (not 403) so we don't leak company existence to unauthorized callers.
-          return await v1ErrorResponseFromCode('NOT_FOUND', userLog, {
-            requestId,
-            details: { companyId },
-          })
-        }
-
-        // Per-key company allowlist (api_key_companies): a member company the
-        // key was not issued for is answered exactly like a non-member one, so
-        // the allowlist reveals nothing membership would not. Checked after
-        // the membership row so the two denials share one shape, and before
-        // the role and seat gates so a refused company costs no extra read.
-        if (
-          auth.allowedCompanyIds &&
-          !auth.allowedCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase())
-        ) {
-          userLog.warn('company in URL is outside the key allowlist', { companyId, ...forensic })
-          return await v1ErrorResponseFromCode('NOT_FOUND', userLog, {
-            requestId,
-            details: { companyId },
-          })
-        }
-
-        const membershipRole = (membership as { role?: string }).role
-
-        // Read-only role gate. Cookie routes enforce the viewer role through
-        // withRouteContext({ requireWrite }) and the DB enforces it through
-        // RLS + triggers for cookie sessions, but this surface runs as the
-        // service role: nothing below this line would stop a viewer's key from
-        // posting. A request is a write when EITHER its method is unsafe
-        // (catches action verbs whatever their scope) OR its scope is an
-        // elevated grant (catches reads-by-method that still manage tenant
-        // state, e.g. GET /webhooks on webhooks:manage). Dry-run and test
-        // keys are refused too: a viewer has no write to simulate.
-        //
-        // Placed AFTER the membership 404 so a non-member sees exactly what it
-        // saw before (no new company-existence signal), and BEFORE the seat
-        // gate so a refused write costs no extra read.
-        if (
-          membershipRole === READ_ONLY_ROLE &&
-          (!SAFE_METHODS.has(request.method) || scopeKind(requiredScope) === 'write')
-        ) {
-          userLog.warn('read-only membership refused write request', {
-            companyId,
-            method: request.method,
-            requiredScope,
-            ...forensic,
-          })
-          return await v1ErrorResponseFromCode('FORBIDDEN', userLog, {
-            requestId,
-            status: 403,
-            reason: 'role_read_only',
-            details: {
-              code: 'ROLE_READ_ONLY',
-              companyId,
-              role: READ_ONLY_ROLE,
-              required_scope: requiredScope,
-              message:
-                'This company membership is read-only (viewer): write requests are refused. Ask a company owner or admin to change the role.',
-            },
-          })
-        }
-
-        // Read-only connection gate: the key reaches this company but was
-        // given read-only access to it (api_key_companies.access = 'read',
-        // migration 20260928112724). Same write test as the role gate above,
-        // and after it, so a viewer keeps the answer that names the role.
-        if (
-          auth.readOnlyCompanyIds &&
-          auth.readOnlyCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase()) &&
-          (!SAFE_METHODS.has(request.method) || scopeKind(requiredScope) === 'write')
-        ) {
-          userLog.warn('read-only company access refused write request', {
-            companyId,
-            method: request.method,
-            requiredScope,
-            ...forensic,
-          })
-          return await v1ErrorResponseFromCode('FORBIDDEN', userLog, {
-            requestId,
-            status: 403,
-            reason: 'connection_read_only',
-            details: {
-              code: 'CONNECTION_READ_ONLY',
-              companyId,
-              required_scope: requiredScope,
-              message:
-                'This API key has read-only access to this company: write requests are refused. Give the key write access to the company under Settings > API & MCP.',
-            },
-          })
-        }
-
-        // Multi-user seat gate: the API-key surface is a chokepoint like the
-        // cookie routes and MCP. A non-owner membership in a frozen company
-        // (multi_user lapsed past its 20-day grace) is refused here so an old
-        // key cannot keep working the books after the freeze. Owners pass
-        // without the extra read; the service client sees team-scoped grants.
-        if (membershipRole !== 'owner') {
-          const access = await getMultiUserState(supabase, companyId)
-          if (isMembershipDormant(membershipRole as string, access.state)) {
-            userLog.warn('multi-user seat gate refused frozen membership', { companyId, ...forensic })
-            return await v1ErrorResponseFromCode('FORBIDDEN', userLog, {
-              requestId,
-              status: 403,
-              reason: 'multi_user_frozen',
-              details: {
-                companyId,
-                capability: 'multi_user',
-                message: 'Company is paused for this account: multiple users require a paid plan. Ask the company owner to upgrade.',
-              },
-            })
-          }
-        }
+        const denied = await checkCompanyAccessGate(companyGate, companyId, { companyId })
+        if (denied) return denied
       }
 
       // 5b. Report query gate. A report dropped any parameter it did not
@@ -666,6 +737,8 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         apiKeyName: auth.apiKeyName,
         scopes: auth.scopes,
         allowedCompanyIds: auth.allowedCompanyIds,
+        checkCompanyAccess: (resolvedCompanyId, options) =>
+          checkCompanyAccessGate(companyGate, resolvedCompanyId, options?.notFoundDetails),
         unattendedCommitLimit: auth.unattendedCommitLimit,
         mode: auth.mode,
         supabase,
