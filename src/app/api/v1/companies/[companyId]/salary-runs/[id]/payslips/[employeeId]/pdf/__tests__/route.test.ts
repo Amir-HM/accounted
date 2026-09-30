@@ -71,16 +71,34 @@ function makeSupabaseStub(membership: { company_id: string; role: string } | nul
   return { from }
 }
 
-/** Every query resolves by table: select/eq chain to themselves, maybeSingle ends. */
-function makeTableStub(rows: Record<string, unknown>) {
+/**
+ * Every query resolves by table: select/eq chain to themselves, maybeSingle ends.
+ * A table named in `errors` answers that error instead of its row.
+ */
+function makeTableStub(rows: Record<string, unknown>, errors: Record<string, unknown> = {}) {
   const from = vi.fn((table: string) => {
     const chain: Record<string, unknown> = {}
     chain.select = vi.fn(() => chain)
     chain.eq = vi.fn(() => chain)
-    chain.maybeSingle = vi.fn(async () => ({ data: rows[table] ?? null, error: null }))
+    chain.maybeSingle = vi.fn(async () =>
+      table in errors ? { data: null, error: errors[table] } : { data: rows[table] ?? null, error: null },
+    )
     return chain
   })
   return { from }
+}
+
+/** The canonical v1 envelope: a code, a docs link, and the request id echoed in the header. */
+async function expectV1Envelope(res: Response, code: string) {
+  const body = (await res.json()) as { error: Record<string, unknown> }
+  expect(body.error).toMatchObject({
+    code,
+    message: expect.any(String),
+    docs_url: expect.any(String),
+    request_id: expect.stringMatching(/^req_/),
+  })
+  expect(res.headers.get('X-Request-Id')).toBe(body.error.request_id)
+  return body.error
 }
 
 function makeRequest(companyId: string, init?: RequestInit, query = '') {
@@ -360,7 +378,24 @@ describe('GET /api/v1/companies/[companyId]/salary-runs/[id]/payslips/[employeeI
         makeParams(COMPANY_A),
       )
 
-      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(res.status).toBe(500)
+      await expectV1Envelope(res, 'INTERNAL_ERROR')
+      expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
+    })
+
+    it('answers the canonical envelope and renders nothing when the section switches cannot be read', async () => {
+      writerKey()
+      mockServiceClient.mockReturnValue(makeTableStub(rows, { company_settings: { message: 'timeout' } }))
+
+      const res = await GET(
+        makeRequest(COMPANY_A, { headers: { Authorization: 'Bearer gnubok_sk_x' } }, '?audience=employee'),
+        makeParams(COMPANY_A),
+      )
+
+      // Fail closed: no fallback to the default switches.
+      expect(res.status).toBe(500)
+      await expectV1Envelope(res, 'INTERNAL_ERROR')
+      expect(vi.mocked(issuePayslipSections)).not.toHaveBeenCalled()
       expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
     })
   })

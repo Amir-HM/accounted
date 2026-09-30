@@ -13,6 +13,8 @@ import {
 import { issuePayslipSections } from '@/lib/salary/payslips/section-snapshot'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { contentDisposition } from '@/lib/api/content-disposition'
+import { dbError } from '@/lib/errors/db-error'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
 ensureInitialized()
 
@@ -42,10 +44,25 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
   async (request, ctx, { params }) => {
     const { id, employeeId } = await params
     const { supabase, companyId } = ctx
+    // The section switches (or the run's issued snapshot) could not be read.
+    // Answered in the canonical envelope at 500 with the route's own sentence;
+    // the cause goes to the log only, never to the body.
+    const sectionsUnavailable = (cause: unknown) =>
+      errorResponseFromCode('INTERNAL_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        messageSv: 'Kunde inte läsa lönespecifikationens inställningar',
+        messageEn: 'Could not read the payslip section settings.',
+        reason: dbError(cause, 'payslip sections unavailable').message,
+      })
 
     const audienceKind = parsePayslipAudienceParam(new URL(request.url).searchParams.get('audience'))
     if (!audienceKind) {
-      return NextResponse.json({ error: 'Ogiltig mottagare för lönespecifikationen' }, { status: 400 })
+      return errorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        messageSv: 'Ogiltig mottagare för lönespecifikationen',
+        messageEn: 'Invalid payslip audience: use employer or employee.',
+        details: { field: 'audience' },
+      })
     }
 
     // Load salary run
@@ -104,7 +121,7 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
       // Fail closed: a failed read must not fall back to the defaults and
       // print sections the company has hidden from its employees.
       if (settingsError) {
-        return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+        return sectionsUnavailable(settingsError)
       }
       audience = { kind: 'employee', settings: sectionSettings }
       // Only a member who may write the run issues it, through the caller's
@@ -114,7 +131,7 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
       if (writeCheck.ok) {
         const issued = await issuePayslipSections(supabase, { companyId, run, settings: sectionSettings })
         if (!issued.ok) {
-          return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+          return sectionsUnavailable(issued.error)
         }
         renderRun = { ...run, ...issued.snapshot }
       }
