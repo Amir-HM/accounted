@@ -420,6 +420,9 @@ describe('table-without-grant: across the migration history', () => {
     expect(grandfatheredFiles(undefined, scanned)).toEqual(scanned)
   })
 
+  // Reads and parses every migration file (1000+, ~40 MB): well under a
+  // second alone, but a loaded CI shard running this file beside hundreds of
+  // others blew the default 5 s, so it gets its own budget.
   it('grandfathers exactly the files that have findings today, and 20260929220000 is not one of them', () => {
     // The baseline is a frozen set: migration files never change, so a stale
     // entry would only ever hide a future file of the same name. Keep it
@@ -436,5 +439,5 @@ describe('table-without-grant: across the migration history', () => {
     // someone grandfathered a new table instead of granting it.
     const versions = baseline.tableWithoutGrant.files.map((f: string) => path.basename(f).slice(0, 14))
     expect(versions.filter((v: string) => v >= '20260929220000')).toEqual([])
-  })
+  }, 60_000)
 })

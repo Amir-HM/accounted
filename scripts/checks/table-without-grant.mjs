@@ -60,13 +60,17 @@ const IDENT = String.raw`(?:"[^"]+"|[a-z_][a-z0-9_$]*)`
 const QUALIFIED = String.raw`${IDENT}(?:\s*\.\s*${IDENT})?`
 const SERIAL_TYPE = String.raw`(?:(?:small|big)serial|serial[248]?)`
 
-/** True when the code before a dollar quote ends with `DO` (optionally `DO LANGUAGE x`). */
-function endsWithDo(code) {
-  let j = code.length - 1
-  while (j >= 0 && /\s/.test(code[j])) j--
-  const tail = code.slice(Math.max(0, j - 40), j + 1)
-  return /(?:^|[^\w$"])do(?:\s+language(?:\s+[a-z_][a-z0-9_]*)?)?$/i.test(tail)
+/**
+ * True when the code before a dollar quote ends with `DO` (optionally
+ * `DO LANGUAGE x`). `window` is the code up to and including its last
+ * non-whitespace character, at least 41 characters of it.
+ */
+function endsWithDo(window) {
+  return /(?:^|[^\w$"])do(?:\s+language(?:\s+[a-z_][a-z0-9_]*)?)?$/i.test(window)
 }
+
+/** A run of characters that cannot start a comment, literal or quoted identifier. */
+const PLAIN_RUN = /[^-/'$"]+/y
 
 /**
  * Split SQL into code (comments and literals replaced by spaces, offsets and
@@ -75,11 +79,27 @@ function endsWithDo(code) {
  * offset so the caller can parse the DDL they run).
  */
 export function sanitizeSql(sql) {
-  let code = ''
+  // `code` is built from parts and joined once: reading back from a growing
+  // concatenated string flattens it on every read, which made the scan
+  // quadratic on the migrations that seed large function bodies.
+  const parts = []
   const comments = []
   const doBodies = []
   let i = 0
+  // The last 128 characters of the code so far, and the code up to its last
+  // non-whitespace character. Blanked text is only spaces and newlines, so
+  // only verbatim appends move the second one.
+  let tail = ''
+  let sigWindow = ''
   const blank = (s) => s.replace(/[^\n]/g, ' ')
+  const push = (s) => {
+    parts.push(s)
+    tail = s.length >= 128 ? s.slice(-128) : (tail + s).slice(-128)
+  }
+  const keep = (s) => {
+    push(s)
+    if (/\S/.test(s)) sigWindow = tail.trimEnd().slice(-41)
+  }
   while (i < sql.length) {
     const ch = sql[i]
     const next = sql[i + 1]
@@ -87,7 +107,7 @@ export function sanitizeSql(sql) {
       const end = sql.indexOf('\n', i)
       const stop = end === -1 ? sql.length : end
       comments.push(sql.slice(i + 2, stop))
-      code += blank(sql.slice(i, stop))
+      push(blank(sql.slice(i, stop)))
       i = stop
     } else if (ch === '/' && next === '*') {
       // Postgres block comments nest.
@@ -103,7 +123,7 @@ export function sanitizeSql(sql) {
         } else j++
       }
       comments.push(sql.slice(i + 2, j - 2))
-      code += blank(sql.slice(i, j))
+      push(blank(sql.slice(i, j)))
       i = j
     } else if (ch === "'") {
       // '' is an escaped quote; E'' strings may also escape with a backslash.
@@ -113,9 +133,14 @@ export function sanitizeSql(sql) {
         if (escapes && sql[j] === '\\') j += 2
         else if (sql[j] === "'" && sql[j + 1] === "'") j += 2
         else if (sql[j] === "'") break
-        else j++
+        else if (escapes) j++
+        else {
+          // Without backslash escapes only a quote matters: jump to the next one.
+          const q = sql.indexOf("'", j)
+          j = q === -1 ? sql.length : q
+        }
       }
-      code += blank(sql.slice(i, j + 1))
+      push(blank(sql.slice(i, j + 1)))
       i = j + 1
     } else if (ch === '$') {
       const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 64))
@@ -123,25 +148,30 @@ export function sanitizeSql(sql) {
         const bodyStart = i + tag[0].length
         const close = sql.indexOf(tag[0], bodyStart)
         const bodyEnd = close === -1 ? sql.length : close
-        if (endsWithDo(code)) doBodies.push({ offset: bodyStart, body: sql.slice(bodyStart, bodyEnd) })
+        if (endsWithDo(sigWindow)) doBodies.push({ offset: bodyStart, body: sql.slice(bodyStart, bodyEnd) })
         const stop = close === -1 ? sql.length : close + tag[0].length
-        code += blank(sql.slice(i, stop))
+        push(blank(sql.slice(i, stop)))
         i = stop
       } else {
-        code += ch
+        keep(ch)
         i++
       }
     } else if (ch === '"') {
       const end = sql.indexOf('"', i + 1)
       const stop = end === -1 ? sql.length : end + 1
-      code += sql.slice(i, stop)
+      keep(sql.slice(i, stop))
       i = stop
     } else {
-      code += ch
-      i++
+      // Copy the whole run up to the next character that can open a comment,
+      // literal or quoted identifier, not one character at a time.
+      PLAIN_RUN.lastIndex = i + 1
+      const run = PLAIN_RUN.exec(sql)
+      const stop = run ? i + 1 + run[0].length : i + 1
+      keep(sql.slice(i, stop))
+      i = stop
     }
   }
-  return { code, comments, doBodies }
+  return { code: parts.join(''), comments, doBodies }
 }
 
 /** `public.Foo` / `"foo"` / `foo` -> `foo`; null for a relation outside public. */
