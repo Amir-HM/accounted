@@ -9,6 +9,7 @@ import { useAccounts, useCashAccounts, useFiscalPeriods } from '@/lib/reference-
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { notifyBankSyncUpdated } from '@/lib/transactions/bank-sync-signal'
 import { classifyInitialSyncError } from '@/lib/bank-sync/initial-sync-error'
+import { bankMatchesQuery, searchAliasHint } from '@/lib/bank-sync/bank-search'
 import type { CashAccount } from '@/types'
 import { allocateLedgers, ledgerClaims, ledgerName, ledgerOptions } from '@/lib/onboarding-books/ledger'
 import { LOOKBACK_SAFE_DAYS, resolveLookback, type LookbackMode } from '@/lib/onboarding-books/lookback'
@@ -126,9 +127,10 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
   }, [banks])
   const shownBanks = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (q) return orderedBanks.filter((b) => b.name.toLowerCase().includes(q))
+    if (q) return orderedBanks.filter((b) => bankMatchesQuery(b, q))
     return more ? orderedBanks : orderedBanks.slice(0, PICK_COUNT)
   }, [orderedBanks, more, query])
+  const aliasHint = searchAliasHint(shownBanks, query)
 
   // The bank's login runs in a popup, like the provider logins: the callback
   // page posts its outcome back and closes itself, so this page never
@@ -442,6 +444,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
               ))}
             </div>
             {shownBanks.length === 0 ? <p className="jny-qsub">{t('bank_no_matches')}</p> : null}
+            {aliasHint ? <p className="jny-qsub">{t('bank_alias_hint', { product: aliasHint.product, bank: aliasHint.bank })}</p> : null}
             {/* The way out sits under the banks, quiet: connecting is the point of the step (founder direction 2026-09-14). */}
             <div className="bank-exit">
               <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => dispatch({ type: 'BANK_SKIP', flags })}>
