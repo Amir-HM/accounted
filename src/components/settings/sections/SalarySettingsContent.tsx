@@ -311,11 +311,18 @@ export function SalarySettingsContent() {
               onCheckedChange={(next) => setShowEmployerCost(next)}
             />
           </SettingsRow>
-          <SettingsRow label={t('payslip_breakdown_label')} help={t('payslip_breakdown_help')}>
+          {/* The breakdown's steps carry the employer cost figures, so the
+              employee copy prints it only while the employer cost is shown
+              (payslipSectionsFor). The stored value is kept as is. */}
+          <SettingsRow
+            label={t('payslip_breakdown_label')}
+            help={effectiveShowEmployerCost ? t('payslip_breakdown_help') : t('payslip_breakdown_requires_employer_cost')}
+          >
             <Switch
               id="salary_payslip_show_breakdown"
               aria-label={t('payslip_breakdown_toggle')}
-              checked={effectiveShowBreakdown}
+              checked={effectiveShowEmployerCost && effectiveShowBreakdown}
+              disabled={!effectiveShowEmployerCost}
               onCheckedChange={(next) => setShowBreakdown(next)}
             />
           </SettingsRow>

@@ -193,7 +193,58 @@ describe('buildPayslipData: audience (crm#202)', () => {
       settings: { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: true },
     })
     expect(data.employerCost).toBeNull()
-    expect(data.breakdownSteps).toHaveLength(2)
+  })
+
+  it('never leaks the employer cost through Beräkningsunderlag when only the employer cost switch is off', () => {
+    // The engine's steps carry the employer cost figures themselves.
+    const steps = [
+      { label: 'Bruttolön', formula: '35000', output: 35000 },
+      { label: 'Arbetsgivaravgifter', formula: '35000 x 31,42 %', output: 10997 },
+      { label: 'Semesteravsättning (procentregeln 12 %)', formula: '35000 x 12 %', output: 4200 },
+      { label: 'Arbetsgivaravgifter på semesteravsättning', formula: '4200 x 31,42 %', output: 1319.74 },
+      { label: 'Total arbetsgivarkostnad', formula: 'summa', output: 51516.74 },
+    ]
+    const data = buildPayslipData({
+      run,
+      sre: sre({ calculation_breakdown: { steps }, avgifter_amount_override: 10000, override_reason: 'justering' }),
+      employee,
+      company,
+      audience: {
+        kind: 'employee',
+        settings: { salary_payslip_show_employer_cost: false, salary_payslip_show_breakdown: true },
+      },
+    })
+    const serialized = JSON.stringify(data)
+    expect(serialized).not.toContain('Arbetsgivaravgifter')
+    expect(serialized).not.toContain('Total arbetsgivarkostnad')
+    expect(serialized).not.toContain('Semesteravsättning')
+    expect(serialized).not.toContain('51516.74')
+    expect(serialized).not.toContain('10997')
+    expect(data.breakdownSteps).toBeUndefined()
+    expect(data.employerCost).toBeNull()
+
+    // The employer's own view of the same run keeps every step.
+    const employerView = buildPayslipData({
+      run,
+      sre: sre({ calculation_breakdown: { steps }, avgifter_amount_override: 10000, override_reason: 'justering' }),
+      employee,
+      company,
+      audience: EMPLOYER,
+    })
+    expect(employerView.breakdownSteps?.map(s => s.label)).toContain('Total arbetsgivarkostnad')
+    expect(employerView.breakdownSteps?.map(s => s.label)).toContain('Manuell justering: Arbetsgivaravgifter')
+  })
+
+  it('requires the employer cost for the breakdown: sections follow both switches together', () => {
+    const sectionsFor = (employerCost: boolean, breakdown: boolean) =>
+      payslipSectionsFor({
+        kind: 'employee',
+        settings: { salary_payslip_show_employer_cost: employerCost, salary_payslip_show_breakdown: breakdown },
+      })
+    expect(sectionsFor(true, true)).toEqual({ employerCost: true, breakdown: true })
+    expect(sectionsFor(true, false)).toEqual({ employerCost: true, breakdown: false })
+    expect(sectionsFor(false, true)).toEqual({ employerCost: false, breakdown: false })
+    expect(sectionsFor(false, false)).toEqual({ employerCost: false, breakdown: false })
   })
 
   it('omits Beräkningsunderlag (engine and override steps) from the employee copy when its switch is off', () => {

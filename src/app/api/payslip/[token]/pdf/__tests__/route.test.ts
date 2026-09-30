@@ -168,4 +168,36 @@ describe('GET /api/payslip/[token]/pdf', () => {
       expect.objectContaining({ company: { name: 'Bolaget AB', org_number: '5560000000' } }),
     )
   })
+
+  it('returns 500 instead of printing hidden sections when the switches cannot be read', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    vi.mocked(createServiceClientNoCookies).mockReturnValue(supabase as never)
+    vi.mocked(resolvePayslipToken).mockResolvedValue({
+      ok: true,
+      link: {
+        id: 'link-1',
+        company_id: 'company-1',
+        salary_run_id: 'run-1',
+        employee_id: 'emp-1',
+        token_hash: 'h',
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        revoked_at: null,
+        access_count: 0,
+      },
+    })
+    enqueueMany([
+      { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: null, error: { message: 'timeout' } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/payslip/t/pdf'),
+      createMockRouteParams({ token: token('H') }),
+    )
+
+    expect(response.status).toBe(500)
+    expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
+  })
 })

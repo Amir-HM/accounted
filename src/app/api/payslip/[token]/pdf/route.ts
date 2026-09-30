@@ -44,7 +44,7 @@ export async function GET(
 
   const { link } = resolved
 
-  const [{ data: run }, { data: sre }, { data: company }, { data: settings }] = await Promise.all([
+  const [{ data: run }, { data: sre }, { data: company }, { data: settings, error: settingsError }] = await Promise.all([
     serviceClient
       .from('salary_runs')
       .select('*')
@@ -71,6 +71,12 @@ export async function GET(
 
   if (!run || !sre || !company) {
     return new NextResponse('Not found', { status: 404 })
+  }
+
+  // Fail closed: without the company's section switches this copy would fall
+  // back to the defaults and print sections hidden from the employee.
+  if (settingsError) {
+    return new NextResponse('Could not load payslip', { status: 500 })
   }
 
   const emp = sre.employee as unknown as {

@@ -86,11 +86,16 @@ export const GET = withRouteContext<{ params: Promise<{ id: string; employeeId: 
 
     let audience: PayslipAudience = { kind: 'employer' }
     if (audienceKind === 'employee') {
-      const { data: sectionSettings } = await supabase
+      const { data: sectionSettings, error: settingsError } = await supabase
         .from('company_settings')
         .select('salary_payslip_show_employer_cost, salary_payslip_show_breakdown')
         .eq('company_id', companyId)
         .maybeSingle()
+      // Fail closed: a failed read must not fall back to the defaults and
+      // print sections the company has hidden from its employees.
+      if (settingsError) {
+        return NextResponse.json({ error: 'Kunde inte läsa lönespecifikationens inställningar' }, { status: 500 })
+      }
       audience = { kind: 'employee', settings: sectionSettings }
     }
 

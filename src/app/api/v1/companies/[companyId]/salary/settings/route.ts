@@ -22,7 +22,8 @@
  * `salary_payslip_show_employer_cost` / `salary_payslip_show_breakdown` decide
  * whether the payslip copy the EMPLOYEE receives prints Arbetsgivarkostnad
  * and Beräkningsunderlag (lib/salary/payslips/build-payslip-data). The
- * employer's own view always prints both.
+ * employer's own view always prints both. Hiding the employer cost also hides
+ * the breakdown, whose steps carry the employer cost figures.
  *
  * `salary_calculation_policy` (lib/salary/calculation-policy.ts) is a jsonb
  * column read raw and reported parsed, every convention present. A PATCH
@@ -291,7 +292,7 @@ const POLICY_PITFALLS = [
 ]
 
 const SHARED_PITFALLS = [
-  'salary_payslip_show_employer_cost and salary_payslip_show_breakdown only change the payslip copy the employee receives (the emailed payslip link, and GET /salary-runs/{id}/payslips/{employeeId}/pdf?audience=employee). The employer view (the same PDF endpoint without audience) always prints both sections. Both default to true; the switch applies to every payslip rendered after the change, including runs already sent.',
+  'salary_payslip_show_employer_cost and salary_payslip_show_breakdown only change the payslip copy the employee receives (the emailed payslip link, and GET /salary-runs/{id}/payslips/{employeeId}/pdf?audience=employee). The employer view (the same PDF endpoint without audience) always prints both sections. The breakdown steps carry the employer cost figures, so salary_payslip_show_employer_cost=false also hides Beräkningsunderlag on the employee copy, whatever salary_payslip_show_breakdown says (its stored value is kept and applies again once the employer cost is shown). Both default to true; the switch applies to every payslip rendered after the change, including runs already sent.',
   'salary_deviation_period is snapshotted onto each salary run at creation: changing it never moves a run that already exists. Set it before the first run of a new month. Switching later makes the next run\'s deviation window overlap the previous run\'s window, and that run is refused with 409 SALARY_RUN_DEVIATION_PERIOD_OVERLAP (pass explicit deviation_period_start/end on that one run to bridge the switch).',
   'salary_pay_day only drives the default payment_date of NEW runs (the day of the pay month, 1-28 so it exists in every month). Existing runs keep their payment_date; override per run on POST /salary-runs.',
   'salary_voucher_series is an alias for company_settings.default_voucher_series_per_source_type.salary_payment. Writes MERGE that one key into the per-source-type map; the other source types keep their letters. The default company layout books salaries on K.',

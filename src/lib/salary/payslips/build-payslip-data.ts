@@ -81,12 +81,22 @@ export function parsePayslipAudienceParam(value: string | null): 'employer' | 'e
   return null
 }
 
-/** Which optional sections a copy for this audience prints. */
+/**
+ * Which optional sections a copy for this audience prints.
+ *
+ * Hiding the employer cost also hides Beräkningsunderlag: the engine's steps
+ * carry the employer cost figures (Arbetsgivaravgifter, Semesteravsättning,
+ * Total arbetsgivarkostnad, avgift overrides) and stored steps have no
+ * category to filter them by, so a breakdown without them cannot be built
+ * reliably from historical runs. Showing the breakdown therefore requires
+ * showing the employer cost.
+ */
 export function payslipSectionsFor(audience: PayslipAudience): PayslipSections {
   if (audience.kind === 'employer') return { employerCost: true, breakdown: true }
+  const employerCost = audience.settings?.salary_payslip_show_employer_cost ?? true
   return {
-    employerCost: audience.settings?.salary_payslip_show_employer_cost ?? true,
-    breakdown: audience.settings?.salary_payslip_show_breakdown ?? true,
+    employerCost,
+    breakdown: employerCost && (audience.settings?.salary_payslip_show_breakdown ?? true),
   }
 }
 

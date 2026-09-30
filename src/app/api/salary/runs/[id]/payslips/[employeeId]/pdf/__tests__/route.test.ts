@@ -136,6 +136,24 @@ describe('GET /api/salary/runs/[id]/payslips/[employeeId]/pdf', () => {
     )
   })
 
+  it('returns 500 instead of printing hidden sections when the switches cannot be read', async () => {
+    const { enqueueMany } = authed()
+    enqueueMany([
+      { data: { id: 'run-1', period_year: 2026, period_month: 6, payment_date: '2026-06-25' } },
+      { data: { employee: { first_name: 'Anna', last_name: 'A', personnummer: 'enc' }, line_items: [] } },
+      { data: { name: 'Bolaget AB', org_number: '5560000000' } },
+      { data: null, error: { message: 'timeout' } },
+    ])
+
+    const response = await GET(
+      createMockRequest('/api/salary/runs/run-1/payslips/emp-1/pdf', { searchParams: { audience: 'employee' } }),
+      createMockRouteParams({ id: 'run-1', employeeId: 'emp-1' }),
+    )
+
+    expect(response.status).toBe(500)
+    expect(vi.mocked(buildPayslipData)).not.toHaveBeenCalled()
+  })
+
   it('returns 400 for an unknown audience', async () => {
     authed()
     const response = await GET(
