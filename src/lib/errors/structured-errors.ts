@@ -5764,6 +5764,23 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
     },
     thrown_message_sv: true,
   },
+  // A skattekonto row whose event a live verifikat already carries on 1630
+  // (typically imported by SIE from the previous system): booking it would
+  // record the event twice. The thrown Swedish text names the verifikat.
+  SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS: {
+    httpStatus: 409,
+    message_sv:
+      'Händelsen finns redan i bokföringen: ett verifikat innehåller den redan på konto 1630. Koppla raden till verifikatet i stället för att bokföra den en gång till.',
+    message_en:
+      'The event is already in the ledger: a live verifikat carries it on account 1630. Link the row to that verifikat instead of booking it a second time.',
+    retryable: false,
+    remediation: {
+      description:
+        'Link the row to the verifikat the message names with gnubok_reconcile_match (account_key "skattekonto", pairs [{ external_ids: [row id, plus any same-day rows the verifikat carries with it], journal_entry_ids: [verifikat id] }]). Book it anyway (allow_duplicate / allow_duplicate_ids) only when the user confirms the event really happened twice.',
+      tool: 'gnubok_reconcile_match',
+    },
+    thrown_message_sv: true,
+  },
   SKATTEVERKET_ACCESS_DENIED: {
     httpStatus: 403,
     message_sv:
