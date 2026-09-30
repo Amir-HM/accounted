@@ -125,8 +125,11 @@ const SKV_SESSION_MISSING_MESSAGE =
 // Body for POST /skattekonto/transaktioner/bokfor-batch. Capped at 200 ids:
 // a full year of skattekonto events fits comfortably, and the sequential
 // draft+commit loop stays well inside the dispatcher's time budget.
+// allow_duplicate_ids: rows to book even though the ledger already holds a
+// verifikat for the event (LEDGER_TWIN_EXISTS); an explicit per-row choice.
 const SkattekontoBokforBatchSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
+  allow_duplicate_ids: z.array(z.string().uuid()).max(200).optional(),
 })
 
 /**
@@ -2587,6 +2590,7 @@ export const skatteverketExtension: Extension = {
             ctx.companyId,
             ctx.userId,
             ids,
+            { allowDuplicateIds: parsed.data.allow_duplicate_ids ?? [] },
           )
           return NextResponse.json({ data: result })
         } catch (err) {
@@ -2615,12 +2619,36 @@ export const skatteverketExtension: Extension = {
           return NextResponse.json({ error: 'Saknar transaktions-id' }, { status: 400 })
         }
 
+        // Optional body { allow_duplicate: true }: draft even though the
+        // ledger already holds a verifikat for the event. No body (the
+        // historical call) keeps the guard on.
+        const rawBody = await request.text().catch(() => '')
+        let allowDuplicate = false
+        if (rawBody.trim()) {
+          let body: unknown
+          try {
+            body = JSON.parse(rawBody)
+          } catch {
+            return NextResponse.json({ error: 'Ogiltig JSON i förfrågan.' }, { status: 400 })
+          }
+          const allow = (body as { allow_duplicate?: unknown } | null)?.allow_duplicate
+          if (allow !== undefined && typeof allow !== 'boolean') {
+            return NextResponse.json(
+              { error: 'Ogiltiga parametrar: allow_duplicate måste vara true eller false.' },
+              { status: 400 },
+            )
+          }
+          allowDuplicate = allow === true
+        }
+
         try {
           const entry = await bokforSkattekontoTransaction(
             ctx.supabase,
             ctx.companyId,
             ctx.userId,
             id,
+            undefined,
+            { allowDuplicate },
           )
           return NextResponse.json({ data: { entry } })
         } catch (err) {
@@ -2629,11 +2657,16 @@ export const skatteverketExtension: Extension = {
               err.code === 'TRANSACTION_NOT_FOUND' ? 404
               : err.code === 'ALREADY_BOOKED' ? 409
               : err.code === 'ROW_IGNORED' ? 409
+              : err.code === 'LEDGER_TWIN_EXISTS' ? 409
               : err.code === 'PERIOD_LOCKED' ? 423
               : err.code === 'NO_COUNTER_ACCOUNT' ? 422
               : 400
             return NextResponse.json(
-              { error: err.message, code: err.code },
+              {
+                error: err.message,
+                code: err.code,
+                ...(err.ledgerTwins ? { ledger_twins: err.ledgerTwins } : {}),
+              },
               { status },
             )
           }
@@ -3084,8 +3117,17 @@ async function commitBookSkattekontoRows(
     }
   }
 
+  // Rows the reviewer approved booking although the ledger already holds a
+  // verifikat for the event (staged with allow_duplicate / allow_duplicate_ids).
+  const rawAllow = params.allow_duplicate_ids
+  const allowDuplicateIds = Array.isArray(rawAllow)
+    ? rawAllow.filter((v): v is string => typeof v === 'string' && ids.includes(v))
+    : []
+
   try {
-    const result = await bokforSkattekontoTransactionsBatch(supabase, companyId, userId, ids)
+    const result = await bokforSkattekontoTransactionsBatch(supabase, companyId, userId, ids, {
+      allowDuplicateIds,
+    })
     return { ok: true, ...result }
   } catch (err) {
     // bokforSkattekontoTransactionsBatch catches per-row errors itself; a
