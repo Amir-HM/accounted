@@ -4215,7 +4215,14 @@
     "draft_created_title": "Draft created",
     "draft_created_description": "Review and post the voucher in Bookkeeping.",
     "book_failed": "Could not post",
-    "commit_failed_title": "Draft created but not posted"
+    "commit_failed_title": "Draft created but not posted",
+    "twin_title": "This event is already in the books",
+    "twin_body": "{text} of {amount} ({date}) is already on account 1630 in an existing voucher. Link the row to it instead of posting the event a second time.",
+    "twin_match_cta": "Link to voucher",
+    "twin_book_anyway": "Post anyway",
+    "twin_warning": "Post anyway creates a second voucher for the same amount on 1630.",
+    "twin_draft": "Draft",
+    "twin_hint": "Common after an SIE import: the voucher came over from the previous system. Post anyway only if the event really happened twice."
   },
   "tx_form": {
     "date_required": "Date is required",
@@ -7099,6 +7106,7 @@
     "skv_err_already_booked": "already posted",
     "skv_err_not_settled": "not settled yet",
     "skv_err_commit_failed": "draft created, not posted",
+    "skv_err_ledger_twin": "already in the books, link instead",
     "skv_err_other": "failed",
     "skv_ignore_confirm_title": "Ignore this tax account event?",
     "skv_ignore_confirm_body": "{text}, {amount} ({date}) is hidden from the list without being booked. Use for events that are not business events of the company, for example rows from before the first fiscal year. You can restore it under Skattekonto at any time.",
@@ -9403,6 +9411,7 @@
     "toast_unignored": "Row restored",
     "toast_booked": "{count} booked",
     "toast_book_partial": "{ok} booked, {failed} failed",
+    "toast_book_twins": "{count, plural, one {1 row is already in the books and was skipped: link it instead.} other {# rows are already in the books and were skipped: link them instead.}}",
     "toast_failed": "That did not work",
     "truncated": "Showing the first {count} rows per group.",
     "rail_signed_off": "signed off through {date}",
