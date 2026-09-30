@@ -9,6 +9,7 @@ import { schemaForType } from '@/lib/documents/extract/schemas'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { needsReadOnDemand, readLaneFor, type ReadLane } from '@/lib/documents/read/lanes'
 import { hasStoredPages, isBookedRow } from '@/lib/documents/locked-period'
+import { canDeleteDocument, offersDocumentDelete, readDocumentDeletePins, type DocumentDeletePins } from '@/lib/documents/deletion'
 
 /**
  * GET /api/arkiv/documents/[id]
@@ -29,6 +30,11 @@ export interface DocumentRecordView {
   /** How far the reading got (phase 9f): history the lanes left for a question says so. */
   read: { state: 'read' | 'partial' | 'unread' | 'skipped'; lane: ReadLane }
   journal_entry: { id: string; voucher: string } | null
+  /**
+   * Whether the record offers the delete (offersDocumentDelete): exactly where DELETE /api/documents/[id] would take it,
+   * by the same rule (documentDeleteRefusal) over the same pins (readDocumentDeletePins).
+   */
+  deletable: boolean
   classification: { summary: string | null; confidence: number | null; decided_by: string; signals: string[]; suggested_type?: string | null } | null
   /** The rows of a receipt or invoice as the Underlag reader saw them; empty for anything else. */
   line_items: Array<{ description: string; quantity: number | null; unit_price: number | null; line_total: number | null; vat_rate: number | null }>
@@ -117,6 +123,15 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   // stamp (lib/documents/locked-period.ts): shown typed and read all the same.
   const docType = d.doc_type ?? (isBookedRow(d) ? ((classification.data as { doc_type?: string | null } | null)?.doc_type ?? null) : null)
   const storedPages = !d.pages_read_at && (await hasStoredPages(ctx.supabase, id))
+  // The same pins deleteDocument() reads, only for a document the verifikat half of the rule lets go.
+  let pins: DocumentDeletePins | null = null
+  if (canDeleteDocument(d)) {
+    try {
+      pins = await readDocumentDeletePins(ctx.supabase, ctx.companyId, d.id)
+    } catch (pinError) {
+      return NextResponse.json({ error: getErrorMessage(pinError) }, { status: 500 })
+    }
+  }
 
   const view: DocumentRecordView = {
     document_id: d.id,
@@ -137,6 +152,7 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
       lane: readLaneFor(d),
     },
     journal_entry: e ? { id: e.id, voucher: `${e.voucher_series ?? ''}${e.voucher_number ?? ''}` } : null,
+    deletable: pins != null && offersDocumentDelete(d, pins),
     classification: classification.data ? (classification.data as DocumentRecordView['classification']) : null,
     line_items: (d.extracted_data?.lineItems ?? [])
       .filter((li) => li && typeof li === 'object')
@@ -187,3 +203,4 @@ export const GET = withRouteContext('arkiv.document', async (_request, ctx, { pa
   }
   return NextResponse.json({ data: view })
 })
+
