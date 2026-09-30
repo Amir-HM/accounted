@@ -20,9 +20,14 @@
 -- (which replays under the old image default) stays green.
 --
 -- This migration adopts the new state now, on our schedule and in repo
--- history, so production, self-host, preview replays and pg-real all behave
--- the same from here on, and a table that ships without grants fails in CI
--- rather than at its first production call.
+-- history, so production, self-host (with supabase/bootstrap.sql) and pg-real
+-- behave the same from here on, and a table that ships without grants fails
+-- check:guards (table-without-grant) and any pg-real test that touches it as
+-- an API role, rather than its first production call. Supabase preview
+-- branches are the exception: they replay the history on a fresh project that
+-- never had the legacy default, and branching has no step before the
+-- migrations where supabase/bootstrap.sql could run, so the historical tables
+-- there lack grants whether or not this migration exists.
 --
 -- Scope:
 --   * Default ACLs apply only at CREATE time. Every existing table and
