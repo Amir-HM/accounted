@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { SIEJobFailedError } from '@/lib/import/sie-job-client'
+import { formatImportFailure } from '@/lib/import/import-failure'
 import { countSieVouchers, importProviderYears, planProviderYears, providerYearsComplete, type ProviderYearsOutcome } from '@/lib/onboarding-books/provider-years'
 import { jobProgress, type JobPhase } from '../lib/job-progress'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
@@ -39,9 +40,15 @@ const BRAND: Record<string, { color: string; dark?: boolean }> = {
 }
 const BRAND_TEXT = { light: '#fff', dark: '#171717' }
 
-/** A run that left a selected year out of the books. The message names the
- *  years and is written here, so it is shown as is, never re-mapped. */
-class YearsMissingError extends Error {}
+/** A run that left a selected year out of the books. `text` names the
+ *  years and is written here from our own strings, so it is shown as is,
+ *  never re-mapped; `message` stays technical like any other Error. */
+class YearsMissingError extends Error {
+  constructor(readonly text: string) {
+    super('selected years missing from the books')
+    this.name = 'YearsMissingError'
+  }
+}
 
 /**
  * Hämtar från det gamla systemet: log in at the provider (popup, the
@@ -280,7 +287,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
             void invalidateReferenceData(['ref:accounts', 'ref:fiscal-periods'])
           }
           return result
-        }, (err) => (err instanceof SIEJobFailedError ? err.message : getErrorMessage(err, { locale })))
+        }, (err) => (err instanceof SIEJobFailedError ? formatImportFailure(err.failure) : getErrorMessage(err, { locale })))
         // Registers, the insight and the door onward wait until every
         // selected year is in the books.
         if (!providerYearsComplete(outcome)) {
@@ -323,7 +330,7 @@ export function ProviderStep({ ctx }: { ctx: BooksCtx }) {
       await new Promise((r) => at(900, () => r(null)))
       setPhase('imported')
     } catch (err) {
-      setImportError(err instanceof YearsMissingError ? err.message : getErrorMessage(err, { locale }))
+      setImportError(err instanceof YearsMissingError ? err.text : getErrorMessage(err, { locale }))
       setJobPhase(null)
       setShown(5)
       apiRef.current?.settle()
