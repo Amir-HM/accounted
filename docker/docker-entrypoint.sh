@@ -44,6 +44,12 @@ fi
 # otherwise the unprivileged delete fails under `set -e`.
 chmod -R u+w /app/.next /app/public 2>/dev/null || true
 find /app/.next /app/public -mindepth 1 -delete
+# Docker copies the image directory's mode into a named volume only when it
+# creates the volume, so a volume first created by an older image (whose
+# /app/.next was 755) would keep that mode forever. The owner can chmod its own
+# mount root without any capability, so every start converges on 750: readable
+# by the nodejs group only, like the uid=1001,mode=750 tmpfs it replaced.
+chmod 750 /app/.next /app/public 2>/dev/null || true
 if [ -d /opt/gnubok-template/.next ]; then
   # One readable error instead of a cp write error per file, looped by the
   # restart policy, when the target cannot hold the bundle. The usual cause is

@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -165,6 +166,21 @@ describe('docker/docker-entrypoint.sh: populating /app/.next', () => {
     expect(existsSync(path.join(root, 'app/.next/server/chunks/new.js'))).toBe(true)
     expect(existsSync(path.join(root, 'app/.next/cache'))).toBe(true)
     expect(existsSync(path.join(root, 'app/public/sw.js'))).toBe(true)
+  })
+
+  it('sets the mount roots to mode 750 even when an older image created the volume at 755', () => {
+    setUp()
+    // Docker copies the image directory's mode into a named volume only at
+    // creation, and images before #3164 had /app/.next at 755.
+    chmodSync(path.join(root, 'app/.next'), 0o755)
+    chmodSync(path.join(root, 'app/public'), 0o755)
+
+    const result = runPopulate(root)
+
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+    expect(statSync(path.join(root, 'app/.next')).mode & 0o777).toBe(0o750)
+    expect(statSync(path.join(root, 'app/public')).mode & 0o777).toBe(0o750)
   })
 
   it('stops with one readable error, naming the fix, when /app/.next cannot hold the bundle', () => {

@@ -28,7 +28,8 @@ services:
     #
     # Docker seeds a new named volume from the image's /app/.next, which the
     # Dockerfile creates owned by nextjs (uid 1001) with mode 750, matching the
-    # uid=1001,mode=750 of the /app/public tmpfs. The entrypoint runs
+    # uid=1001,mode=750 of the /app/public tmpfs; the entrypoint re-applies 750
+    # at every start, in case an older image created the volume. It runs
     # UNPRIVILEGED as nextjs and owns both, so it can populate them with no
     # CAP_CHOWN/CAP_SETUID, which is what lets the container run under
     # `cap_drop: ALL`. nodejs-group members can read the served bundle; no

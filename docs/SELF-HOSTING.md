@@ -433,6 +433,12 @@ the container then stops at start with an error saying so. Keep local changes in
 a `docker-compose.override.yml` rather than in `docker-compose.yml`, so updating
 it never conflicts.
 
+If `git pull` refuses because you edited `docker-compose.yml` directly (for
+example, raising the `/app/.next` tmpfs size as a workaround for #3164), move any
+edits you still need into `docker-compose.override.yml`, discard the rest with
+`git checkout -- docker-compose.yml`, and run the three commands again. The
+current file no longer needs a tmpfs size for `/app/.next`.
+
 If a new release includes database migrations, apply them before restarting:
 
 ```bash

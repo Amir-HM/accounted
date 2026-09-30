@@ -123,7 +123,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/public /opt/gnubok-template/publi
 # into what is mounted over them. Docker seeds a new named volume with the
 # owner and mode of the directory it covers, so /app/.next's nextjs:nodejs and
 # 750 here are what the next_runtime volume starts with: readable by nodejs
-# group members only, like the uid=1001,mode=750 tmpfs it replaced.
+# group members only, like the uid=1001,mode=750 tmpfs it replaced. The
+# entrypoint re-applies 750 at every start, for volumes an older image created.
 RUN mkdir -p /app/.next/cache /app/public && \
     chown nextjs:nodejs /app /app/.next /app/.next/cache /app/public && \
     chmod 750 /app/.next

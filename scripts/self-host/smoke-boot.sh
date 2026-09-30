@@ -121,15 +121,26 @@ check_substituted() {
   echo "smoke-boot: NEXT_PUBLIC_* placeholders substituted"
 }
 
+# The writable mounts stay readable by the nodejs group only (mode 750), as the
+# compose file promises, whatever image first created the volume.
+check_mount_modes() {
+  local modes
+  modes="$(compose exec -T app stat -c '%a' /app/.next /app/public | tr '\n' ' ' || true)"
+  [ "$modes" = "750 750 " ] || fail "/app/.next and /app/public should be mode 750, got: ${modes:-nothing}"
+  echo "smoke-boot: /app/.next and /app/public are mode 750"
+}
+
 compose up --detach --pull never app
 wait_ready 1
 check_health_route
 check_substituted
+check_mount_modes
 
 compose restart app
 wait_ready 2
 check_health_route
 check_substituted
+check_mount_modes
 
 docker stats --no-stream --format 'smoke-boot: memory {{.MemUsage}}' \
   "$(compose ps --quiet app)" || true
