@@ -379,6 +379,12 @@ type ExecutorResult = {
   // the dispatcher then lands the op in 'failed_partial' instead of
   // 'rejected' and persists these ids in result_data.posted_ids (issue #842).
   partialPostedIds?: Record<string, string>
+  // Set when the refusal came before any side-effect and only says another
+  // call holds the resource right now (SALARY_RUN_BOOKING_IN_PROGRESS): the
+  // dispatcher hands the op back to 'pending', exactly as for a 401/403, so
+  // the approval can be given again once the other call is done instead of
+  // the op being consumed as 'rejected'.
+  returnToPending?: boolean
 }
 
 /**
@@ -6516,9 +6522,12 @@ async function commitBookSalaryRun(
           .filter(Boolean)
           .join(' '),
         // The agent branches on the code: SALARY_RUN_BOOKING_IN_PROGRESS
-        // means wait and re-read the run, not approve again at once.
+        // means wait and re-read the run, not approve again at once. That
+        // refusal posted nothing, so the op stays pending for a later
+        // approval instead of being auto-rejected as a 409.
         errorCode: result.code,
         status: entry?.httpStatus ?? 500,
+        ...(result.code === 'SALARY_RUN_BOOKING_IN_PROGRESS' ? { returnToPending: true } : {}),
       }
     }
     const run = result.data.run as { period_year?: number; period_month?: number; status?: string }
@@ -7848,8 +7857,9 @@ async function commitPendingOperationInner(
     // caller that IS authorized (the /pending UI, or a key with the scope),
     // instead of vanishing as 'rejected'. Feedback seq 261545: three
     // samlingsverifikat were consumed this way and the user believed they
-    // had been approved.
-    if (result.status === 401 || result.status === 403) {
+    // had been approved. An executor may ask for the same release for a
+    // transient, side-effect-free refusal (returnToPending).
+    if (result.status === 401 || result.status === 403 || result.returnToPending) {
       await supabase
         .from('pending_operations')
         .update({ status: 'pending' })

@@ -4749,12 +4749,12 @@ const SALARY: Record<string, StructuredErrorEntry> = {
   SALARY_RUN_BOOKING_IN_PROGRESS: {
     httpStatus: 409,
     message_sv:
-      'Lönekörningen håller redan på att bokföras (i en annan flik eller av en agent). Vänta en stund och ladda sedan om sidan.',
+      'Lönekörningen håller redan på att bokföras (i en annan flik eller av en agent), så inget bokfördes nu. Vänta en stund och kontrollera sedan lönekörningens status.',
     message_en:
       'The salary run is already being booked by another request. Nothing was posted by this one.',
     remediation: {
       description:
-        'Wait a moment, then fetch the run. Status booked means the other booking went through; status paid means it did not finish, so book the run again (vouchers an interrupted booking already posted are reused, never posted twice).',
+        'Wait a moment, then fetch the run. Status booked means the other booking went through; status paid means it did not finish, so book the run again (vouchers an interrupted booking already posted are reused, never posted twice). A staged book_salary_run operation stays pending and can be approved again.',
     },
     retryable: true,
   },

@@ -991,6 +991,37 @@ describe('POST /salary-runs/:id/book: one booking per run at a time', () => {
     const body = await res.json()
     expect(body.error.code).toBe('SALARY_RUN_BOOK_FAILED')
     expect(body.error.details).toEqual({ reason: 'booking_claim_lost', entry_ids: ['je_salary', 'je_avg'] })
+    // The release is conditional on this call's token, so it never touches a
+    // claim another call has taken since.
+    const release = updateFilters(
+      supabase.calls,
+      (payload) => payload.status === undefined && payload.booking_claim_id === null,
+    )
+    expect(release).toEqual([
+      ['id', RUN_ID],
+      ['company_id', COMPANY_ID],
+      ['booking_claim_id', BOOKING_CLAIM],
+    ])
+  })
+
+  it('answers a database error and posts nothing when the claim itself fails', async () => {
+    const supabase = makeFlexibleSupabase({
+      company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      salary_runs: { data: paidRun, error: null },
+      salary_run_employees: { data: [employeeRow], error: null },
+      'rpc:claim_salary_run_booking': {
+        data: null,
+        error: { message: 'connection reset', code: '08006' },
+      },
+      idempotency_keys: { data: null, error: null },
+    })
+    mockServiceClient.mockReturnValue(supabase)
+
+    const res = await post()
+
+    expect(res.status).toBeGreaterThanOrEqual(500)
+    expect(mocks.createSalaryRunEntries).not.toHaveBeenCalled()
+    expect(supabase.calls.some((c) => c.table === 'salary_runs' && c.method === 'update')).toBe(false)
   })
 })
 
