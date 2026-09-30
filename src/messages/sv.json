@@ -6397,7 +6397,7 @@
     "vat_treatment_rental_voluntary": "Frivillig moms på uthyrning (ruta 08)",
     "vat_treatment_oss": "OSS-försäljning till EU-konsumenter (redovisas i OSS, inte i momsdeklarationen)",
     "vat_rate_label": "Momssats",
-    "vat_rate_none": "Ingen",
+    "vat_rate_none": "Enligt konto",
     "vat_review_confirm_all": "Bekräfta alla föreslagna ({count})",
     "vat_review_filter": "{count} momskoder att granska",
     "vat_treatment_column": "Momskod",
