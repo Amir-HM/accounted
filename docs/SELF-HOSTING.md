@@ -30,6 +30,14 @@ MFA (two-factor authentication via TOTP) is **not enforced** for self-hosted dep
 
 The `supabase/migrations/` directory contains the ordered SQL files that set up the full schema, including tables, RLS policies, triggers, and functions.
 
+**First, run `supabase/bootstrap.sql` once, before any migration.** Paste it into the SQL Editor, or run it with psql against your project's connection string (Project Settings > Database):
+
+```bash
+psql "<connection string>" -v ON_ERROR_STOP=1 -f supabase/bootstrap.sql
+```
+
+Supabase projects created since 2026-05-30 no longer grant new tables to the `anon`, `authenticated` and `service_role` roles by default. Most of the historical migrations were written while they did and grant nothing themselves, so without this step every table ends up unreachable and the app answers every request with `permission denied` (42501). The bootstrap restores the old default for the replay; migration `20260929220000_own_default_privileges` turns it off again for everything created after it, and newer migrations grant their own tables. It does nothing on a database that already has the migrations applied, so it cannot hurt to run it twice. Do not repair a replay that skipped it with `GRANT ... ON ALL TABLES IN SCHEMA public`: that re-opens tables later migrations deliberately locked down. Start again from an empty database instead.
+
 **Option A: Supabase CLI (recommended):**
 
 ```bash
@@ -45,7 +53,7 @@ supabase db push
 
 **Option B: SQL Editor:**
 
-Run each file in `supabase/migrations/` in order in the Supabase SQL Editor. They must be applied sequentially: later migrations depend on earlier ones.
+Run `supabase/bootstrap.sql`, then each file in `supabase/migrations/` in order in the Supabase SQL Editor. They must be applied sequentially: later migrations depend on earlier ones.
 
 ### PostgreSQL Extensions
 
@@ -500,9 +508,10 @@ flowchart LR
 2. **Apply the Accounted migrations** directly via `psql`: the Supabase CLI (`db push`) assumes a cloud project, so run the SQL files against the self-hosted database container:
 
    ```bash
-   # From the repo root, stream each migration straight into the supabase-db
-   # container: glob order is already sorted, and nothing is left behind on the
-   # host or in the container.
+   # From the repo root, stream the bootstrap (see section 3) and then each
+   # migration straight into the supabase-db container: glob order is already
+   # sorted, and nothing is left behind on the host or in the container.
+   docker exec -i supabase-db psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/bootstrap.sql || exit 1
    for f in supabase/migrations/*.sql; do
      echo "Applying $f..."
      docker exec -i supabase-db psql -v ON_ERROR_STOP=1 -U postgres -d postgres < "$f" || exit 1
@@ -653,6 +662,9 @@ portable base file alone.
 
 **Health check fails with "unhealthy":**
 Migrations have not been applied, or the Supabase credentials are wrong. Check that `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are correct and that migrations have been pushed.
+
+**Every request fails with `permission denied for table ...` (42501):**
+The migrations were replayed without `supabase/bootstrap.sql` first, on a project that no longer grants new tables by default (see section 3). Start again from an empty database (a new project, or a reset one), run the bootstrap, then apply the migrations. A blanket `GRANT ... ON ALL TABLES` would make the errors go away and re-open tables that are meant to be locked.
 
 **Confirmation email not arriving:**
 Check the Supabase dashboard under **Authentication > Users** to verify the signup attempt was received. On the free tier, Supabase rate-limits emails to 4/hour. Configure custom SMTP under **Authentication > SMTP Settings** for production use.
