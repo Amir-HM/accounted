@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
-import { AR_LEDGER_STATUSES } from '@/lib/reports/ar-ledger'
+import { AR_LEDGER_STATUSES, withoutSettledCreditNotes } from '@/lib/reports/ar-ledger'
 import type { ReportSourceLine } from '@/lib/reports/source-lines'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
 
@@ -49,7 +49,9 @@ export const GET = withRouteContext<{ params: Promise<{ customerId: string }> }>
       currency,
       exchange_rate,
       remaining_amount,
-      notes
+      notes,
+      status,
+      credited_invoice_id
     `)
     .eq('company_id', companyId)
     .eq('customer_id', customerId)
@@ -66,9 +68,13 @@ export const GET = withRouteContext<{ params: Promise<{ customerId: string }> }>
 
   // For each invoice, find the registration journal entry (source_type =
   // 'invoice_created', source_id = invoice.id). We batch them to keep this
-  // a single DB roundtrip.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const invoices = (data || []) as any[]
+  // a single DB roundtrip. Settled credit notes are dropped first, as in
+  // generateARLedger.
+  const invoices = withoutSettledCreditNotes(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (data || []) as any[],
+    (inv) => Math.round(((Number(inv.total) || 0) - (Number(inv.paid_amount) || 0)) * 100) / 100,
+  )
   const ids = invoices.map((i) => i.id)
   const entryMap = new Map<
     string,
