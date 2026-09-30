@@ -110,8 +110,9 @@ export async function HemChecklistSection({
     countCompletedSieImports(companyId),
     // Skatteverket connections are per (user, company): filtering on user_id
     // alone made a connection on ANY of the user's companies hide the connect
-    // nudge on all of them.
-    supabase.from('skatteverket_tokens').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('company_id', companyId),
+    // nudge on all of them. 'id', never '*': the token columns are withheld
+    // from end-user roles.
+    supabase.from('skatteverket_tokens').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('company_id', companyId),
     // Any item ever received in the document inbox (email/WhatsApp/upload)
     // marks the receipts checklist step done: same "has ever done X" shape
     // as the other flags above.

@@ -2224,6 +2224,39 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Peppol-operatören kunde inte nås just nu. Fakturan har inte skickats; försök igen om en stund.',
     message_en: 'The Peppol access point could not be reached. The invoice has not been sent; try again shortly.',
   },
+  // The two above once the invoice is issued: a draft is issued (and booked,
+  // under faktureringsmetoden) before the network gets it, so the failure
+  // must not say it was not sent. The send composes the sentence it answers
+  // (booked or not, the access point's reason) in peppolAfterIssueMessages
+  // (lib/invoices/peppol-send-service.ts); these static texts hold for every
+  // case and are what an envelope without that sentence carries.
+  PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE: {
+    httpStatus: 422,
+    message_sv: 'Fakturan är utfärdad, men Peppol-operatören tog inte emot den. Rätta och skicka igen, eller skicka PDF:en via e-post.',
+    message_en: 'The invoice is issued, but the Peppol access point did not accept it. Correct it and send again, or send the PDF by email.',
+    thrown_message_sv: true,
+  },
+  PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE: {
+    httpStatus: 502,
+    message_sv: 'Fakturan är utfärdad, men kunde inte skickas via Peppol just nu. Försök igen om en stund, eller skicka PDF:en via e-post.',
+    message_en: 'The invoice is issued, but could not be sent via Peppol right now. Try again shortly, or send the PDF by email.',
+    thrown_message_sv: true,
+  },
+  // The access point already holds an invoice with this number for this
+  // receiver (the connector's 409). Its verdict: the delivery ends failed,
+  // and only a resend that replaces a failed submission gets past it.
+  PEPPOL_DUPLICATE_INVOICE_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'Mottagaren har redan en faktura med det här numret via Peppol. Behöver den rättas, kreditera den och skapa en ny faktura.',
+    message_en: 'The recipient already holds an invoice with this number via Peppol. If it needs correcting, credit it and create a new invoice.',
+  },
+  // The buyer refused the invoice (a business response): the same document
+  // is never sent again.
+  PEPPOL_BUSINESS_REJECTED: {
+    httpStatus: 409,
+    message_sv: 'Mottagaren har avvisat fakturan via Peppol. Kreditera den och skapa en ny faktura.',
+    message_en: 'The recipient rejected the invoice via Peppol. Credit it and create a new invoice.',
+  },
   // The SMP lookup itself failed (#2484), as opposed to a lookup that
   // answered "not registered": the staged delivery stays staged and nothing
   // terminal is recorded. The route answers 502 when the transport says the
@@ -2393,6 +2426,22 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     httpStatus: 502,
     message_sv: 'Svaret från Peppol-tjänsten kunde inte tolkas. Kontakta support om felet kvarstår.',
     message_en: 'The answer from the Peppol service could not be read. Contact support if the problem persists.',
+  },
+  // The access point answered a documented call in a shape the adapter does
+  // not know (PEPPOL_UPSTREAM_SHAPE_CODE): not retryable, asking again gets
+  // the same shape.
+  // A resend that names a submission the access point has not reported as
+  // failed (it is delivered or still in flight): the connector refuses the
+  // overwrite so the buyer never gets the invoice twice.
+  CONNECTOR_PEPPOL_RESEND_NOT_FAILED: {
+    httpStatus: 409,
+    message_sv: 'Peppol-operatören har inte rapporterat den tidigare leveransen som misslyckad, så fakturan skickas inte igen. Vänta på leveransstatusen eller kontakta support.',
+    message_en: 'The Peppol access point has not reported the earlier delivery as failed, so the invoice is not sent again. Wait for the delivery status or contact support.',
+  },
+  CONNECTOR_UPSTREAM_SHAPE: {
+    httpStatus: 502,
+    message_sv: 'Peppol-operatören svarade i ett format som tjänsten inte känner igen. Kontakta support om felet kvarstår.',
+    message_en: 'The Peppol access point answered in a format the service does not recognise. Contact support if the problem persists.',
   },
 }
 
@@ -3307,6 +3356,14 @@ const BANK_SELECTION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Bankkontot har redan historik på sitt bokföringskonto och kan inte flyttas till ett annat automatiskt. Inget sparades.',
     message_en: 'The bank account already has history on its ledger account and cannot be moved to another one automatically. Nothing was saved.',
   },
+  // An unchecked account of another physical account holds the wanted ledger
+  // and has transactions or invoice or reconciliation ties, so it cannot just
+  // give the ledger up.
+  BANK_SELECTION_YIELD_HAS_HISTORY: {
+    httpStatus: 409,
+    message_sv: 'Bokföringskontot hör till ett annat bankkonto som inte synkas men har transaktioner eller används i fakturor eller avstämningar. Välj ett annat bokföringskonto, eller markera först det andra bankkontot, ge det ett annat bokföringskonto och spara. Inget sparades.',
+    message_en: 'The ledger account belongs to another bank account that is not synced but has transactions or is used on invoices or reconciliations. Choose another ledger account, or first select the other bank account, give it another ledger account and save. Nothing was saved.',
+  },
 }
 
 const BANK_SYNC: Record<string, StructuredErrorEntry> = {
@@ -3625,6 +3682,18 @@ const PROVIDER_MIGRATION: Record<string, StructuredErrorEntry> = {
       'Bokio hittade inte företaget. Kontrollera företags-ID:t och att integrationstoken skapades för samma företag.',
     message_en:
       'Bokio could not find the company. Check the company ID and that the integration token was created for the same company.',
+  },
+  BOKIO_PLAN_NO_API: {
+    // 422, same reasoning as PROVIDER_TOKEN_INVALID. Bokio answered 403
+    // price_plan_feature_required: the company's plan has no API access for
+    // private integrations (Basic, or a plan that has expired). The token can
+    // be fine, so this must not tell the user to re-check it. Plan names per
+    // docs.bokio.se/docs/price-plan-requirements (read 2026-09-29).
+    httpStatus: 422,
+    message_sv:
+      'Bokio nekar API-åtkomst eftersom företagets abonnemang inte omfattar egna integrationer. De ingår i Bokios Plus, Premium och Business men inte i Basic, och stängs av när abonnemanget har gått ut. Byt eller förnya abonnemanget i Bokio och försök igen, eller importera bokföringen med SIE-fil och kunder, leverantörer och artiklar med CSV eller Excel under Importera/Exportera.',
+    message_en:
+      "Bokio refuses API access because the company's plan does not include private integrations. They are included in Bokio's Plus, Premium and Business plans but not in Basic, and they stop when the plan has expired. Change or renew the plan in Bokio and try again, or import the bookkeeping with a SIE file, and customers, suppliers and articles with CSV or Excel under Import/Export.",
   },
   BL_INTEGRATION_NOT_ACTIVATED: {
     // 422, same reasoning as PROVIDER_TOKEN_INVALID. The User-Key opened a
@@ -4259,6 +4328,20 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
         'Inspect details.candidates[].match_reason. For an unlinked row, match it via POST /api/transactions/{id}/match-supplier-invoice. For `already_booked`, the row is already a posted verifikat (booked straight from the bank side): do NOT pay the invoice, correct the double booking instead (reverse one of the two vouchers with a storno entry and attach the underlag to the remaining one). Resend mark-paid with force: true only when the payment really is separate; on the v1 endpoint that retry needs a fresh Idempotency-Key.',
     },
   },
+  // #2955: a foreign-currency invoice's payment clears the SEK its linked
+  // vouchers carry on 244x (lib/bookkeeping/supplier-payment-amounts.ts).
+  // When those links contradict each other the SEK is refused, not guessed.
+  SI_PAID_SEK_UNRESOLVED: {
+    httpStatus: 409,
+    message_sv:
+      'Det gick inte att avgöra hur mycket i kronor fakturan har kvar på leverantörsskulder (2440): kopplingen mellan fakturan och dess verifikationer är inte entydig, eller skulden där stämmer inte med fakturans belopp och kurs. Bokför betalningen som en egen verifikation i kronor och koppla den till fakturan, eller rätta kopplingen först.',
+    message_en:
+      "Could not determine how much SEK the invoice still carries on accounts payable (2440): the links between the invoice and its vouchers are ambiguous, or the liability there does not match the invoice's amount and rate. Book the payment as its own SEK voucher and link it to the invoice, or fix the links first.",
+    remediation: {
+      description:
+        "details.reason names the contradiction: registration_voucher_not_live (reversed with no single correction), registration_voucher_shared, payment_history_mismatch (payment rows do not add up to paid_amount), payment_voucher_not_posted (missing, or reversed with no single correction), payment_voucher_shared (a batch voucher), no_liability_left, or ledger_rate_mismatch (2440 carries more than 10% away from remaining_amount x exchange_rate, details.expected_sek vs details.ledger_sek: the registration was corrected for something other than the rate, so the gap is not a kursdifferens), or ledger_history_too_long (more than 50 payment rows or 20 storno hops to follow: past what one request resolves). Check the SEK against the ledger, then resend mark-paid with explicit SEK `lines` (Debit 2440 / Credit the payment account, plus 3960/7960 for a genuine kursdifferens), or book the voucher yourself and link it to the invoice.",
+    },
+  },
   SI_CREDIT_ALREADY_CREDITED: {
     httpStatus: 409,
     message_sv: 'Leverantörsfakturan har redan krediterats.',
@@ -4765,6 +4848,21 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     },
     retryable: false,
     thrown_message_sv: true,
+  },
+  // lib/salary/book-run.ts (accounted#3251): another call holds the run's
+  // booking claim (claim_salary_run_booking), so this one posted nothing.
+  // The claim ends when that call finishes, or after 15 minutes if it died.
+  SALARY_RUN_BOOKING_IN_PROGRESS: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen håller redan på att bokföras (i en annan flik eller av en agent), så inget bokfördes nu. Vänta en stund och kontrollera sedan lönekörningens status.',
+    message_en:
+      'The salary run is already being booked by another request. Nothing was posted by this one.',
+    remediation: {
+      description:
+        'Wait a moment, then fetch the run. Status booked means the other booking went through; status paid means it did not finish, so book the run again (vouchers an interrupted booking already posted are reused, never posted twice). A staged book_salary_run operation stays pending and can be approved again.',
+    },
+    retryable: true,
   },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,
@@ -5686,6 +5784,23 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
       description:
         'Skip the skattekonto for now and continue with the other accounts; ask again later. The skattekonto is fetched right after each BankID consent and by the scheduled sync, and the user can fetch it now on the Skattekonto page in Accounted. If it stays empty, check the connection with gnubok_connect_skatteverket and have the user reconnect.',
       tool: 'gnubok_connect_skatteverket',
+    },
+    thrown_message_sv: true,
+  },
+  // A skattekonto row whose event a live verifikat already carries on 1630
+  // (typically imported by SIE from the previous system): booking it would
+  // record the event twice. The thrown Swedish text names the verifikat.
+  SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS: {
+    httpStatus: 409,
+    message_sv:
+      'Händelsen finns redan i bokföringen: ett verifikat innehåller den redan på konto 1630. Koppla raden till verifikatet i stället för att bokföra den en gång till.',
+    message_en:
+      'The event is already in the ledger: a live verifikat carries it on account 1630. Link the row to that verifikat instead of booking it a second time.',
+    retryable: false,
+    remediation: {
+      description:
+        'Link the row to the verifikat the message names with gnubok_reconcile_match (account_key "skattekonto", pairs [{ external_ids: [row id, plus any same-day rows the verifikat carries with it], journal_entry_ids: [verifikat id] }]). Book it anyway (allow_duplicate / allow_duplicate_ids) only when the user confirms the event really happened twice.',
+      tool: 'gnubok_reconcile_match',
     },
     thrown_message_sv: true,
   },
