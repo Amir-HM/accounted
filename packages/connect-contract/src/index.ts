@@ -115,6 +115,9 @@ export const CONNECTOR_ERROR_CODES = [
   'CONNECTOR_PEPPOL_PARTICIPANT_PUBLISHED_ELSEWHERE',
   'CONNECTOR_PEPPOL_REGISTRATION_IN_PROGRESS',
   'CONNECTOR_PEPPOL_SENDER_NOT_REGISTERED',
+  // A resend (replacesSubmissionId) of a submission the access point has not
+  // reported as failed: nothing is sent, so a delivered invoice is never sent twice.
+  'CONNECTOR_PEPPOL_RESEND_NOT_FAILED',
   'PEPPOL_RECEIVING_UNSUPPORTED',
   'PEPPOL_REGISTRATION_CAP_REACHED',
   // The access point already holds an invoice with this number for this

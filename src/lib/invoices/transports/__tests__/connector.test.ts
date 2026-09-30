@@ -34,6 +34,29 @@ describe('connector Peppol transport', () => {
     expect(headers['X-Connector-Company']).toBe('c1')
   })
 
+  it('sends a resend\'s replacesSubmissionId in the body and carries a duplicate invoice number as its non-retryable code', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      error: 'Qvalia already holds an invoice with this number for this receiver',
+      code: 'PEPPOL_DUPLICATE_INVOICE_NUMBER',
+      retryable: false,
+      detail: 'Duplicate Invoice, F-1 request rejected!',
+    }, 409))
+    const transport = build(fetchMock as unknown as typeof fetch)
+    const error = await transport.submit({
+      idempotencyKey: 'k', tenantReference: 'c1', sender: participant, recipient: participant,
+      documentTypeId: 'd', processId: 'p', filename: 'f.xml', contentType: 'application/xml', document: '<x/>', documentSha256: 'a'.repeat(64),
+      replacesSubmissionId: 'int-failed',
+    }).catch((e: unknown) => e)
+
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.replacesSubmissionId).toBe('int-failed')
+    expect(error).toMatchObject({
+      code: 'PEPPOL_DUPLICATE_INVOICE_NUMBER',
+      retryable: false,
+      detail: 'Duplicate Invoice, F-1 request rejected!',
+    })
+  })
+
   it('sends the tenant as the company header on registration and refuses without one', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'registered', participant, providerAccountReference: 'accounted-connector', raw: {} }))
     const transport = build(fetchMock as unknown as typeof fetch)
