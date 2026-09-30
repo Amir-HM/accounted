@@ -389,9 +389,6 @@ async function writeVerifiedAudit(
   }
 }
 
-const VERIFIABLE_COLUMNS =
-  'id, company_id, webhook_url, secret, api_version_pinned, verification_attempts, verification_grace_ends_at'
-
 export interface VerificationSweepSummary {
   picked: number
   verified: number
@@ -419,7 +416,7 @@ export async function runDueVerifications(args: {
 
   const { data, error } = await args.supabase
     .from('webhooks')
-    .select(VERIFIABLE_COLUMNS)
+    .select('id, company_id, webhook_url, secret, api_version_pinned, verification_attempts, verification_grace_ends_at')
     .is('verified_at', null)
     .lte('verification_next_attempt_at', nowIso)
     .eq('active', true)
@@ -508,7 +505,9 @@ export async function verifyWebhookNow(args: {
 
   const { data, error } = await args.supabase
     .from('webhooks')
-    .select(`${VERIFIABLE_COLUMNS}, active, disabled_at, verified_at, verification_last_attempt_at`)
+    .select(
+      'id, company_id, webhook_url, secret, api_version_pinned, verification_attempts, verification_grace_ends_at, active, disabled_at, verified_at, verification_last_attempt_at'
+    )
     .eq('company_id', args.companyId)
     .eq('id', args.webhookId)
     .maybeSingle()

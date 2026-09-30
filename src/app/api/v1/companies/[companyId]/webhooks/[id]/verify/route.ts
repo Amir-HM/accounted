@@ -15,7 +15,6 @@ import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import {
   MANUAL_VERIFY_COOLDOWN_SECONDS,
-  WEBHOOK_VERIFICATION_COLUMNS,
   WEBHOOK_VERIFICATION_RESPONSE_FIELDS,
   verifyWebhookNow,
   withVerificationStatus,
@@ -114,7 +113,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     // verified, already_verified or failed: answer with the recorded state.
     const { data, error } = await ctx.supabase
       .from('webhooks')
-      .select(`id, webhook_url, ${WEBHOOK_VERIFICATION_COLUMNS}`)
+      .select(
+        'id, webhook_url, verified_at, verification_grace_ends_at, verification_attempts, verification_last_attempt_at, verification_last_error, verification_next_attempt_at'
+      )
       .eq('company_id', ctx.companyId!)
       .eq('id', id)
       .maybeSingle()

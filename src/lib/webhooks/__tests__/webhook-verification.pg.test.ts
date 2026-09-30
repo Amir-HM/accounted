@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { PoolClient } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { getPool, runAsServiceRole, withUserContext } from '@/tests/pg/setup'
 import { seedCompany } from '@/tests/pg/fixtures'
@@ -7,10 +8,12 @@ import { seedCompany } from '@/tests/pg/fixtures'
 // the verification columns and the webhooks_verification_guard trigger.
 //
 //   1. A changed webhook_url resets verification and ends any grace window,
-//      whoever writes it (service role, superuser, or a company writer
-//      through PostgREST under RLS).
+//      whoever writes it (service role or superuser).
 //   2. Client roles cannot write the verification columns: without this a
 //      company writer could mark an endpoint verified without the handshake.
+//      Since 20260929173432 client roles hold no INSERT or UPDATE on webhooks
+//      at all, so the privilege check refuses them first; the guard is the
+//      second layer should that grant ever return.
 //   3. The service role (the v1 routes and the dispatcher) records outcomes.
 
 async function insertWebhook(companyId: string, overrides: Record<string, unknown> = {}): Promise<string> {
@@ -81,6 +84,25 @@ async function setActiveCompany(userId: string, companyId: string): Promise<void
 
 async function expectInsufficientPrivilege(run: () => Promise<unknown>): Promise<void> {
   await expect(run()).rejects.toMatchObject({ code: '42501' })
+}
+
+/** The guard's own refusal, as opposed to the table privilege check's. */
+async function expectGuardRefusal(run: () => Promise<unknown>): Promise<void> {
+  await expect(run()).rejects.toMatchObject({
+    code: '42501',
+    message: expect.stringContaining('recorded by the verification handshake'),
+  })
+}
+
+/**
+ * Gives client roles back the INSERT and UPDATE on webhooks that
+ * 20260929173432 revoked, inside the caller's transaction only
+ * (withUserContext always rolls back), so the guard itself is exercised.
+ */
+async function restoreClientWrites(client: PoolClient): Promise<void> {
+  await client.query('RESET ROLE')
+  await client.query('GRANT INSERT, UPDATE ON public.webhooks TO authenticated')
+  await client.query('SET LOCAL ROLE authenticated')
 }
 
 describe('webhooks verification columns: defaults for a new endpoint', () => {
@@ -181,21 +203,44 @@ describe('webhooks_verification_guard: only the service role records outcomes', 
     expect(row.verification_attempts).toBe(1)
   })
 
+  it('refuses a company writer any direct write: client roles hold no INSERT or UPDATE', async () => {
+    const { userId, companyId } = await seedCompany()
+    await setActiveCompany(userId, companyId)
+    const id = await insertWebhook(companyId)
+
+    await withUserContext(userId, async (client) => {
+      await expectInsufficientPrivilege(() =>
+        client.query(`UPDATE public.webhooks SET name = 'mine' WHERE id = $1`, [id]),
+      )
+    })
+    await withUserContext(userId, async (client) => {
+      await expectInsufficientPrivilege(() =>
+        client.query(
+          `INSERT INTO public.webhooks (company_id, name, event_type, webhook_url, secret)
+           VALUES ($1, 'x', 'invoice.paid', 'https://example.com/h', 'whsec_x')`,
+          [companyId],
+        ),
+      )
+    })
+  })
+
   it('refuses a company writer who marks an endpoint verified without the handshake', async () => {
     const { userId, companyId } = await seedCompany()
     await setActiveCompany(userId, companyId)
     const id = await insertWebhook(companyId)
 
     await withUserContext(userId, async (client) => {
+      await restoreClientWrites(client)
       // The writer does reach the row under RLS: a harmless column updates.
       const renamed = await client.query(`UPDATE public.webhooks SET name = 'mine' WHERE id = $1`, [id])
       expect(renamed.rowCount).toBe(1)
-      await expectInsufficientPrivilege(() =>
+      await expectGuardRefusal(() =>
         client.query(`UPDATE public.webhooks SET verified_at = now() WHERE id = $1`, [id]),
       )
     })
     await withUserContext(userId, async (client) => {
-      await expectInsufficientPrivilege(() =>
+      await restoreClientWrites(client)
+      await expectGuardRefusal(() =>
         client.query(
           `UPDATE public.webhooks SET verification_grace_ends_at = now() + interval '1 year' WHERE id = $1`,
           [id],
@@ -203,7 +248,8 @@ describe('webhooks_verification_guard: only the service role records outcomes', 
       )
     })
     await withUserContext(userId, async (client) => {
-      await expectInsufficientPrivilege(() =>
+      await restoreClientWrites(client)
+      await expectGuardRefusal(() =>
         client.query(`UPDATE public.webhooks SET verification_next_attempt_at = now() WHERE id = $1`, [id]),
       )
     })
@@ -215,7 +261,8 @@ describe('webhooks_verification_guard: only the service role records outcomes', 
 
     for (const column of ['verified_at', 'verification_grace_ends_at']) {
       await withUserContext(userId, async (client) => {
-        await expectInsufficientPrivilege(() =>
+        await restoreClientWrites(client)
+        await expectGuardRefusal(() =>
           client.query(
             `INSERT INTO public.webhooks (company_id, name, event_type, webhook_url, secret, ${column})
              VALUES ($1, 'x', 'invoice.paid', 'https://example.com/h', 'whsec_x', now())`,
@@ -226,13 +273,14 @@ describe('webhooks_verification_guard: only the service role records outcomes', 
     }
   })
 
-  it('lets a company writer change the URL, which resets verification', async () => {
+  it('resets verification when a company writer changes the URL', async () => {
     const { userId, companyId } = await seedCompany()
     await setActiveCompany(userId, companyId)
     const id = await insertWebhook(companyId)
     await markVerified(id)
 
     const after = await withUserContext(userId, async (client) => {
+      await restoreClientWrites(client)
       await client.query(
         `UPDATE public.webhooks SET webhook_url = 'https://moved.example.com/hook' WHERE id = $1`,
         [id],

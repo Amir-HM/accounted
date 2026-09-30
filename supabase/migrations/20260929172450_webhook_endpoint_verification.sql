@@ -33,10 +33,12 @@
 --   1. A changed webhook_url is a new endpoint: its verification resets and
 --      any grace ends, whoever issues the UPDATE.
 --   2. Client roles (anon, authenticated) cannot write the verification
---      columns. The webhooks RLS policies let a company writer UPDATE its own
---      rows through PostgREST; without this guard that writer could mark an
---      endpoint verified without the handshake. Only the service role (the
---      v1 routes and the dispatcher) records outcomes.
+--      columns. Since 20260929173432 they hold no INSERT or UPDATE on
+--      webhooks at all, so the privilege check refuses them first; this guard
+--      is the second layer should that grant ever return, because the RLS
+--      policies would then let a company writer mark an endpoint verified
+--      without the handshake. Only the service role (the v1 routes and the
+--      dispatcher) records outcomes.
 
 ALTER TABLE public.webhooks
   ADD COLUMN IF NOT EXISTS verified_at timestamptz,
