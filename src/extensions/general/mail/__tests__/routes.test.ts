@@ -26,7 +26,9 @@ vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: vi.fn(),
 }))
 vi.mock('@/lib/init', () => ({ ensureInitialized: vi.fn() }))
-vi.mock('@/lib/auth/mfa', () => ({ shouldEnforceMfa: mockShouldEnforceMfa }))
+// requireAuth asks mfaStepUpApplies (a user with a factor must reach AAL2),
+// the page gate asks shouldEnforceMfa; one switch drives both here.
+vi.mock('@/lib/auth/mfa', () => ({ shouldEnforceMfa: mockShouldEnforceMfa, mfaStepUpApplies: mockShouldEnforceMfa }))
 vi.mock('@/lib/company/context', () => ({
   requireCompanyId: vi.fn(async () => COMPANY),
   getActiveCompanyId: vi.fn(async () => COMPANY),
