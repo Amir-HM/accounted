@@ -19,6 +19,7 @@ import type {
   ReconciliationItemBucket,
   ReconciliationStatus,
 } from '@/lib/reconciliation/schemas'
+import { dropProposedLedgerDuplicates } from '@/lib/reconciliation/overview-rows'
 import type { SkattekontoBatchRowResult, SkattekontoTransactionWithSuggestion } from '@/types/skatteverket'
 import { SignoffDialog, type SignoffPreviewResult, type SignoffSubmitInput } from './SignoffDialog'
 import { ReconciliationUnderlag } from './ReconciliationUnderlag'
@@ -139,7 +140,8 @@ export function AccountOverview({ account, otherBankAccounts = [], window, onCha
   const byBucket = useMemo(() => {
     const map = new Map<ReconciliationItemBucket, ReconciliationItem[]>()
     for (const b of BUCKET_ORDER) map.set(b, [])
-    for (const item of items?.items ?? []) map.get(item.bucket)?.push(item)
+    // A verifikat its proposals fully explain shows in its pair only, not again as missing on the other side.
+    for (const item of dropProposedLedgerDuplicates(items?.items ?? [])) map.get(item.bucket)?.push(item)
     return map
   }, [items])
 
