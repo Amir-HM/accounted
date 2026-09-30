@@ -624,7 +624,7 @@
     "sync_partial": "{fetched} order/ordrar hämtade hittills: {imported} nya rader i inkorgen.{errors, plural, =0 {} other { # rad(er) kunde inte importeras.}} Alla ordrar hann inte hämtas: synka igen för att fortsätta där det stannade.",
     "sync_failed_title": "Synkroniseringen misslyckades",
     "sync_revoked": "Butiken avvisade API-nyckeln, så inga ordrar kunde hämtas. Anslut butiken igen.",
-    "sync_unknown_currency": "{count} order/ordrar hämtades inte: butiken anger ingen giltig valutakod (till exempel SEK eller EUR) på dem, vilket brukar bero på ett valutatillägg i WooCommerce. Rätta valutan i butiken och hämta dem sedan med Hämta äldre ordrar.",
+    "sync_unknown_currency": "{count} order/ordrar importerades inte: butiken anger ingen giltig valutakod (till exempel SEK eller EUR) på dem, vilket brukar bero på ett valutatillägg i WooCommerce. Rätta valutan i butiken och hämta dem sedan med Hämta äldre ordrar.",
     "transaction_sync_title": "Ordrar från WooCommerce",
     "transaction_sync_description": "Hämta butikens betalda ordrar och återbetalningar till transaktionsinkorgen varje natt, som ett bankflöde för butiken. Du bokför raderna som vanligt från inkorgen.",
     "transaction_sync_backfill_note": "Ordrar hämtas från och med dagen du kopplade butiken. Äldre ordrar hämtar du själv nedan.",
