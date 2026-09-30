@@ -16,15 +16,22 @@
  *   - the route file itself calls ensureInitialized();
  *   - the route file calls withRouteContext(...) and the wrapper
  *     (lib/api/with-route-context.ts) calls ensureInitialized() before it runs
- *     the handler (checked here, so removing that call floods this guard);
+ *     the handler. This guard checks that the call exists, so removing it
+ *     floods the guard; that it runs before the handler is proven at runtime
+ *     by src/lib/api/__tests__/with-route-context-events.test.ts;
  *   - a module in the route's runtime import closure calls ensureInitialized()
  *     at top level (lib/api/v1/with-api-v1.ts, the ext/[...path] router).
  *
  * "Can emit" is static reachability: the route's runtime import closure
  * (type-only imports excluded, dynamic import() included) contains a module
- * that calls `eventBus.emit(`. That over-approximates: a route that imports a
- * service for a function that never emits still counts. Wiring the bus on such
- * a route is harmless, so the guard errs that way.
+ * that references `eventBus.emit`, as a call or as a bound reference. That
+ * over-approximates: a route that imports a service for a function that never
+ * emits still counts. Wiring the bus on such a route is harmless, so the guard
+ * errs that way.
+ *
+ * Known gap: a route file counts as wrapped when it calls withRouteContext(...)
+ * anywhere, so a file that also exports a raw emitting handler passes. No
+ * emitting route mixes the two today (2026-09-30).
  *
  * Pre-existing offenders are allowlisted in UNINITIALIZED_EMITTING_ROUTES and
  * the set may only shrink. They are routes outside withRouteContext and
@@ -65,7 +72,9 @@ export const UNINITIALIZED_EMITTING_ROUTES = new Set([
   'app/api/events/route.ts',
 ])
 
-const EMIT_RE = /\beventBus\s*\.\s*emit\s*\(/
+// `emit` as a whole word, called or not: `eventBus.emit.bind(eventBus)` hands
+// the emitter to a callback (enable-banking does this) and must still count.
+const EMIT_RE = /\beventBus\s*\.\s*emit\b/
 const DEEP_SCAN_HINT_RE = /\bimport\s*\(|\bensureInitialized\b|\bwithRouteContext\b/
 const WRAPPER_FILE = 'lib/api/with-route-context.ts'
 const INIT_FILE = 'lib/init.ts'

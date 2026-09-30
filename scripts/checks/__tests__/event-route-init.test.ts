@@ -39,6 +39,16 @@ export async function lockPeriod() {
 export type Lock = { id: string }
 `,
     'lib/core/quiet.ts': 'export function add(a: number, b: number) { return a + b }\n',
+    // Hands the emitter to a callback without calling it here: still an emitter.
+    'lib/core/bound.ts': `import { eventBus } from '@/lib/events/bus'
+export function syncWith(run: (emit: (e: unknown) => Promise<void>) => Promise<void>) {
+  return run(eventBus.emit.bind(eventBus))
+}
+`,
+    // A longer member name that starts with emit is not an emit.
+    'lib/core/stats.ts': `const eventBus = { emitted: 0 }
+export function seen() { return eventBus.emitted }
+`,
     // init pulls in an emitter (as it does through the extensions); it must
     // not make every importer of init look like an emitting route.
     'lib/init.ts': `import '@/lib/core/lock'
@@ -78,9 +88,13 @@ export async function GET() { const x: Lock | L2 | null = null; return Response.
   return new Response()
 }
 `,
+    'app/api/bound/route.ts': `import { syncWith } from '@/lib/core/bound'
+export async function POST() { await syncWith(async () => {}); return new Response() }
+`,
     'app/api/quiet/route.ts': `import { add } from '@/lib/core/quiet'
+import { seen } from '@/lib/core/stats'
 import { ensureInitialized } from '@/lib/init'
-export async function GET() { return Response.json(add(1, 2)) }
+export async function GET() { return Response.json(add(seen(), 2)) }
 export const warm = ensureInitialized
 `,
     'app/api/raw/__tests__/route.ts': `import { lockPeriod } from '@/lib/core/lock'
@@ -101,19 +115,25 @@ describe('uninitialized-event-route', () => {
 
     expect(result.wrapperInitializes).toBe(true)
     expect(result.emittingRoutes).toEqual([
+      'app/api/bound/route.ts',
       'app/api/dynamic/route.ts',
       'app/api/module-init/route.ts',
       'app/api/raw/route.ts',
       'app/api/v1/route.ts',
       'app/api/wrapped/route.ts',
     ])
-    expect(result.uninitialized).toEqual(['app/api/dynamic/route.ts', 'app/api/raw/route.ts'])
+    expect(result.uninitialized).toEqual([
+      'app/api/bound/route.ts',
+      'app/api/dynamic/route.ts',
+      'app/api/raw/route.ts',
+    ])
   })
 
   it('measures the pre-fix exposure when the wrapper is not counted', () => {
     const result = findUninitializedEmittingRoutes(fixture(WRAPPER_WITH_INIT), { countWrapper: false })
 
     expect(result.uninitialized).toEqual([
+      'app/api/bound/route.ts',
       'app/api/dynamic/route.ts',
       'app/api/raw/route.ts',
       'app/api/wrapped/route.ts',

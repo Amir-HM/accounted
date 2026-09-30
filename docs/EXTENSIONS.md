@@ -175,7 +175,7 @@ interface ExtensionContext {
 - **Delivery:** the bus (`src/lib/events/bus.ts`) runs all handlers for an event concurrently with `Promise.allSettled`. A rejected handler is logged and never fails the emitter.
 - **Payload types:** event names and payloads live in `src/lib/events/types.ts`. Type payloads with `EventPayload<'<event>'>`.
 - **ctx may be missing:** the registry builds `ctx` when the event fires, from `createClient()` and the payload's `userId` and `companyId`. When that fails (no `userId`, or no request scope), the handler receives `ctx === undefined`, so always handle that case. An event emitted from a cron job or webhook may also carry a client without a signed-in user.
-- **Initialization:** handlers are subscribed only after `ensureInitialized()` (`src/lib/init.ts`) has run in the process, since that function calls `loadExtensions()`. Any route that emits events, or that looks up extensions in the registry, must call `ensureInitialized()` at module level. Otherwise events go nowhere and `extensionRegistry.get()` returns `undefined`.
+- **Initialization:** handlers are subscribed only after `ensureInitialized()` (`src/lib/init.ts`) has run in the process, since that function calls `loadExtensions()`. `withRouteContext` and `withApiV1` call it before the handler runs, and the `ext/[...path]` router calls it at module level, so a route behind any of them is covered. Any other route that emits events, or that looks up extensions in the registry (crons on `withCronContext`, raw `requireAuth()` routes), must call `ensureInitialized()` at module level. Otherwise events go nowhere and `extensionRegistry.get()` returns `undefined`. `npm run check:guards` (uninitialized-event-route) fails a new route that can emit without it.
 
 ## API routes
 
@@ -297,7 +297,7 @@ Tests live in `src/extensions/general/<id>/__tests__/`. Run them with `npx vites
 3. **Importing `@/extensions/` from core.** This includes `src/lib/`, `src/app/api/` outside `src/app/api/extensions/`, `src/components/` outside `src/components/extensions/`, and `src/types/index.ts`.
 4. **Assuming `ctx` exists.** It can be undefined in event handlers, and it is always undefined for `skipAuth` and `skipCompanyContext` routes.
 5. **Calling `settings.set(key, null)`.** Use `settings.clear(key)`.
-6. **Forgetting `ensureInitialized()`.** Routes that emit events or read the registry need it at module level.
+6. **Forgetting `ensureInitialized()`.** A route outside `withRouteContext`, `withApiV1` and the `ext/[...path]` router (a cron, a raw `requireAuth()` route) that emits events or reads the registry needs it at module level.
 7. **Scaffolding with a sector other than `general`**, or following steps 4 and 5 of the `create-extension` output.
 8. **Adding a file under `src/app/api/extensions/<id>/` without the registry gate**, or importing another extension from it.
 9. **Writing journal entries directly** instead of through `src/lib/bookkeeping/engine.ts`.
