@@ -48,6 +48,7 @@ const message: PeppolInboundMessage = {
 function makeTransport(overrides: Partial<PeppolTransport> = {}): PeppolTransport {
   return {
     provider: 'qvalia',
+    tenantId: 'SE5595386219',
     lookupRecipient: vi.fn(),
     submit: vi.fn(),
     verifyWebhook: vi.fn(),
