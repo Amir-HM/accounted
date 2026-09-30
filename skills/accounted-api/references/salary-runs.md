@@ -459,7 +459,7 @@ Example response `200`:
 **Post the verifikationer for a paid salary run.**
 `scope:payroll:write · risk:high · idempotent · dry-run`
 
-Creates 2-4 journal entries (1: salary brutto/tax/net; 2: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip: the run stays in `paid` so the caller can fix the cause (locked period, missing BAS account, etc.) and retry.
+Creates 1-4 journal entries (1: salary brutto/tax/net; 2 if the run has any: arbetsgivaravgifter; 3 if applicable: semesterlöneskuld accrual; 4 if applicable: pension + SLP from löneväxling), then advances status `paid` → `booked` with all the entry IDs recorded on the salary_runs row. Strict-mode: any engine failure aborts BEFORE the status flip, and all entries are validated before the first is posted, so a refusal (locked period, missing BAS account, required or archived dimension value, etc.) posts nothing: the run stays in `paid` so the caller can fix the cause and retry.
 
 **Use when:** You've marked a salary run as paid and want to post the BFL-required verifikationer. This is the final lifecycle verb before AGI generation; after :book, the run can no longer be edited and corrections must use the (forthcoming) `:correct` verb.
 **Do not use for:** Posting salary entries outside the salary-run lifecycle (use POST /journal-entries directly). Re-booking an already-booked run (returns 400 SALARY_RUN_BOOK_NOT_PAID).
@@ -469,7 +469,9 @@ Creates 2-4 journal entries (1: salary brutto/tax/net; 2: arbetsgivaravgifter; 3
 - payment_date must fall in an open fiscal period: locked period returns 400 PERIOD_LOCKED with `fiscal_period_id` and a hint of what unlock action is needed.
 - BFL 5 kap immutability: once `:book` succeeds the verifikationer cannot be edited or deleted. Corrections require `:correct` (Phase 5 PR-3) which does a storno-then-rebook.
 - The salary verifikation is the primary one; its voucher_number appears in the response audit block. The avgifter, vacation, and pension entries get separate voucher numbers (returned as `entry_ids`).
-- Strict-mode: if the engine fails partway, the salary_runs row stays in `paid`. There is no "partial booking": the engine either commits all entries or the entire booking fails.
+- A run without arbetsgivaravgifter (only utlägg repaid, or only payees without avgifter such as F-skatt holders) posts no avgifter entry: avgifter_entry_id is null.
+- Strict-mode: every entry is validated before the first is posted, so a refusal posts nothing and the run stays in `paid`. If posting stops partway on a transient failure, calling :book again adopts the entries already posted (when they match the run exactly) and posts only the missing ones, never twice. A posted entry of the run that does not match returns 409 SALARY_RUN_PARTIALLY_BOOKED with details.voucher_numbers: reverse those, then retry.
+- One booking per run at a time: while another :book call (or a dashboard or MCP booking) for the same run is in flight, this call returns 409 SALARY_RUN_BOOKING_IN_PROGRESS and posts nothing. Do not retry at once after a client timeout: wait, GET the run, and call :book again only if it is still `paid`.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -486,7 +488,7 @@ Response `200`:
     booked_at: string,
     booked_by: string | null,
     salary_entry_id: string,
-    avgifter_entry_id: string,
+    avgifter_entry_id: string | null,
     vacation_entry_id: string | null,
     pension_entry_id: string | null,
     entry_ids: string[]
