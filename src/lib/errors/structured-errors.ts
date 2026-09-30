@@ -4236,6 +4236,20 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
         'Inspect details.candidates[].match_reason. For an unlinked row, match it via POST /api/transactions/{id}/match-supplier-invoice. For `already_booked`, the row is already a posted verifikat (booked straight from the bank side): do NOT pay the invoice, correct the double booking instead (reverse one of the two vouchers with a storno entry and attach the underlag to the remaining one). Resend mark-paid with force: true only when the payment really is separate; on the v1 endpoint that retry needs a fresh Idempotency-Key.',
     },
   },
+  // #2955: a foreign-currency invoice's payment clears the SEK its linked
+  // vouchers carry on 244x (lib/bookkeeping/supplier-payment-amounts.ts).
+  // When those links contradict each other the SEK is refused, not guessed.
+  SI_PAID_SEK_UNRESOLVED: {
+    httpStatus: 409,
+    message_sv:
+      'Det gick inte att avgöra hur mycket i kronor fakturan har kvar på leverantörsskulder (2440): kopplingen mellan fakturan och dess verifikationer är inte entydig. Bokför betalningen som en egen verifikation i kronor och koppla den till fakturan, eller rätta kopplingen först.',
+    message_en:
+      'Could not determine how much SEK the invoice still carries on accounts payable (2440): the links between the invoice and its vouchers are ambiguous. Book the payment as its own SEK voucher and link it to the invoice, or fix the links first.',
+    remediation: {
+      description:
+        'details.reason names the contradiction: registration_voucher_not_live (reversed with no single correction), registration_voucher_shared, payment_history_mismatch (payment rows do not add up to paid_amount), payment_voucher_not_posted, payment_voucher_shared (a batch voucher) or no_liability_left. Check the SEK against the ledger, then resend mark-paid with explicit SEK `lines` (Debit 2440 / Credit the payment account, plus 3960/7960 for a kursdifferens), or book the voucher yourself and link it to the invoice.',
+    },
+  },
   SI_CREDIT_ALREADY_CREDITED: {
     httpStatus: 409,
     message_sv: 'Leverantörsfakturan har redan krediterats.',
