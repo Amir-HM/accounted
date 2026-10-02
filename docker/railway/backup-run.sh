@@ -61,7 +61,7 @@ if [ -n "${ACCOUNTED_API_KEY:-}" ] && [ -n "${ACCOUNTED_COMPANY_ID:-}" ]; then
   : "${ACCOUNTED_URL:?ACCOUNTED_URL is required with ACCOUNTED_API_KEY}"
   api() { curl -fsS -H "Authorization: Bearer ${ACCOUNTED_API_KEY}" "${ACCOUNTED_URL}/api/v1/companies/${ACCOUNTED_COMPANY_ID}/$1"; }
   day="$(date -u +%Y-%m-%d)"
-  for pid in $(api fiscal-periods | jq -r '.data[].id'); do
+  for pid in $(api fiscal-periods | jq -r '.data.fiscal_periods[].id'); do
     api "reports/sie-export?period_id=${pid}" > "$WORK/${pid}.se"
     r2 s3 cp --only-show-errors "$WORK/${pid}.se" "s3://${BACKUP_S3_BUCKET}/sie/${day}/${pid}.se"
     echo "backup: SIE4 for period ${pid} uploaded"
