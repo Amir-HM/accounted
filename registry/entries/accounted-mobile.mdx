@@ -8,7 +8,7 @@ status: "beta"
 lang: "sv"
 personas: ["founder", "finance"]
 publishedAt: "2026-10-11"
-updatedAt: "2026-10-11"
+updatedAt: "2026-10-12"
 repoUrl: "https://github.com/Amir-HM/accounted-mobile"
 version: "0.1.0"
 oauthScopes:
@@ -18,6 +18,9 @@ oauthScopes:
   - "transactions:read"
   - "transactions:write"
   - "reports:read"
+  - "invoices:read"
+  - "suppliers:read"
+  - "suppliers:write"
   - "bookkeeping:write"
   - "pending_operations:read"
   - "pending_operations:approve"
@@ -28,12 +31,17 @@ gnubokTools:
   - "gnubok_list_pending_operations"
   - "gnubok_approve_pending_operation"
   - "gnubok_reject_pending_operation"
+  - "gnubok_create_expense_claim"
 requiresWriteScope: true
 related: ["gnubok-mcp", "leverantorsfaktura-fran-inbox"]
 ogImageEyebrow: "iPhone-app"
 faq:
   - q: "Bokför appen något på egen hand?"
     a: "Nej. Bokföring från telefonen är avstängd som standard och slås på under Inställningar. När den är på visar appen först de riktiga verifikationsraderna från en provkörning (dry run), och ingenting bokförs förrän du själv trycker Bokför. Det som agenter har förberett godkänns eller avvisas av dig i appen, som stagade operationer."
+  - q: "Hur fungerar utlägg?"
+    a: "Ett kvitto som betalats privat blir ett utlägg via gnubok_create_expense_claim, som stagar operationen. Verifikatet bokförs först när någon godkänner det under Godkännanden, och funktionen ligger bakom samma brytare som bokföringen."
+  - q: "Finns appen på svenska?"
+    a: "Ja, svenska är standard och engelska går att välja under Inställningar. Begreppen är hämtade från webbappens egna översättningar."
   - q: "Kan ett kvitto försvinna på vägen?"
     a: "Varje bild kopieras in i appen och SHA-256-hashas innan något skickas. Uppladdningen är idempotent, serverns hash måste stämma med den lokala, och kön överlever omstart och nätavbrott. Stämmer inte hashen syns det som ett fel i stället för att tyst försvinna."
   - q: "Vilken server pratar den med?"
@@ -58,6 +66,12 @@ snabbt ja eller nej på något som väntar.
   ihop, att momsen är en svensk sats, att organisationsnumret klarar
   kontrollsiffran och att belopp och datum stämmer med bankbetalningen. Ett
   kvitto utan betalning får den troliga betalningen föreslagen.
+- **Fakturor, moms och banker.** Vad kunderna är skyldiga (förfallna först),
+  momsdeklarationen för perioden ruta för ruta och om den är inlämnad, och
+  bankkopplingarnas status med samtyckets slutdatum och Synka nu. Allt läsande.
+- **Leverantörsfakturor.** Attestera från telefonen. Attesten bokför inget.
+- **Utlägg.** Ett kvitto som betalats privat blir ett utlägg som väntar under
+  Godkännanden.
 - **Godkännanden.** Operationer som Claude, andra agenter eller kvittojakten
   har stagat. Godkänn eller avvisa; hög risk kräver en extra bekräftelse.
 - **Översikt.** Att göra, kassa med runway, årets resultat, moms, intäkter och
@@ -73,7 +87,9 @@ snabbt ja eller nej på något som väntar.
 |---|---|
 | Kvitton | Arkiveras via inkorgen (`gnubok_create_document_upload`) och kopplas till transaktionen |
 | "Inget underlag krävs" | Accounteds egen markering på verifikatet, med skäl och ångra |
-| Godkännanden | `gnubok_approve_pending_operation` och `gnubok_reject_pending_operation` på stagade operationer |
+| Godkännanden | `gnubok_approve_pending_operation` och `gnubok_reject_pending_operation` på stagade operationer, alltid med bekräftelse som visar vad som bokförs; det som bokför är låst så länge bokföring från telefonen är avstängd |
+| Attest av leverantörsfaktura | `POST .../supplier-invoices/{id}/approve`, bokför inget |
+| Utlägg | `gnubok_create_expense_claim`, stagas och bokförs först vid godkännande |
 | Bokföring (avstängd som standard) | `POST .../transactions/{id}/categorize`, först som dry run som visar verifikationsraderna, sedan bara efter att du trycker Bokför |
 
 Bokföringen från telefonen är ett manuellt steg av en människa, samma sak som
